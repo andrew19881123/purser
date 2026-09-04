@@ -1,0 +1,522 @@
+package plan
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// Tuning constants. These are deliberately coarse placeholders — the design
+// (08 §10–§12) calls for calibrating them against real micro-benchmarks.
+const (
+	// overheadOSRuntimeGB is the per-node memory reserved for the OS and the
+	// inference runtime, added on top of weights + KV cache (design 08 §4).
+	overheadOSRuntimeGB = 2.0
+
+	// bytesFP16 is the element size assumed for an un-compressed KV entry.
+	bytesFP16 = 2.0
+
+	// defaultHeadroomFraction is the fraction of a node's useful memory kept
+	// free as headroom (design 08 §6 uses HEADROOM in the stage-fit check).
+	// The minimal single-node skeleton reports headroom but does not enforce
+	// this margin yet.
+	defaultHeadroomFraction = 0.10
+
+	// referenceMemBandwidthGBs normalises a node's memory bandwidth into a
+	// unit-less weight for usefulCapacity ranking (design 08 §5, normalize()).
+	referenceMemBandwidthGBs = 100.0
+
+	// expectedAcceptedTokens is the speculative-decoding acceptance count used
+	// to amortise the per-token round trip (design 08 §11, ~4–5 on coding).
+	expectedAcceptedTokens = 4.5
+
+	// perfBandFraction is the ±band applied around the point estimate to build
+	// the min/max range shown in the UI. Uncalibrated placeholder.
+	perfBandFraction = 0.30
+
+	// prefillComputeMultiple is how much faster prefill runs than decode: decode
+	// is memory-bound (streams weights per token) while prefill is compute-bound
+	// and batched. Rough placeholder multiple applied to the decode rate to get
+	// the prefill rate (design 08 §11). Uncalibrated — CALIBRATABLE.
+	prefillComputeMultiple = 8.0
+)
+
+// Plan is the planner entry point (design 08 §3): given the fleet state
+// (nodes + links), a model, and operator constraints, it returns a valid
+// DeploymentPlan or a *PlanError.
+//
+// It orchestrates the full pipeline A→F end-to-end:
+//   - Phase A (§4, selectQuantization): highest-quality quantization whose
+//     weights + KV cache + per-node overhead fit the aggregate useful memory.
+//   - Phase B (§5, candidateSubsets): rank nodes by useful capacity, find
+//     k_min, and emit the subsets ranked[0:k] for k in k_min .. k_min+DELTA.
+//     k_min == 1 short-circuits to the single-node plan (rule G3).
+//   - Phase C (§6, dpPartition): for each candidate subset, a throughput-aware
+//     DP splits the layer chain into contiguous shards minimising the
+//     bottleneck stage time; the cheapest feasible candidate wins.
+//   - Phase D (§7, orderNodes): the pipeline ORDER is the min-cost Hamiltonian
+//     path over the activation-transfer edge costs (Held-Karp exact for small
+//     fleets, nearest-neighbour + 2-opt above HeldKarpMaxNodes), co-optimised
+//     with the phase-C partition in multiNodePlan; host = ForceHost or the most
+//     capable node.
+//   - Phase E (§8, placeDraft, draft.go): if the model ships a speculative
+//     draft, mark the pipeline TAIL node (the shard holding the last layers) as
+//     the draft carrier — the MTP/draft heads live on the box of coda, adding
+//     no extra hop.
+//   - Phase F (§9, computeFailoverPlans, failover.go): for every node used by
+//     the plan, pre-compute an alternative plan over the fleet minus that node.
+//
+// The public Plan drives failover; the alternatives are planned NON-recursively
+// (see planInternal's computeFailover guard), so the recursion is exactly one
+// level deep.
+func Plan(nodes []Node, links []Link, model ModelSpec, c Constraints) (*DeploymentPlan, error) {
+	return planInternal(nodes, links, model, c, true)
+}
+
+// planInternal is the shared orchestrator behind Plan. computeFailover is the
+// anti-recursion guard (design 08 §9): the public Plan calls it with true, and
+// each per-node failover alternative (failover.go) is planned with false so the
+// alternatives do NOT themselves spawn failover plans — their FailoverAlt stays
+// empty. This bounds the failover recursion at a single level.
+func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, computeFailover bool) (*DeploymentPlan, error) {
+	// Operator include/exclude filter (design 08 §14: acts on `nodes` first).
+	nodes = applyNodeFilter(nodes, c)
+	if len(nodes) == 0 {
+		return nil, &PlanError{
+			Reason:      "no nodes available after applying include/exclude constraints",
+			Suggestions: []string{"widen include_nodes", "remove some exclude_nodes", "register more nodes"},
+		}
+	}
+	if model.Layers <= 0 {
+		return nil, &PlanError{
+			Reason:      fmt.Sprintf("model %q declares no layers", model.ID),
+			Suggestions: []string{"provide a ModelSpec with Layers > 0"},
+		}
+	}
+
+	// KV cache is included in the fit and is often dominant on long contexts
+	// (design 08 §4, §12).
+	kv := estimateKVCache(model, model.ContextMax)
+
+	// Phase A — quantization selection.
+	quant, err := selectQuantization(nodes, model, kv, c)
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase B — candidate node subsets (design 08 §5).
+	subsets := candidateSubsets(nodes, model, quant, kv, c)
+	if len(subsets) == 0 {
+		// Passed phase A's aggregate-RAM check but the useful memory (bounded
+		// by VRAM on discrete-GPU nodes) does not add up: still too large.
+		aggUseful := 0.0
+		for _, n := range nodes {
+			aggUseful += usefulMemory(n)
+		}
+		return nil, &PlanError{
+			Reason: fmt.Sprintf(
+				"model %q at quant %q does not fit even across all %d nodes' useful memory",
+				model.ID, quant.Name, len(nodes)),
+			DeficitGB: (quant.SizeGB + kv + overheadOSRuntimeGB*float64(len(nodes))) - aggUseful,
+			Suggestions: []string{
+				"choose a smaller quantization",
+				"reduce ContextMax to shrink the KV cache",
+				"add nodes with more (V)RAM",
+			},
+		}
+	}
+
+	var plan *DeploymentPlan
+	if len(subsets[0]) == 1 {
+		// Rule G3 (design 08 §5): if the model fits on one node, don't
+		// distribute. candidateSubsets returns its smallest candidate first, so
+		// a size-1 head means k_min == 1 (or ForceNodeCount == 1).
+		plan = singleNodePlan(subsets[0][0], model, quant, kv, links, c)
+	} else {
+		// Phase C/D — evaluate each candidate subset and keep the cheapest
+		// feasible plan (design 08 §5 selection loop, §6 partition DP).
+		nodeByID := make(map[string]Node, len(nodes))
+		for _, n := range nodes {
+			nodeByID[n.ID] = n
+		}
+
+		var best *DeploymentPlan
+		for _, subset := range subsets {
+			if len(subset) < 2 {
+				continue
+			}
+			// multiNodePlan co-optimises the pipeline order (phase D) with the
+			// partition DP (phase C) and scores the result; nil means no
+			// feasible contiguous partition on this subset → try the next.
+			cand := multiNodePlan(subset, nodeByID, model, quant, links, c)
+			if cand == nil {
+				continue
+			}
+			if best == nil || cand.Cost < best.Cost {
+				best = cand
+			}
+		}
+
+		if best == nil {
+			return nil, &PlanError{
+				Reason: fmt.Sprintf(
+					"model %q at quant %q: no feasible contiguous partition on any of the %d candidate subsets (memory/headroom)",
+					model.ID, quant.Name, len(subsets)),
+				Suggestions: []string{
+					"choose a smaller quantization",
+					"reduce ContextMax to shrink the per-node KV cache",
+					"add nodes with more (V)RAM to relieve the tightest stage",
+				},
+			}
+		}
+		plan = best
+	}
+
+	// Phase E — speculative-draft placement on the pipeline tail (design 08 §8).
+	placeDraft(plan, model)
+
+	// Phase F — per-node failover alternatives (design 08 §9). Guarded so the
+	// alternatives are planned non-recursively (computeFailover == false).
+	if computeFailover {
+		computeFailoverPlans(plan, nodes, links, model, c)
+	}
+
+	return plan, nil
+}
+
+// applyNodeFilter applies the include/exclude operator constraints
+// (design 08 §14). An empty IncludeNodes means "no restriction".
+func applyNodeFilter(nodes []Node, c Constraints) []Node {
+	include := toSet(c.IncludeNodes)
+	exclude := toSet(c.ExcludeNodes)
+	out := make([]Node, 0, len(nodes))
+	for _, n := range nodes {
+		if _, bad := exclude[n.ID]; bad {
+			continue
+		}
+		if len(include) > 0 {
+			if _, ok := include[n.ID]; !ok {
+				continue
+			}
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// selectQuantization is phase A (design 08 §4): among the model's
+// quantizations, pick the highest-quality one whose weights + KV cache +
+// per-node overhead fit the aggregate available RAM. Honours Constraints.
+// ForceQuant by short-circuiting the search.
+func selectQuantization(nodes []Node, model ModelSpec, kv float64, c Constraints) (Quantization, error) {
+	if len(model.Quantizations) == 0 {
+		return Quantization{}, &PlanError{
+			Reason:      fmt.Sprintf("model %q declares no quantizations", model.ID),
+			Suggestions: []string{"provide at least one Quantization in the ModelSpec"},
+		}
+	}
+
+	ramAggregate := 0.0
+	for _, n := range nodes {
+		ramAggregate += n.RAMAvailableGB
+	}
+	overhead := overheadOSRuntimeGB * float64(len(nodes))
+
+	// Forced quantization: skip phase A but still validate the fit.
+	if c.ForceQuant != nil {
+		q, ok := lookupQuant(model.Quantizations, *c.ForceQuant)
+		if !ok {
+			return Quantization{}, &PlanError{
+				Reason:      fmt.Sprintf("forced quantization %q is not offered by model %q", *c.ForceQuant, model.ID),
+				Suggestions: []string{"pick one of the model's declared quantizations"},
+			}
+		}
+		q.EmulatedFP4 = q.RequiresFP4 && !anyFP4(nodes)
+		if ramAggregate < q.SizeGB+kv+overhead {
+			return Quantization{}, &PlanError{
+				Reason:      fmt.Sprintf("forced quantization %q does not fit the aggregate RAM", q.Name),
+				DeficitGB:   (q.SizeGB + kv + overhead) - ramAggregate,
+				Suggestions: []string{"drop force_quant to let phase A choose", "add memory"},
+			}
+		}
+		return q, nil
+	}
+
+	// Evaluate quantizations from highest to lowest quality; the first that
+	// fits wins (design 08 §4).
+	ranked := append([]Quantization(nil), model.Quantizations...)
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].Quality > ranked[j].Quality })
+
+	for _, q := range ranked {
+		if ramAggregate >= q.SizeGB+kv+overhead {
+			// FP4 required but no node has it: emulable, but penalised
+			// (design 08 §4). Flagged for the cost function / explanation.
+			q.EmulatedFP4 = q.RequiresFP4 && !anyFP4(nodes)
+			return q, nil
+		}
+	}
+
+	// Nothing fits. Report the deficit against the smallest-footprint
+	// quantization (the best-effort candidate).
+	smallest := ranked[0]
+	for _, q := range ranked {
+		if q.SizeGB < smallest.SizeGB {
+			smallest = q
+		}
+	}
+	return Quantization{}, &PlanError{
+		Reason:    fmt.Sprintf("model %q is too large: no quantization fits the aggregate RAM", model.ID),
+		DeficitGB: (smallest.SizeGB + kv + overhead) - ramAggregate,
+		Suggestions: []string{
+			"add nodes or free memory",
+			"reduce ContextMax to shrink the KV cache",
+			"provide a smaller quantization",
+		},
+	}
+}
+
+// singleNodePlan builds the trivial plan that hosts every layer of the model on
+// a single node (design 08 §3, rule G3: don't distribute when it fits on one).
+func singleNodePlan(n Node, model ModelSpec, quant Quantization, kv float64, links []Link, c Constraints) *DeploymentPlan {
+	assign := Assignment{
+		NodeID:     n.ID,
+		Role:       RoleHost,
+		LayerStart: 0,
+		LayerEnd:   model.Layers - 1,
+		// Draft placement is phase E (placeDraft, draft.go), applied uniformly
+		// by planInternal after the plan is assembled — on a single node the
+		// tail is trivially this node.
+	}
+
+	required := quant.SizeGB + kv + overheadOSRuntimeGB
+	headroom := usefulMemory(n) - required
+
+	explanation := []string{
+		fmt.Sprintf("selected quantization %q (quality %.2f)", quant.Name, quant.Quality),
+		fmt.Sprintf("model fits on a single node %q: no pipeline split needed (rule G3)", n.ID),
+		fmt.Sprintf("weights %.1f GB + KV cache %.1f GB + overhead %.1f GB = %.1f GB required; %.1f GB useful memory (%.1f GB headroom)",
+			quant.SizeGB, kv, overheadOSRuntimeGB, required, usefulMemory(n), headroom),
+	}
+	if quant.EmulatedFP4 {
+		explanation = append(explanation, "quantization requires FP4 but no node is FP4-native: running emulated (penalised)")
+	}
+	// Note operator constraints that are accepted but not yet acted on by the
+	// minimal skeleton, so the UI can surface them (design 08 §14).
+	if c.ForceHost != nil && *c.ForceHost != n.ID {
+		explanation = append(explanation, fmt.Sprintf("note: force_host=%q ignored — single-node plan hosts on %q", *c.ForceHost, n.ID))
+	}
+
+	return &DeploymentPlan{
+		PlanID:        newPlanID(model.ID, n.ID),
+		ModelID:       model.ID,
+		Quantization:  quant.Name,
+		Assignments:   []Assignment{assign},
+		PipelineOrder: []string{n.ID},
+		Estimated:     estimateSingleNode(n, model, quant, headroom),
+		Cost:          0, // single node → zero hops → baseline cost
+		Explanation:   explanation,
+		// Phase F (computeFailoverPlans, failover.go) fills this in for the
+		// public Plan path; starts empty so failover alternatives (planned with
+		// computeFailover == false) carry no nested plans.
+		FailoverAlt: map[string]*DeploymentPlan{},
+	}
+}
+
+// estimateSingleNode produces a coarse, memory-bound decode/prefill RANGE for a
+// single-node deployment (design 08 §11). The whole model runs on one node, so
+// the pipeline bottleneck is just that node's per-token weight-streaming time;
+// estimatePerformance turns it into a min/max band. Coefficients are
+// uncalibrated placeholders.
+func estimateSingleNode(n Node, model ModelSpec, quant Quantization, headroom float64) PerfEstimate {
+	// Bytes of (active) weights streamed per decoded token. For MoE only the
+	// active experts are read, so scale the weight bytes by active/total.
+	activeFraction := 1.0
+	if model.ParamsTotalB > 0 && model.ParamsActiveB > 0 {
+		activeFraction = model.ParamsActiveB / model.ParamsTotalB
+	}
+	activeWeightBytes := quant.SizeGB * 1e9 * activeFraction
+
+	bottleneck := 0.0 // seconds per decoded token (the single "stage")
+	if n.MemBandwidthGBs > 0 && activeWeightBytes > 0 {
+		bottleneck = activeWeightBytes / (n.MemBandwidthGBs * 1e9)
+	}
+	return estimatePerformance(bottleneck, headroom, model)
+}
+
+// estimatePerformance turns a pipeline bottleneck (seconds per decoded token,
+// already including any inter-stage communication) into a decode/prefill
+// throughput RANGE (design 08 §11). The bottleneck — the slowest ("collo")
+// stage — sets the pipeline throughput, so decode ≈ 1 / bottleneck. When the
+// model ships a speculative draft, each verified step advances the sequence by
+// ~expectedAcceptedTokens tokens, so the decode rate is scaled up accordingly.
+//
+// The result is deliberately a RANGE, never a single number: the underlying
+// coefficients (computeTime/commTime, the prefill multiple, the acceptance
+// count) are uncalibrated, so the point estimate is widened by ±perfBandFraction
+// to make that uncertainty explicit in the UI (design 08 §11, §15). All
+// coefficients are named, CALIBRATABLE constants.
+func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec) PerfEstimate {
+	decode := 0.0
+	if bottleneckSecPerTok > 0 {
+		decode = 1.0 / bottleneckSecPerTok
+	}
+	if model.Draft.Available {
+		// Speculative decoding amortises the per-token round trip over the
+		// tokens the target accepts in one verification step (design 08 §11).
+		decode *= expectedAcceptedTokens
+	}
+	// Prefill is compute-bound and typically far higher throughput than the
+	// memory-bound decode; a rough multiple as a placeholder point estimate.
+	prefill := decode * prefillComputeMultiple
+
+	return PerfEstimate{
+		DecodeTokSMin:  decode * (1 - perfBandFraction),
+		DecodeTokSMax:  decode * (1 + perfBandFraction),
+		PrefillTokSMin: prefill * (1 - perfBandFraction),
+		PrefillTokSMax: prefill * (1 + perfBandFraction),
+		HeadroomGB:     headroom,
+	}
+}
+
+// estimateKVCache estimates the KV-cache footprint in GB for a given context
+// length (design 08 §12).
+//
+// STUB: this implements the architecture-driven compression factor only. The
+// design also calls for engine-capability-driven levers — SSD offloading of the
+// cold KV fraction (Tutti) and prefix caching (ContiguousKV) — which require
+// querying the engine adapter's capabilities. Those are not modelled yet.
+//
+// TODO(fase2): read engineCaps (kv_ssd_offload, prefix caching) and apply
+// kvCacheInMemory() so long contexts that only fit with offload are not
+// falsely rejected.
+func estimateKVCache(model ModelSpec, context int) float64 {
+	if context <= 0 || model.Layers <= 0 || model.NKVHeads <= 0 || model.HeadDim <= 0 {
+		return 0
+	}
+	// bytes = 2(K,V) * layers * n_kv_heads * head_dim * context * bytes_per_elem
+	base := 2.0 *
+		float64(model.Layers) *
+		float64(model.NKVHeads) *
+		float64(model.HeadDim) *
+		float64(context) *
+		bytesFP16
+
+	factor := 1.0
+	switch model.AttentionType {
+	case AttentionMHA, AttentionGQA:
+		factor = 1.0 // GQA: n_kv_heads already reduced in the metadata
+	case AttentionMLA:
+		factor = 0.10 // latent compression ~7–14x
+	case AttentionLinear:
+		factor = 0.01 // fixed-size state, ~independent of context (approx.)
+	}
+	return base * factor / 1e9
+}
+
+// kvCachePerNode returns the share of the KV cache that lives on a node holding
+// layersOnNode of the model's layers (design 08 §12). Provided as a hook for
+// phase C's per-stage memory fit.
+func kvCachePerNode(model ModelSpec, layersOnNode, context int) float64 {
+	if model.Layers <= 0 {
+		return 0
+	}
+	return estimateKVCache(model, context) * (float64(layersOnNode) / float64(model.Layers))
+}
+
+// usefulMemory is the memory a node can actually devote to model weights + KV
+// (design 08 §5). For unified-memory nodes it is the available RAM; for
+// discrete-GPU nodes it is bounded by VRAM; for CPU-only nodes (no VRAM
+// reported) it falls back to available RAM.
+//
+// NOTE: this refines the design's raw `min(ram, vram)` formula, which would
+// zero out CPU-only nodes (vram == 0) — inconsistent with the doc's own worked
+// example that counts a CPU box's RAM. The fallback below keeps CPU-only nodes
+// usable.
+func usefulMemory(n Node) float64 {
+	switch {
+	case n.UnifiedMemory:
+		return n.RAMAvailableGB
+	case n.VRAMGB > 0:
+		return minFloat(n.RAMAvailableGB, n.VRAMGB)
+	default: // CPU-only: no discrete VRAM reported
+		return n.RAMAvailableGB
+	}
+}
+
+// usefulCapacity ranks nodes by useful memory weighted by memory bandwidth
+// (design 08 §5): more memory and faster memory both make a node a better host.
+func usefulCapacity(n Node) float64 {
+	return usefulMemory(n) * normalizeBandwidth(n.MemBandwidthGBs)
+}
+
+// normalizeBandwidth turns a memory bandwidth into a unit-less weight
+// (design 08 §5, normalize()). Unknown bandwidth (<= 0) is treated as neutral
+// so it neither boosts nor zeroes a node's ranking.
+func normalizeBandwidth(gbs float64) float64 {
+	if gbs <= 0 {
+		return 1.0
+	}
+	return gbs / referenceMemBandwidthGBs
+}
+
+// bestNodeByCapacity returns the node with the highest usefulCapacity. Ties are
+// broken by the first node in slice order. Callers must ensure len(nodes) > 0.
+func bestNodeByCapacity(nodes []Node) Node {
+	best := nodes[0]
+	bestCap := usefulCapacity(best)
+	for _, n := range nodes[1:] {
+		if c := usefulCapacity(n); c > bestCap {
+			best, bestCap = n, c
+		}
+	}
+	return best
+}
+
+// anyFP4 reports whether any node is FP4-native (design 08 §4).
+func anyFP4(nodes []Node) bool {
+	for _, n := range nodes {
+		if n.FP4Native {
+			return true
+		}
+	}
+	return false
+}
+
+// lookupQuant finds a quantization by name (design 08 §3, force_quant path).
+func lookupQuant(qs []Quantization, name string) (Quantization, bool) {
+	for _, q := range qs {
+		if q.Name == name {
+			return q, true
+		}
+	}
+	return Quantization{}, false
+}
+
+// newPlanID builds a stable, deterministic plan identifier (no timestamps, so
+// tests are reproducible).
+func newPlanID(modelID, nodeID string) string {
+	return "plan-" + sanitizeID(modelID) + "-" + sanitizeID(nodeID)
+}
+
+func sanitizeID(s string) string {
+	r := strings.NewReplacer("/", "-", " ", "-", ":", "-")
+	return r.Replace(s)
+}
+
+func toSet(ss []string) map[string]struct{} {
+	if len(ss) == 0 {
+		return nil
+	}
+	m := make(map[string]struct{}, len(ss))
+	for _, s := range ss {
+		m[s] = struct{}{}
+	}
+	return m
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}

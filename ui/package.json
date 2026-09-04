@@ -1,0 +1,26 @@
+{
+  "name": "purser-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Purser operator dashboard — React + Vite + TypeScript SPA (self-contained, offline/air-gap ready). Phase 1F skeleton with a mocked backend.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.59.16",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

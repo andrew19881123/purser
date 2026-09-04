@@ -1,0 +1,36 @@
+// Purser v1 — engine tuning parameters and lifecycle events.
+syntax = "proto3";
+
+package purser.v1;
+
+import "purser/v1/common.proto";
+
+option go_package = "github.com/purser/purser/go/gen/purser/v1;purserv1";
+
+// Tunable parameters passed to an inference engine at start time.
+//
+// The presence-tracked (optional) fields let the control plane distinguish
+// "leave at engine default" from "explicitly set to zero".
+message EngineParams {
+  optional uint32 draft_block_len = 1;
+  optional uint32 pipe_depth = 2;
+  optional double pipe_fill = 3;
+  uint32 context = 4;
+  map<string, string> extra = 5;
+}
+
+// Kind of lifecycle event emitted by an engine.
+enum EngineEventKind {
+  ENGINE_EVENT_KIND_UNSPECIFIED = 0;
+  ENGINE_EVENT_KIND_LOADING = 1;
+  ENGINE_EVENT_KIND_READY = 2;
+  ENGINE_EVENT_KIND_ERROR = 3;
+  ENGINE_EVENT_KIND_METRICS = 4;
+}
+
+// A single event streamed while an engine is starting up or running.
+message EngineEvent {
+  EngineEventKind kind = 1;
+  string detail = 2;
+  EngineMetrics metrics = 3;
+}

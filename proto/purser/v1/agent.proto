@@ -1,0 +1,84 @@
+// Purser v1 — the agent-facing API.
+//
+// AgentService is served by every Purser agent and driven by the control
+// plane (control plane -> agent). It covers hardware discovery, link
+// benchmarking, engine lifecycle, health streaming, draining and self-update.
+syntax = "proto3";
+
+package purser.v1;
+
+import "purser/v1/common.proto";
+import "purser/v1/engine.proto";
+
+option go_package = "github.com/purser/purser/go/gen/purser/v1;purserv1";
+
+// Served by the agent; called by the control plane.
+service AgentService {
+  // Probe the node and return its full hardware profile.
+  rpc Probe(ProbeRequest) returns (HardwareProfile);
+
+  // Benchmark the network links from this node to the given targets.
+  rpc BenchmarkLink(LinkRequest) returns (LinkMetric);
+
+  // Start an inference engine, streaming lifecycle events until it is ready
+  // (or fails).
+  rpc StartEngine(StartEngineRequest) returns (stream EngineEvent);
+
+  // Stop a running engine identified by its handle.
+  rpc StopEngine(StopEngineRequest) returns (StopReply);
+
+  // Continuously stream health reports for this node.
+  rpc Health(HealthRequest) returns (stream HealthReport);
+
+  // Gracefully drain the node ahead of maintenance or decommissioning.
+  rpc Drain(DrainRequest) returns (DrainReply);
+
+  // Update the agent binary itself.
+  rpc UpdateAgent(UpdateRequest) returns (UpdateReply);
+}
+
+message ProbeRequest {}
+
+message LinkRequest {
+  repeated string target_nodes = 1;
+}
+
+message StartEngineRequest {
+  string model_ref = 1;
+  Role role = 2;
+  uint32 layer_start = 3;
+  uint32 layer_end = 4;
+  repeated string peers = 5;
+  string quantization = 6;
+  bool draft = 7;
+  EngineParams params = 8;
+}
+
+message StopEngineRequest {
+  string handle = 1;
+}
+
+message StopReply {
+  string status = 1;
+}
+
+message HealthRequest {}
+
+message HealthReport {
+  NodeState state = 1;
+  EngineMetrics metrics = 2;
+}
+
+message DrainRequest {}
+
+message DrainReply {}
+
+message UpdateRequest {
+  string version = 1;
+  string url = 2;
+  bytes signature = 3;
+}
+
+message UpdateReply {
+  bool accepted = 1;
+}

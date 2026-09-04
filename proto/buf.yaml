@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # The v1 service contracts intentionally return domain types (e.g. Probe
+    # returns HardwareProfile, Join returns JoinReply) rather than the
+    # <Rpc>Request / <Rpc>Response convention. These are frozen v1 names.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use:
+    - FILE

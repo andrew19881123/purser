@@ -1,0 +1,208 @@
+// Purser v1 — common types shared across all services.
+//
+// These are the foundational contracts of the Purser control plane. Every
+// component (agent, planner, control plane, gateway) speaks in terms of the
+// messages and enums defined here.
+syntax = "proto3";
+
+package purser.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/purser/purser/go/gen/purser/v1;purserv1";
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+// Operating system of a node.
+enum OS {
+  OS_UNSPECIFIED = 0;
+  OS_LINUX = 1;
+  OS_DARWIN = 2;
+  OS_WINDOWS = 3;
+}
+
+// CPU architecture of a node.
+enum Arch {
+  ARCH_UNSPECIFIED = 0;
+  ARCH_X86_64 = 1;
+  ARCH_ARM64 = 2;
+}
+
+// Inference backend available on a node.
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_CUDA = 1;
+  BACKEND_METAL = 2;
+  BACKEND_ROCM = 3;
+  BACKEND_CPU = 4;
+}
+
+// Lifecycle state of a node within the cluster.
+enum NodeState {
+  NODE_STATE_UNSPECIFIED = 0;
+  NODE_STATE_PROVISIONING = 1;
+  NODE_STATE_ENROLLED = 2;
+  NODE_STATE_READY = 3;
+  NODE_STATE_LOADING = 4;
+  NODE_STATE_RUNNING = 5;
+  NODE_STATE_DEGRADED = 6;
+  NODE_STATE_DRAINING = 7;
+  NODE_STATE_UNREACHABLE = 8;
+  NODE_STATE_DECOMMISSIONED = 9;
+}
+
+// Attention mechanism used by a model architecture.
+enum AttentionType {
+  ATTENTION_TYPE_UNSPECIFIED = 0;
+  ATTENTION_TYPE_MHA = 1;
+  ATTENTION_TYPE_GQA = 2;
+  ATTENTION_TYPE_MLA = 3;
+  ATTENTION_TYPE_LINEAR = 4;
+}
+
+// Role of a node inside a pipeline-parallel deployment.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_HOST = 1;
+  ROLE_WORKER = 2;
+}
+
+// Lifecycle state of a deployment.
+enum DeploymentState {
+  DEPLOYMENT_STATE_UNSPECIFIED = 0;
+  DEPLOYMENT_STATE_PLANNED = 1;
+  DEPLOYMENT_STATE_PROVISIONING = 2;
+  DEPLOYMENT_STATE_ACTIVE = 3;
+  DEPLOYMENT_STATE_REBALANCING = 4;
+  DEPLOYMENT_STATE_STOPPING = 5;
+  DEPLOYMENT_STATE_STOPPED = 6;
+  DEPLOYMENT_STATE_FAILED = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Hardware / topology
+// ---------------------------------------------------------------------------
+
+// A single GPU (or unified-memory accelerator) present on a node.
+message GpuInfo {
+  string name = 1;
+  double vram_gb = 2;
+  bool unified = 3;
+  bool fp4_native = 4;
+  uint32 count = 5;
+}
+
+// Full hardware and liveness profile of a node, reported by the agent.
+message HardwareProfile {
+  string node_id = 1;
+  string hostname = 2;
+  OS os = 3;
+  Arch arch = 4;
+  repeated Backend backends = 5;
+  repeated GpuInfo gpus = 6;
+  double ram_total_gb = 7;
+  double ram_available_gb = 8;
+  double mem_bandwidth_gbs = 9;
+  double disk_free_gb = 10;
+  map<string, string> engine_versions = 11;
+  google.protobuf.Timestamp last_seen = 12;
+  NodeState state = 13;
+}
+
+// Measured network characteristics of the link between two nodes.
+message LinkMetric {
+  string from_node = 1;
+  string to_node = 2;
+  double bandwidth_gbs = 3;
+  double rtt_ms = 4;
+  google.protobuf.Timestamp measured_at = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Model description
+// ---------------------------------------------------------------------------
+
+// A quantization variant of a model.
+message Quantization {
+  string name = 1;
+  double size_gb = 2;
+  bool requires_fp4 = 3;
+  double quality = 4;
+  bool emulated_fp4 = 5;
+}
+
+// Speculative-decoding draft-model information.
+message DraftInfo {
+  bool available = 1;
+  string type = 2;
+  uint32 tail_layers = 3;
+}
+
+// Static description of a model to be deployed.
+message ModelSpec {
+  string model_id = 1;
+  string family = 2;
+  string architecture = 3;
+  double params_total_b = 4;
+  double params_active_b = 5;
+  uint32 layers = 6;
+  uint32 hidden_size = 7;
+  uint32 n_kv_heads = 8;
+  uint32 head_dim = 9;
+  AttentionType attention_type = 10;
+  uint64 context_max = 11;
+  bool is_moe = 12;
+  DraftInfo draft = 13;
+  repeated Quantization quantizations = 14;
+  string engine = 15;
+}
+
+// ---------------------------------------------------------------------------
+// Deployment planning
+// ---------------------------------------------------------------------------
+
+// Assignment of a contiguous layer range to a node in a deployment.
+message Assignment {
+  string node_id = 1;
+  Role role = 2;
+  uint32 layer_start = 3;
+  uint32 layer_end = 4;
+  bool draft = 5;
+}
+
+// Estimated performance envelope for a deployment plan.
+message PerfEstimate {
+  double decode_tok_s_min = 1;
+  double decode_tok_s_max = 2;
+  double prefill_tok_s_min = 3;
+  double prefill_tok_s_max = 4;
+  double headroom_gb = 5;
+}
+
+// A concrete plan produced by the planner: how to spread a model across nodes.
+message DeploymentPlan {
+  string plan_id = 1;
+  string model_id = 2;
+  string quantization = 3;
+  repeated Assignment assignments = 4;
+  repeated string pipeline_order = 5;
+  PerfEstimate estimated = 6;
+  double cost = 7;
+  repeated string explanation = 8;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime metrics
+// ---------------------------------------------------------------------------
+
+// Live metrics reported by a running engine.
+message EngineMetrics {
+  double prefill_tok_s = 1;
+  double decode_tok_s = 2;
+  double ram_used_gb = 3;
+  double vram_used_gb = 4;
+  uint32 queue_depth = 5;
+  double accepted_tokens_ratio = 6;
+}

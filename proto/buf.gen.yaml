@@ -1,0 +1,15 @@
+version: v2
+# Go codegen. Rust codegen is handled by tonic-build (see
+# rust/crates/purser-proto/build.rs) with a vendored protoc, so it is not
+# listed here.
+#
+# `out` is resolved relative to the directory buf is invoked from. The
+# Makefile runs `buf generate` inside proto/, so ../go/gen -> <root>/go/gen.
+# go_package is declared explicitly in each .proto, so managed mode is off.
+plugins:
+  - local: protoc-gen-go
+    out: ../go/gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../go/gen
+    opt: paths=source_relative

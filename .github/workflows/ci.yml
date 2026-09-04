@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Note: CI uses the standard GitHub setup actions rather than the project-local
+# `make setup` bootstrap (which downloads full toolchains into .toolchain/).
+jobs:
+  proto:
+    name: proto (buf lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+      - run: buf lint
+        working-directory: proto
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: build
+        working-directory: rust
+        run: cargo build --workspace --locked
+      - name: test
+        working-directory: rust
+        run: cargo test --workspace --locked
+      - name: clippy
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: fmt
+        working-directory: rust
+        run: cargo fmt --all -- --check
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [planner, controlplane]
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/${{ matrix.module }}/go.mod
+      - name: build
+        working-directory: go/${{ matrix.module }}
+        run: go build ./...
+      - name: vet
+        working-directory: go/${{ matrix.module }}
+        run: go vet ./...
+      - name: test
+        working-directory: go/${{ matrix.module }}
+        run: go test ./...
+
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install
+        working-directory: ui
+        run: npm ci
+      - name: typecheck
+        working-directory: ui
+        run: npm run typecheck
+      - name: build
+        working-directory: ui
+        run: npm run build

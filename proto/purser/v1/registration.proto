@@ -1,0 +1,43 @@
+// Purser v1 — the registration/enrollment API.
+//
+// RegistrationService is served by the control plane and driven by agents
+// (agent -> control plane). It covers cluster enrollment and heartbeating.
+syntax = "proto3";
+
+package purser.v1;
+
+import "google/protobuf/timestamp.proto";
+import "purser/v1/common.proto";
+
+option go_package = "github.com/purser/purser/go/gen/purser/v1;purserv1";
+
+// Served by the control plane; called by agents.
+service RegistrationService {
+  // Enroll a new node into the cluster using a join token.
+  rpc Join(JoinRequest) returns (JoinReply);
+
+  // Continuously stream heartbeats from an enrolled node.
+  // The request type is fully qualified (.purser.v1.Heartbeat) so it is not
+  // shadowed by this method's own name during type resolution.
+  rpc Heartbeat(stream .purser.v1.Heartbeat) returns (Ack);
+}
+
+message JoinRequest {
+  string join_token = 1;
+  HardwareProfile hardware_profile = 2;
+}
+
+message JoinReply {
+  string node_id = 1;
+  bytes client_cert = 2;
+  bytes ca_cert = 3;
+}
+
+message Heartbeat {
+  string node_id = 1;
+  NodeState state = 2;
+  EngineMetrics metrics = 3;
+  google.protobuf.Timestamp ts = 4;
+}
+
+message Ack {}

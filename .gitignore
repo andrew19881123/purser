@@ -1,0 +1,41 @@
+# --- Project-local toolchain (installed by `make setup`) ---
+# Rust, Go, buf and all their caches live here. Never committed (~3GB).
+.toolchain/
+
+# --- Rust ---
+target/
+**/target/
+
+# --- Go ---
+# Build/test binaries. NOTE: generated *.pb.go under go/gen/ ARE committed on
+# purpose so downstream modules build without first running `make gen`.
+*.test
+*.out
+# `go build ./...` drops a compiled executable in each main-package module root.
+/go/planner/planner
+/go/controlplane/controlplane
+
+# --- Node / UI ---
+node_modules/
+ui/dist/
+ui/build/
+
+# --- Built binaries ---
+/bin/
+
+# --- Runtime state (NEVER commit — may contain keys/tokens) ---
+*.db
+*.sqlite
+*.sqlite3
+*-registry.db
+pki-state/
+**/pki-state/
+
+# --- Internal solution-design & strategy docs (kept local, not published) ---
+docs/
+
+# --- Misc ---
+*.tmp
+*.log
+*.swp
+.DS_Store

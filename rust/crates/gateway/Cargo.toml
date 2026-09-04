@@ -1,0 +1,25 @@
+[package]
+name = "purser-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Placeholder Purser API gateway (axum)."
+
+[dependencies]
+async-stream = "0.3.6"
+axum = "0.8.9"
+bytes = "1.12.1"
+futures-util = "0.3.34"
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+purser-proto = { path = "../purser-proto" }
+reqwest = { version = "0.13.4", default-features = false, features = ["stream", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
