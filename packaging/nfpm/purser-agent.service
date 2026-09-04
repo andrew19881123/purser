@@ -1,0 +1,63 @@
+# Packaged (.deb/.rpm) variant of the Purser agent systemd unit.
+#
+# This is the unit shipped INSIDE the native package (nfpm) and installed to
+# /lib/systemd/system/purser-agent.service. It is identical to
+# ../systemd/purser-agent.service EXCEPT for ExecStart: a distro package
+# installs the binary to /usr/bin/purser-agent (Debian policy forbids packages
+# writing to /usr/local), whereas the manual/tarball flow documented in
+# packaging/README.md installs to /usr/local/bin. Keep the two in sync when
+# editing the hardening/[Unit] sections.
+[Unit]
+Description=Purser Fleet Agent (node-local daemon: HW probe, engine supervisor, AgentService gRPC)
+Documentation=https://github.com/purser/purser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=purser
+Group=purser
+# Environment (PURSER_AGENT_BIND, PURSER_INFERENCE_PORT, PURSER_CONTROL_PLANE_ADDR,
+# PURSER_JOIN_TOKEN, ...). See /etc/purser/agent.env (install from agent.env.example).
+#
+# SECURITY: bind the agent ONLY on a trusted-subnet interface via
+# PURSER_AGENT_BIND. The inference engine's RPC worker is NOT sandboxed and must
+# never be reachable from the public internet.
+EnvironmentFile=/etc/purser/agent.env
+ExecStart=/usr/bin/purser-agent
+Restart=on-failure
+RestartSec=2
+
+# --- Sandboxing / hardening -------------------------------------------------
+# systemd creates and owns /var/lib/purser (StateDirectory), mode 0700, owned by
+# User=purser — the model cache and any node-local state should live here. Under
+# ProtectSystem=strict it is the only writable location.
+StateDirectory=purser
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# --- GPU / accelerator access (READ THIS on GPU nodes) ----------------------
+# The agent supervises the inference engine, which on real GPU nodes needs
+# direct access to accelerator devices. The hardening above deliberately does
+# NOT enable PrivateDevices= (which would hide /dev/nvidia*). If you enable
+# stricter device isolation elsewhere, or the engine cannot see the GPU, grant
+# ONLY the specific devices and privileges the hardware requires — do not
+# disable the sandbox wholesale. For NVIDIA (nvml feature / a real engine):
+#
+#   # keep a private but device-populated /dev, then allow just the GPU nodes:
+#   #PrivateDevices=no
+#   #DeviceAllow=/dev/nvidia0 rw
+#   #DeviceAllow=/dev/nvidiactl rw
+#   #DeviceAllow=/dev/nvidia-uvm rw
+#   #DeviceAllow=/dev/nvidia-uvm-tools rw
+#   #SupplementaryGroups=video render
+#
+# Adjust the device list to the actual GPUs present (nvidia1, nvidia2, ...).
+
+[Install]
+WantedBy=multi-user.target

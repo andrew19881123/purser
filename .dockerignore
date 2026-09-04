@@ -1,0 +1,41 @@
+# Docker build context excludes. The build context is the repo root for all
+# three images (control-plane, gateway, ui); keep it lean and never ship build
+# caches, secrets or runtime state into a layer.
+
+# Project-local toolchain (~3GB: Rust, Go, buf, caches). Never needed in a build.
+.toolchain/
+
+# Rust / Go / Node build outputs — regenerated inside the builder stages.
+**/target/
+**/node_modules/
+ui/dist/
+ui/build/
+*.test
+*.out
+/go/planner/planner
+/go/controlplane/controlplane
+
+# Release staging + prebuilt host binaries.
+/dist/
+/bin/
+
+# VCS, CI and internal docs — not build inputs.
+.git/
+.github/
+docs/
+
+# Runtime state (may contain keys/tokens) — MUST NOT enter an image.
+*.db
+*.sqlite
+*.sqlite3
+*-registry.db
+**/pki-state/
+*.ed25519.key
+license-signing-*.pem
+license-signing.key
+
+# Misc.
+*.tmp
+*.log
+*.swp
+.DS_Store

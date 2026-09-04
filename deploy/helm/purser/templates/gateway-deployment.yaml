@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "purser.gateway.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "gateway") | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "purser.gateway.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.port }}
+          env:
+            # Host/port are REQUIRED by the binary (no implicit defaults).
+            - name: PURSER_GATEWAY_HOST
+              value: "0.0.0.0"
+            - name: PURSER_GATEWAY_PORT
+              value: {{ .Values.gateway.port | quote }}
+            # Shared secret for route-sync auth (matches the Control Plane's
+            # PURSER_GATEWAY_TOKEN).
+            - name: PURSER_GATEWAY_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "purser.gatewaySecretName" . }}
+                  key: internal-token
+            {{- if .Values.gateway.apiKeys }}
+            - name: PURSER_GATEWAY_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "purser.gatewaySecretName" . }}
+                  key: api-keys
+            {{- end }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.gateway.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

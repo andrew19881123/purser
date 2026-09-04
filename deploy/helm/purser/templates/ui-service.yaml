@@ -1,0 +1,25 @@
+{{- $svcType := .Values.ui.service.type | default .Values.service.type }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "purser.ui.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "ui") | nindent 4 }}
+  {{- with .Values.ui.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Expose via LoadBalancer/NodePort (or an Ingress) to reach the operator UI
+  # from outside the cluster. Default ClusterIP is in-cluster only.
+  type: {{ $svcType }}
+  selector:
+    {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "ui") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.ui.port }}
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq $svcType "NodePort") .Values.ui.service.nodePort }}
+      nodePort: {{ .Values.ui.service.nodePort }}
+      {{- end }}

@@ -1,0 +1,70 @@
+Purser {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Components:
+  - control-plane : {{ include "purser.controlPlane.fullname" . }}  (HTTP :{{ .Values.controlPlane.httpPort }}, gRPC :{{ .Values.controlPlane.grpcPort }})
+  - gateway       : {{ include "purser.gateway.fullname" . }}  (HTTP :{{ .Values.gateway.port }})
+  - ui            : {{ include "purser.ui.fullname" . }}  (HTTP :{{ .Values.ui.port }})
+
+{{- $cpType := .Values.controlPlane.service.type | default .Values.service.type }}
+{{- $gwType := .Values.gateway.service.type | default .Values.service.type }}
+{{- $uiType := .Values.ui.service.type | default .Values.service.type }}
+
+1) Operator UI
+{{- if eq $uiType "ClusterIP" }}
+   ClusterIP — port-forward to reach it locally:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "purser.ui.fullname" . }} 8081:{{ .Values.ui.port }}
+     open http://localhost:8081
+{{- else if eq $uiType "NodePort" }}
+   NodePort — browse to http://<node-ip>:<assigned-nodeport>
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "purser.ui.fullname" . }}
+{{- else }}
+   LoadBalancer — use the external IP:
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "purser.ui.fullname" . }} -w
+{{- end }}
+
+2) API Gateway (OpenAI-compatible, /v1/...)
+{{- if eq $gwType "ClusterIP" }}
+   ClusterIP — port-forward:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "purser.gateway.fullname" . }} 8080:{{ .Values.gateway.port }}
+     curl http://localhost:8080/healthz
+{{- else if eq $gwType "NodePort" }}
+   NodePort — http://<node-ip>:<assigned-nodeport>/v1/...
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "purser.gateway.fullname" . }}
+{{- else }}
+   LoadBalancer — use the external IP:
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "purser.gateway.fullname" . }} -w
+{{- end }}
+{{- if not .Values.gateway.apiKeys }}
+   NOTE: gateway.apiKeys is empty => OPEN DEV MODE (any non-empty bearer token
+   is accepted). Set gateway.apiKeys for production.
+{{- end }}
+
+3) Joining Agents (they run OUTSIDE Kubernetes, as host packages)
+   Agents reach the Control Plane's RegistrationService over gRPC/mTLS on
+   port {{ .Values.controlPlane.grpcPort }} and the REST API on port {{ .Values.controlPlane.httpPort }}.
+{{- if eq $cpType "ClusterIP" }}
+
+   The Control Plane Service is ClusterIP — NOT reachable by LAN Agents.
+   Re-install/upgrade exposing it, e.g.:
+     helm upgrade --install {{ .Release.Name }} <chart> \
+       --set controlPlane.service.type=LoadBalancer
+   (or NodePort). Then mint a join token and enroll an Agent:
+{{- else }}
+
+   Discover the external control-plane address:
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "purser.controlPlane.fullname" . }} -o wide
+{{- end }}
+
+   # Mint a join token (via the REST API, port {{ .Values.controlPlane.httpPort }}):
+   curl -sS -X POST http://<control-plane-host>:{{ .Values.controlPlane.httpPort }}/api/v1/join-token
+
+   # On the Agent host, point the Agent at the Control Plane gRPC endpoint
+   # (<control-plane-host>:{{ .Values.controlPlane.grpcPort }}) and pass the token.
+   # See packaging/ and deploy/README.md for the host-package enrollment flow.
+
+The engine<->engine data plane stays on the trusted subnet and does NOT need to
+transit Kubernetes.
+
+Check status:
+  helm -n {{ .Release.Namespace }} status {{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} get deploy,svc,pvc -l app.kubernetes.io/instance={{ .Release.Name }}

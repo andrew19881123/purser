@@ -27,11 +27,12 @@ export PATH        := $(CARGO_HOME)/bin:$(GOROOT)/bin:$(GOBIN):$(PATH)
 CARGO := $(CARGO_HOME)/bin/cargo
 GO    := $(GOROOT)/bin/go
 BUF   := $(GOBIN)/buf
+NFPM  := $(GOBIN)/nfpm
 
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean release
+.PHONY: all help setup gen build test lint fmt clean release package-agent
 
 all: gen build
 
@@ -45,6 +46,7 @@ help:
 	@echo "  make fmt     rustfmt (Rust) + go fmt (Go)"
 	@echo "  make clean   Remove build artifacts"
 	@echo "  make release Build stripped release binaries + stage dist/ (scripts/build-release.sh)"
+	@echo "  make package-agent  Build the agent .deb + .rpm into dist/ (nfpm)"
 
 setup:
 	./tools/setup-toolchain.sh
@@ -81,6 +83,22 @@ fmt:
 
 release:
 	./scripts/build-release.sh
+
+# Build the purser-agent native packages (.deb + .rpm) into dist/ with nfpm.
+# Rebuilds the stripped release binary first (CARGO_INCREMENTAL=0: incremental
+# artifacts only bloat target/ for a release build). Requires the project-local
+# nfpm ($(NFPM)); install it once with:
+#   GOBIN=$(GOBIN) $(GO) install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+package-agent:
+	@test -x "$(NFPM)" || { echo "error: nfpm not found at $(NFPM); install it with:"; \
+		echo "  GOBIN=$(GOBIN) \"$(GO)\" install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest"; exit 1; }
+	CARGO_INCREMENTAL=0 "$(CARGO)" build --release --manifest-path $(RUST_MANIFEST) -p purser-agent
+	@mkdir -p dist
+	"$(NFPM)" package -f packaging/nfpm/purser-agent.yaml -p deb -t dist/
+	"$(NFPM)" package -f packaging/nfpm/purser-agent.yaml -p rpm -t dist/
+	@echo ""
+	@echo "Packages in dist/:"
+	@ls -lh dist/purser-agent_$(shell sed -n 's/^version:[[:space:]]*//p' packaging/nfpm/purser-agent.yaml)_amd64.deb dist/purser-agent-$(shell sed -n 's/^version:[[:space:]]*//p' packaging/nfpm/purser-agent.yaml)-1.x86_64.rpm 2>/dev/null | awk '{print "  " $$9 "\t" $$5}'
 
 clean:
 	-"$(CARGO)" clean --manifest-path $(RUST_MANIFEST)

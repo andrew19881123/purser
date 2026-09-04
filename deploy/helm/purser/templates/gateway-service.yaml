@@ -1,0 +1,25 @@
+{{- $svcType := .Values.gateway.service.type | default .Values.service.type }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "purser.gateway.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  {{- with .Values.gateway.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Expose via LoadBalancer/NodePort if OpenAI-compatible clients live outside
+  # the cluster. Default ClusterIP is in-cluster only.
+  type: {{ $svcType }}
+  selector:
+    {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.port }}
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq $svcType "NodePort") .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}

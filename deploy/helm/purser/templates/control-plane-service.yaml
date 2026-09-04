@@ -1,0 +1,33 @@
+{{- $svcType := .Values.controlPlane.service.type | default .Values.service.type }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "purser.controlPlane.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+  {{- with .Values.controlPlane.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Set type=LoadBalancer or NodePort to let out-of-cluster (LAN) Agents reach
+  # the RegistrationService (gRPC/mTLS) + REST API. Default ClusterIP is
+  # in-cluster only.
+  type: {{ $svcType }}
+  selector:
+    {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.controlPlane.httpPort }}
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq $svcType "NodePort") .Values.controlPlane.service.httpNodePort }}
+      nodePort: {{ .Values.controlPlane.service.httpNodePort }}
+      {{- end }}
+    - name: grpc
+      port: {{ .Values.controlPlane.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+      {{- if and (eq $svcType "NodePort") .Values.controlPlane.service.grpcNodePort }}
+      nodePort: {{ .Values.controlPlane.service.grpcNodePort }}
+      {{- end }}

@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "purser.controlPlane.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+spec:
+  # Single writer: the SQLite registry + PKI CA live on one RWO volume. HA
+  # (>1 replica) requires the enterprise Registry Raft backend.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # Recreate avoids two pods contending for the ReadWriteOnce data volume
+    # during a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "purser.componentSelectorLabels" (dict "ctx" . "component" "control-plane") | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "purser.controlPlane.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.controlPlane.httpPort }}
+            - name: grpc
+              containerPort: {{ .Values.controlPlane.grpcPort }}
+          env:
+            - name: PURSER_ADDR
+              value: ":{{ .Values.controlPlane.httpPort }}"
+            - name: PURSER_GRPC_ADDR
+              value: ":{{ .Values.controlPlane.grpcPort }}"
+            - name: PURSER_DB
+              value: "{{ .Values.controlPlane.persistence.mountPath }}/purser-registry.db"
+            - name: PURSER_PKI_DIR
+              value: "{{ .Values.controlPlane.persistence.mountPath }}/pki-state"
+            - name: PURSER_CLUSTER_ID
+              value: {{ .Values.controlPlane.clusterId | quote }}
+            {{- if .Values.controlPlane.agentPort }}
+            - name: PURSER_AGENT_PORT
+              value: {{ .Values.controlPlane.agentPort | quote }}
+            {{- end }}
+            # Route sync -> Gateway (best-effort; token shared via Secret).
+            - name: PURSER_GATEWAY_ADDR
+              value: {{ include "purser.gatewayURL" . | quote }}
+            - name: PURSER_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "purser.gatewaySecretName" . }}
+                  key: internal-token
+            {{- if .Values.license.key }}
+            - name: PURSER_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "purser.licenseSecretName" . }}
+                  key: license-key
+            {{- end }}
+            {{- with .Values.controlPlane.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.controlPlane.persistence.mountPath | quote }}
+          livenessProbe:
+            # DB-independent: the process is up if it accepts TCP on the API port.
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            # Registry-backed health verdict (200 ok/empty/degraded, 503 down).
+            httpGet:
+              path: /api/v1/cluster/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.controlPlane.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.controlPlane.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.controlPlane.persistence.existingClaim | default (printf "%s-data" (include "purser.controlPlane.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

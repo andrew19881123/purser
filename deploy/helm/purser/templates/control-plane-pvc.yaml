@@ -1,0 +1,17 @@
+{{- if and .Values.controlPlane.persistence.enabled (not .Values.controlPlane.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "purser.controlPlane.fullname" . }}-data
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.controlPlane.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.controlPlane.persistence.size | quote }}
+  {{- if .Values.controlPlane.persistence.storageClass }}
+  storageClassName: {{ .Values.controlPlane.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,119 @@
+# Default values for the Purser chart.
+# This is a YAML-formatted file. Every knob below is referenced from templates.
+
+# -- Replicas per component. KEEP AT 1.
+# The Registry is a single-writer SQLite database and the internal PKI CA lives
+# on one PVC; horizontal HA (multi-replica) requires the Registry Raft backend,
+# which is an ENTERPRISE feature. Scaling >1 without it corrupts/splits state.
+replicaCount: 1
+
+# Override the generated resource name (defaults to the release name).
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # Pull policy applied to all component images.
+  pullPolicy: IfNotPresent
+  controlPlane:
+    repository: purser/control-plane
+    # Defaults to .Chart.AppVersion when left empty.
+    tag: ""
+  gateway:
+    repository: purser/gateway
+    tag: ""
+  ui:
+    repository: purser/ui
+    tag: ""
+
+# Secrets for pulling from a private registry, e.g. [{ name: regcred }].
+imagePullSecrets: []
+
+# -- Global default Service type applied to every component unless the component
+# overrides it below. Default ClusterIP = in-cluster only.
+#
+# IMPORTANT (networking): Purser Agents run OUTSIDE Kubernetes (host packages)
+# and must reach the Control Plane's RegistrationService (gRPC/mTLS) + REST API.
+# For a LAN fleet, set controlPlane.service.type to LoadBalancer or NodePort
+# (e.g. --set controlPlane.service.type=LoadBalancer). See deploy/README.md.
+service:
+  type: ClusterIP
+
+controlPlane:
+  httpPort: 8080          # management REST API (/api/v1) and UI backend
+  grpcPort: 9443          # RegistrationService gRPC (Agent Join/Heartbeat, mTLS)
+  clusterId: "default"    # echoed in join tokens (PURSER_CLUSTER_ID)
+  # AgentService port the orchestrator dials back on each node (0 => default 50151).
+  agentPort: 0
+  service:
+    # Empty => inherit the global `service.type`. Override to LoadBalancer /
+    # NodePort so out-of-cluster Agents can reach the gRPC RegistrationService +
+    # REST API (e.g. --set controlPlane.service.type=LoadBalancer).
+    type: ""
+    # NodePorts (only applied when type=NodePort; leave empty to auto-assign).
+    httpNodePort: ""
+    grpcNodePort: ""
+    annotations: {}
+  persistence:
+    # SQLite registry + internal PKI (CA key/cert) are stateful -> persist them.
+    enabled: true
+    size: 2Gi
+    # Empty => cluster default StorageClass.
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    # Mount point inside the container (matches the image's PURSER_DB/PKI_DIR).
+    mountPath: /data
+    # Reuse a pre-existing PVC instead of creating one (empty => chart creates it).
+    existingClaim: ""
+  # Extra env passed verbatim to the control-plane container ([{name,value}]).
+  extraEnv: []
+  resources: {}
+    # requests: { cpu: 100m, memory: 128Mi }
+    # limits:   { cpu: "1",  memory: 512Mi }
+
+gateway:
+  # Port the gateway binds inside the pod and the Service exposes.
+  port: 8080
+  service:
+    # Empty => inherit the global `service.type`.
+    type: ""
+    nodePort: ""
+    annotations: {}
+  # Shared internal token for Control-Plane -> Gateway route sync
+  # (header X-Purser-Internal-Token). The Control Plane sends it as
+  # PURSER_GATEWAY_TOKEN; the Gateway validates it as
+  # PURSER_GATEWAY_INTERNAL_TOKEN. Both read it from the SAME generated Secret.
+  # Empty => a random token is generated at install and reused on upgrade.
+  internalToken: ""
+  # Optional comma-separated client API keys (bearer). Empty => OPEN DEV MODE
+  # (gateway accepts any non-empty bearer token).
+  apiKeys: ""
+  extraEnv: []
+  resources: {}
+
+ui:
+  port: 80
+  service:
+    # Empty => inherit the global `service.type`.
+    type: ""
+    nodePort: ""
+    annotations: {}
+  resources: {}
+
+# Enterprise license (offline-verified against the embedded public key; no
+# phone-home). Optional. When set, it is stored in a Secret and exposed to the
+# Control Plane as PURSER_LICENSE_KEY. Empty => community edition.
+license:
+  key: ""
+
+# Pod-level security context for the Control Plane. The distroless image runs as
+# UID 65532; fsGroup makes the persistent volume group-writable for that user.
+podSecurityContext:
+  fsGroup: 65532
+
+# Annotations applied to all pods.
+podAnnotations: {}
+
+# nodeSelector / tolerations / affinity applied to all workloads.
+nodeSelector: {}
+tolerations: []
+affinity: {}

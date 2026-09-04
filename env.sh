@@ -54,6 +54,6 @@ export XDG_CACHE_HOME="$PURSER_TOOLCHAIN/xdg/cache"
 export XDG_DATA_HOME="$PURSER_TOOLCHAIN/xdg/data"
 
 # --- PATH (project-local binaries take precedence) -------------------------
-export PATH="$CARGO_HOME/bin:$GOROOT/bin:$GOBIN:$PATH"
+export PATH="$PURSER_ROOT/.toolchain/bin:$CARGO_HOME/bin:$GOROOT/bin:$GOBIN:$PATH"
 
 echo "purser: toolchain ready (root=$PURSER_ROOT)" 1>&2
