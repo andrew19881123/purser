@@ -170,3 +170,66 @@ primary knobs:
   `PURSER_INFERENCE_ADVERTISED_ADDR`.
 - **gateway** — `PURSER_GATEWAY_HOST` + `PURSER_GATEWAY_PORT` (**both
   mandatory**), `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_API_KEYS`.
+
+---
+
+## Enterprise deployment model
+
+Purser is deployed as **two different kinds of workload**, because its two planes
+have very different requirements. The **agent** is a host-level daemon that must
+see the node's GPUs/accelerators and supervises an inference engine worker that is
+**not** sandboxed; the **control-plane services** are ordinary networked services.
+They are packaged accordingly.
+
+| Component | Where it runs | How it's packaged |
+|---|---|---|
+| **Agent** (`purser-agent`) | On the physical fleet nodes — needs host GPU/devices; engine RPC is **not** sandboxed | **Native per-OS host package** — **not** Kubernetes |
+| **Control Plane** (`control-plane`) | Kubernetes | **Container image + Helm chart** |
+| **API Gateway** (`purser-gateway`) | Kubernetes | **Container image + Helm chart** |
+| **UI Dashboard** | Kubernetes | **Container image + Helm chart** |
+
+### Agent — native host package, not a container
+
+The agent must access the host's accelerators and devices, and the engine RPC it
+supervises is **not** sandboxed, so it is installed as a **host service** via a
+native per-OS package rather than as a pod:
+
+- **Linux** — `.deb` / `.rpm`
+- **macOS** — `.pkg`
+- **Windows** — `.msi`
+
+At fleet scale these are distributed through each platform's own channels for
+mass enrollment (join token + control-plane address baked into the package
+config): an internal **apt/yum** repo on Linux, **MDM** on macOS, and
+**Intune / GPO** on Windows, driven with **Ansible** (or any config-management
+tool) where appropriate.
+
+> **Today.** The building blocks ship now — the systemd units, the launchd
+> plist, the Windows service scripts, the `*.env.example` templates, and
+> `scripts/build-release.sh`. The **native packages**
+> (`.deb` / `.rpm` / `.pkg` / `.msi`) and the repo/MDM distribution are
+> **planned**, not yet present.
+
+### Control plane, gateway & UI — containers + Helm on Kubernetes
+
+These are ordinary networked services and are a good fit for Kubernetes. The
+enterprise target is a set of **container images** plus a **Helm chart**.
+
+> **Caveat — HA needs the replicated Registry.** The single-node Registry is an
+> **embedded SQLite** database, which is fine inside a **single pod**. Running the
+> control plane **highly available (multi-replica) on Kubernetes requires the
+> Raft-replicated Registry**, which is an **enterprise, source-available,
+> key-gated** feature.
+
+> **Today.** There is **no Dockerfile and no Helm chart yet** — both are planned.
+
+### Networking (control plane in K8s, agents on the LAN)
+
+If the control plane runs in Kubernetes while the agents run on the LAN fleet:
+
+- The control plane must be able to **reach the agents** (gRPC / mTLS to
+  `AgentService`), and the agents must be able to **reach the control plane**
+  (expose `RegistrationService` + the REST API via **LoadBalancer / NodePort**).
+- The **engine↔engine data plane stays on the trusted subnet** between the fleet
+  nodes, **outside Kubernetes**. Only control traffic crosses the K8s boundary;
+  the high-volume activation traffic never does.

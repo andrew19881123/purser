@@ -181,7 +181,10 @@ Binaries and default ports:
 See [`packaging/README.md`](packaging/README.md) for service install, security
 notes (Purser assumes a **trusted LAN** — never expose the engine to the public
 internet), and the full environment-variable reference, and
-[PROJECT_STATUS.md](PROJECT_STATUS.md) for the API surface.
+[PROJECT_STATUS.md](PROJECT_STATUS.md) for the API surface. For the fleet-scale
+picture — agents as native host packages, control plane/gateway/UI as containers
++ Helm on Kubernetes — see the **Enterprise deployment model** in
+[`packaging/README.md`](packaging/README.md).
 
 ## Project layout & development
 

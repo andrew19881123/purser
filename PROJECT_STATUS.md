@@ -103,7 +103,9 @@ Nota disco: profilo Rust "lean" (`[profile.dev] debug=0`) per contenere `target/
 - Compliance: audit log tamper-evident, isolamento forte multi-tenant, chargeback/usage accounting.
 - Fleet-at-scale: enrollment MDM/Ansible/golden-image, bundle air-gap firmati, CA enterprise.
 - Failover *execution* (il reconciler rileva e pianifica; l'esecuzione del ribilanciamento va completata).
-- Packaging servizi di sistema (systemd/launchd/MSI), bundle air-gap firmati, self-update firmato.
+- **Pacchetti nativi dell'Agent** (servizio host, **non** K8s — accede a GPU/device e l'engine RPC non è sandboxato): `.deb`/`.rpm` (es. via `nfpm` o `cargo-deb`), `.pkg` (macOS), `.msi` (Windows/WiX), oltre alle unit systemd/launchd + script servizio Windows **che già spediscono**; distribuzione a scala flotta via repo **apt/yum + MDM/Ansible/Intune/GPO** (enrollment di massa). Modello descritto in [`packaging/README.md`](packaging/README.md).
+- **Kubernetes/Helm per il control plane**: Dockerfile per control-plane/gateway/UI + **Helm chart** (+ immagini container) come target enterprise. Nota: l'HA multi-replica su K8s dipende dal **Registry replicato Raft** (feature enterprise, vedi sopra) — il Registry SQLite embedded single-node regge solo in un pod singolo.
+- Bundle air-gap firmati, self-update firmato.
 
 **Community / discovery**
 - Gossip SWIM (foca) — oggi discovery = mDNS+seed+heartbeat.
