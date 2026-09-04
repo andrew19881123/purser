@@ -92,6 +92,75 @@ asserts the real properties of a pipeline: a plan with **two assignments
 the host** on distinct addresses, a deployment that reaches `ACTIVE`, and a real
 chat (non-stream + SSE) proxied to the pipeline host.
 
+## Deployment
+
+Purser ships as **two kinds of workload**, matching its two planes. The **Agent**
+is a native **host package** on your fleet nodes — it needs the node's
+GPUs/accelerators and supervises an inference engine worker that is *not*
+sandboxed, so it runs on the host and **not** in Kubernetes. The **Control Plane,
+API Gateway, and UI** are **container images** deployed with **Helm on
+Kubernetes**.
+
+### Kubernetes (Helm) — Control Plane, Gateway, UI
+
+The **Helm chart** lives in [`deploy/helm/purser`](deploy/helm/purser) and the
+**Dockerfiles** in [`deploy/docker`](deploy/docker). There is **no public image
+registry yet** (one is planned), so for now **build the images and push them to
+your own container registry**, then install the chart pointed at those images:
+
+```bash
+# 1. Build the three images (run from the repo root — the build context is the repo root):
+docker build -f deploy/docker/control-plane.Dockerfile -t <registry>/purser-control-plane:0.1.0 .
+docker build -f deploy/docker/gateway.Dockerfile       -t <registry>/purser-gateway:0.1.0 .
+docker build -f deploy/docker/ui.Dockerfile            -t <registry>/purser-ui:0.1.0 .
+
+# 2. Push them to your registry:
+docker push <registry>/purser-control-plane:0.1.0
+docker push <registry>/purser-gateway:0.1.0
+docker push <registry>/purser-ui:0.1.0
+
+# 3. Install the chart, pointing each component at your images:
+helm install purser deploy/helm/purser \
+  --set image.controlPlane.repository=<registry>/purser-control-plane --set image.controlPlane.tag=0.1.0 \
+  --set image.gateway.repository=<registry>/purser-gateway           --set image.gateway.tag=0.1.0 \
+  --set image.ui.repository=<registry>/purser-ui                     --set image.ui.tag=0.1.0 \
+  --set controlPlane.service.type=LoadBalancer   # so out-of-cluster LAN Agents can reach it
+```
+
+Keep `replicaCount: 1`: the SQLite **Registry** and internal **PKI** are
+single-writer. **Multi-replica HA** on Kubernetes requires the **Raft-replicated
+Registry**, an enterprise (source-available, key-gated) feature.
+
+### Linux fleet (native `.deb` / `.rpm` packages) — the Agent
+
+Build the Agent's native packages, then install with your distro's package
+manager:
+
+```bash
+make package-agent   # produces dist/purser-agent_0.1.0_amd64.deb + dist/purser-agent-0.1.0-1.x86_64.rpm
+
+sudo apt install ./purser-agent_0.1.0_amd64.deb        # Debian / Ubuntu
+sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm     # RHEL / Fedora / openSUSE
+```
+
+The package installs the `purser-agent` **systemd** service and a config file at
+`/etc/purser/agent.env` — set `PURSER_JOIN_TOKEN` and the control-plane address
+there, then `sudo systemctl enable --now purser-agent`. At **fleet scale**,
+publish the `.deb` / `.rpm` to an internal **apt / yum** repository and roll them
+out with **MDM / Ansible / Intune**.
+
+### macOS / Windows — the Agent
+
+Install the Agent as a **launchd** daemon (macOS) or a **Windows service** — see
+[`packaging/`](packaging/README.md).
+
+---
+
+For the full **Kubernetes** guide (image build internals, chart values,
+networking to the LAN fleet) see [`deploy/README.md`](deploy/README.md); for host
+install and the **enterprise deployment model**, see
+[`packaging/README.md`](packaging/README.md).
+
 ## Architecture
 
 Purser has two clearly separated planes: a low-volume **control plane** (gRPC +
@@ -149,9 +218,10 @@ The demos run everything on one host; a real cluster is the same components
 spread across machines.
 
 - **Add nodes.** Install the `purser-agent` on each machine as a managed service
-  (systemd / launchd / Windows) and point it at the control plane with a join
-  token. Service unit files and environment templates are in
-  [`packaging/`](packaging/README.md).
+  — native **`.deb` / `.rpm`** packages (via **apt / yum**), or the systemd /
+  launchd / Windows service units — and point it at the control plane with a join
+  token. See [Deployment](#deployment) for the commands; the service unit files
+  and environment templates are in [`packaging/`](packaging/README.md).
 - **Deploy a model.** Register it and deploy via the control plane REST API:
 
   ```bash
