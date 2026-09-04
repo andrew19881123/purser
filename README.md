@@ -56,22 +56,42 @@ packages/tarballs (`+ SHA256SUMS`) are attached to the
 
 ### Kubernetes (Helm) — Control Plane, Gateway, UI
 
-The chart's default `values.yaml` already points at the published GHCR images
+The chart is published as an **OCI artifact** on GHCR, so you install it with a
+**single command — no clone, no build step**. The chart's default `values.yaml`
+already points at the published GHCR images
 (`ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0`), which are
-**public** — Helm pulls them for you with **no build step and no pull secret**.
-The chart is not yet on a chart registry, so install it from the cloned repo:
+**public**, so Helm pulls both the chart and the images for you with **no pull
+secret**:
 
 ```bash
-git clone https://github.com/andrew19881123/purser.git
-cd purser
-helm install purser deploy/helm/purser \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.0 \
   --set controlPlane.service.type=LoadBalancer   # so out-of-cluster LAN Agents can reach it
 ```
+
+That's it: one command pulls the prebuilt chart from the registry and the public
+images referenced by its defaults.
 
 `--set controlPlane.service.type=LoadBalancer` (or `NodePort`) exposes the
 Control Plane's gRPC RegistrationService + REST API so Agents running **outside**
 the cluster can enroll. With the default `ClusterIP` the Control Plane is
 reachable only inside the cluster.
+
+> **Chart registry visibility.** The one-command install above works because the
+> OCI chart package is **public**. If you host the chart in a **private** registry
+> instead, authenticate first with
+> `helm registry login ghcr.io -u <user> --password-stdin` (paste a token with
+> `read:packages`) before `helm install`/`helm pull`.
+
+**Alternative — from source (to customize the chart).** If you want to edit the
+chart, pin it in-tree, or install without OCI, clone the repo and install from
+the local path:
+
+```bash
+git clone https://github.com/andrew19881123/purser.git
+cd purser
+helm install purser deploy/helm/purser \
+  --set controlPlane.service.type=LoadBalancer
+```
 
 > **Private registry (optional).** Only if you host the images in your **own**
 > private registry do you need a pull secret — create one and reference it with

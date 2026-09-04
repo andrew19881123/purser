@@ -140,18 +140,33 @@ done
 
 ## 2. Installing with Helm
 
-The chart lives at `deploy/helm/purser` (validated with `helm lint` +
-`helm template`). Its default `values.yaml` points at the **published GHCR
-images**, so the default install pulls prebuilt images with **no build step**.
-The chart is not (yet) published to a chart registry, so install it from the
-cloned repo directory.
+The chart is **published as an OCI artifact** on GHCR
+(`oci://ghcr.io/andrew19881123/charts/purser`, version `0.1.0`) and validated
+with `helm lint` + `helm template`. Its default `values.yaml` points at the
+**published GHCR images**, so a one-command install pulls both the prebuilt
+chart and the prebuilt images with **no clone and no build step**.
 
 ```bash
-# Default install — pulls the published images from GHCR:
-#   ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0
-helm install purser deploy/helm/purser
+# Default install — pulls the chart from GHCR (OCI) + the published images:
+#   chart:  oci://ghcr.io/andrew19881123/charts/purser:0.1.0
+#   images: ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.0
 
 # Expose the Control Plane so the out-of-cluster LAN fleet can enroll (see §3):
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.0 \
+  --set controlPlane.service.type=LoadBalancer
+```
+
+The OCI chart package is **public**, so no registry login is needed. For a
+**private** chart registry, authenticate first with
+`helm registry login ghcr.io -u <user> --password-stdin` (token with
+`read:packages`) before installing.
+
+**From source (to customize the chart).** To edit the chart or install without
+OCI, use the in-tree path at `deploy/helm/purser`:
+
+```bash
+# From a clone of the repo:
 helm install purser deploy/helm/purser \
   --set controlPlane.service.type=LoadBalancer
 
@@ -164,6 +179,10 @@ helm install purser deploy/helm/purser \
   --set image.gateway.tag=0.1.0 \
   --set image.ui.tag=0.1.0
 ```
+
+To re-publish the chart after a version bump: `helm package deploy/helm/purser`
+then `helm push purser-<version>.tgz oci://ghcr.io/andrew19881123/charts`
+(requires `helm registry login ghcr.io` with a `write:packages` token).
 
 ### Image visibility & private registries
 
