@@ -43,4 +43,8 @@ make build test  # verify a green baseline
    `git commit -s`.
 5. Open the PR against `main` and fill in the template.
 
-By contributing, you agree your contributions are licensed under AGPL-3.0.
+By contributing, you agree that your contributions to the **core** are licensed
+under the **MIT License**, and your contributions to the **`enterprise/`**
+directory are licensed under the **Purser Enterprise License**. In both cases
+you sign off your commits under the Developer Certificate of Origin
+(`git commit -s`).

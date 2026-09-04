@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/pki"
@@ -151,6 +152,22 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	// Enterprise license: read $PURSER_LICENSE_KEY and verify it OFFLINE against
+	// the embedded public key (no phone-home). An absent key yields the
+	// community license (enterprise features off); a present-but-invalid key is
+	// fatal so a misconfigured deployment fails loud instead of silently
+	// dropping to community.
+	lic, err := license.FromEnv()
+	if err != nil {
+		return err
+	}
+	if lic.IsCommunity() {
+		logger.Info("license: community edition (enterprise features disabled)")
+	} else {
+		logger.Info("license: enterprise edition", "licensee", lic.Licensee,
+			"features", lic.Features, "valid", lic.ValidAt(time.Now()), "expires", lic.Expires)
+	}
+
 	// Management HTTP API. The Planner turns fleet state into DeploymentPlans
 	// for plan-less deploys and the /models fit verdicts.
 	srv := server.New(reg, server.Config{
@@ -161,6 +178,7 @@ func run(logger *slog.Logger) error {
 		Planner:   planning.New(reg),
 		Fleet:     mgr,
 		ClusterID: cfg.clusterID,
+		License:   lic,
 	})
 
 	errCh := make(chan error, 2)

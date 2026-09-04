@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
@@ -70,6 +71,10 @@ type Config struct {
 	// ClusterID is echoed in join-token responses so an enrolling agent knows
 	// which cluster it is joining. Defaults to "default".
 	ClusterID string
+	// License is the verified license resolved at startup (see
+	// license.FromEnv). It gates the enterprise endpoints. If nil, the server
+	// falls back to the community license (enterprise features off).
+	License *license.License
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
@@ -84,6 +89,7 @@ type Server struct {
 	planner   *planning.Planner
 	fleet     TokenMinter
 	clusterID string
+	license   *license.License
 }
 
 // New builds a Server backed by reg.
@@ -100,6 +106,10 @@ func New(reg registry.Registry, cfg Config) *Server {
 	if clusterID == "" {
 		clusterID = "default"
 	}
+	lic := cfg.License
+	if lic == nil {
+		lic = license.Community()
+	}
 	s := &Server{
 		reg:       reg,
 		log:       logger,
@@ -110,6 +120,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		planner:   cfg.Planner,
 		fleet:     cfg.Fleet,
 		clusterID: clusterID,
+		license:   lic,
 	}
 	s.routes()
 	s.server = &http.Server{
@@ -142,6 +153,75 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/cluster/health", s.handleClusterHealth)
 	s.mux.HandleFunc("POST /api/v1/apikeys", s.handleCreateAPIKey)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
+
+	// Enterprise (open-core) endpoints. Public code, gated at runtime by a
+	// valid, offline-verified license key (see enterprise/license).
+	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
+	s.mux.HandleFunc("GET /api/v1/enterprise/audit-log", s.handleEnterpriseAuditLog)
+}
+
+// featureAudit is the entitlement required by the tamper-evident audit log
+// (see LICENSING.md, "Compliance").
+const featureAudit = "audit"
+
+// licenseAllows reports whether the active license currently entitles feature:
+// it must be temporally valid now AND include the feature. This is the single
+// choke point every enterprise handler calls before doing premium work.
+func (s *Server) licenseAllows(feature string) bool {
+	return s.license.ValidAt(time.Now()) && s.license.HasFeature(feature)
+}
+
+// writeLicenseRequired emits the 402 Payment Required response used when an
+// enterprise feature is called without a valid entitlement.
+func (s *Server) writeLicenseRequired(w http.ResponseWriter, feature string) {
+	s.writeJSON(w, http.StatusPaymentRequired, map[string]any{
+		"error": map[string]any{
+			"message": "enterprise license required",
+			"feature": feature,
+			"type":    "license_required",
+		},
+	})
+}
+
+// handleEnterpriseStatus reports the active edition. With a valid license it
+// returns the licensee and enabled features; otherwise it reports the community
+// edition. It never fails and never phones home — the verdict comes entirely
+// from the offline-verified key loaded at startup.
+func (s *Server) handleEnterpriseStatus(w http.ResponseWriter, r *http.Request) {
+	lic := s.license
+	if lic.IsCommunity() || !lic.ValidAt(time.Now()) {
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"edition":  "community",
+			"licensee": "community",
+			"features": []string{},
+		})
+		return
+	}
+	feats := lic.Features
+	if feats == nil {
+		feats = []string{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"edition":  "enterprise",
+		"licensee": lic.Licensee,
+		"features": feats,
+		"expires":  lic.Expires,
+	})
+}
+
+// handleEnterpriseAuditLog is a placeholder premium endpoint gated on the
+// "audit" feature. Without a valid entitlement it returns 402 Payment Required;
+// with one it returns a placeholder audit-log payload (200).
+func (s *Server) handleEnterpriseAuditLog(w http.ResponseWriter, r *http.Request) {
+	if !s.licenseAllows(featureAudit) {
+		s.writeLicenseRequired(w, featureAudit)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"feature":  featureAudit,
+		"licensee": s.license.Licensee,
+		"entries":  []any{},
+	})
 }
 
 // handleListNodes returns all nodes known to the registry.

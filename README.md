@@ -60,9 +60,10 @@ bash tools/e2e_full.sh
 
 ## License
 
-Purser's core is licensed under **AGPL-3.0** — see [LICENSE](LICENSE). Certain
-enterprise/compliance features are offered under a separate commercial license;
-see [LICENSING.md](LICENSING.md) for the open-core model.
+Purser's core is licensed under the **MIT License** — see [LICENSE](LICENSE).
+The `enterprise/` directory is **source-available** under the Purser Enterprise
+License and requires a valid license key for production use — see
+[LICENSING.md](LICENSING.md).
 
 ## Contributing & security
 

@@ -1,6 +1,7 @@
 go 1.27.1
 
 use (
+	../enterprise/license
 	./controlplane
 	./gen
 	./planner

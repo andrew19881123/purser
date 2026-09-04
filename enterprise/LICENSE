@@ -1,0 +1,44 @@
+Purser Enterprise License
+
+Copyright (c) 2026 andrew19881123. All rights reserved.
+
+This license governs the contents of the "enterprise/" directory of the Purser
+repository (the "Enterprise Software"). It does not apply to the remainder of
+the Purser repository, which is licensed separately under the MIT License.
+
+1. Source-available grant.
+   The Enterprise Software is source-available. Subject to the terms of this
+   license, the licensor ("andrew19881123") grants you a non-exclusive,
+   worldwide, royalty-free right to view, compile, modify, and use the
+   Enterprise Software solely for the purposes of development, evaluation, and
+   testing.
+
+2. Production and commercial use.
+   Any use of the enterprise features in production, or for any commercial
+   purpose, requires a valid commercial license granted by the licensor. Such a
+   license is activated at runtime by a valid license key supplied through the
+   PURSER_LICENSE_KEY environment variable. Use of the enterprise features in
+   production or for commercial purposes without a valid license key is not
+   permitted.
+
+3. Restrictions.
+   You may not:
+   (a) redistribute the enterprise features separately from Purser;
+   (b) remove, disable, bypass, or otherwise circumvent the license-key check or
+       any other license-enforcement mechanism;
+   (c) remove or alter any copyright, trademark, or other proprietary notices.
+
+4. Reservation of rights.
+   All rights not expressly granted in this license are reserved by the
+   licensor. No rights are granted by implication, estoppel, or otherwise.
+
+5. No warranty.
+   THE ENTERPRISE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO
+   EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM OR IN
+   CONNECTION WITH THE ENTERPRISE SOFTWARE OR THE USE OR OTHER DEALINGS IN IT.
+
+6. Commercial licensing.
+   To obtain a commercial license, contact: andrew19881123@gmail.com.

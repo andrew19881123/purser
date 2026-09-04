@@ -3,6 +3,7 @@ module github.com/purser/purser/go/controlplane
 go 1.27.1
 
 require (
+	github.com/purser/purser/enterprise/license v0.0.0
 	github.com/purser/purser/go/gen v0.0.0
 	github.com/purser/purser/go/planner v0.0.0
 	google.golang.org/grpc v1.83.2
@@ -30,3 +31,7 @@ require (
 replace github.com/purser/purser/go/gen => ../gen
 
 replace github.com/purser/purser/go/planner => ../planner
+
+// Enterprise license gate — source-available module under enterprise/ (see
+// LICENSING.md). Resolved via the go.work workspace and this local replace.
+replace github.com/purser/purser/enterprise/license => ../../enterprise/license
