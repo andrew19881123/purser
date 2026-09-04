@@ -15,15 +15,15 @@ image:
   # Pull policy applied to all component images.
   pullPolicy: IfNotPresent
   controlPlane:
-    repository: purser/control-plane
+    repository: ghcr.io/andrew19881123/purser-control-plane
     # Defaults to .Chart.AppVersion when left empty.
-    tag: ""
+    tag: "0.1.0"
   gateway:
-    repository: purser/gateway
-    tag: ""
+    repository: ghcr.io/andrew19881123/purser-gateway
+    tag: "0.1.0"
   ui:
-    repository: purser/ui
-    tag: ""
+    repository: ghcr.io/andrew19881123/purser-ui
+    tag: "0.1.0"
 
 # Secrets for pulling from a private registry, e.g. [{ name: regcred }].
 imagePullSecrets: []

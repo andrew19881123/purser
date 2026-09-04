@@ -1,7 +1,11 @@
 # Deploying Purser
 
-This directory holds everything needed to build the Purser container images and
-run the enterprise control plane on Kubernetes.
+This directory holds everything needed to run the Purser control plane on
+Kubernetes. The three component images are **published on GHCR** and the chart's
+`values.yaml` defaults to them, so a normal install pulls prebuilt images — **no
+build step required** (jump to [§2, Installing with Helm](#2-installing-with-helm)).
+Section 1 below is the **optional "build your own images"** path for a private
+registry or air-gapped mirror.
 
 ```
 deploy/
@@ -18,12 +22,12 @@ deploy/
 
 Purser has three in-cluster components plus an out-of-cluster fleet:
 
-| Component      | Language | Listens on                    | Image                    |
-|----------------|----------|-------------------------------|--------------------------|
-| Control Plane  | Go       | `8080` REST API, `9443` gRPC  | `purser/control-plane`   |
-| API Gateway    | Rust     | `8080` HTTP (OpenAI-compat)   | `purser/gateway`         |
-| Operator UI    | React    | `80` HTTP (nginx SPA)         | `purser/ui`              |
-| **Agents**     | Rust     | run **outside** Kubernetes    | host packages (`packaging/`) |
+| Component      | Language | Listens on                    | Image (GHCR default)                          |
+|----------------|----------|-------------------------------|-----------------------------------------------|
+| Control Plane  | Go       | `8080` REST API, `9443` gRPC  | `ghcr.io/andrew19881123/purser-control-plane` |
+| API Gateway    | Rust     | `8080` HTTP (OpenAI-compat)   | `ghcr.io/andrew19881123/purser-gateway`       |
+| Operator UI    | React    | `80` HTTP (nginx SPA)         | `ghcr.io/andrew19881123/purser-ui`            |
+| **Agents**     | Rust     | run **outside** Kubernetes    | host packages (`packaging/`)                  |
 
 The Control Plane owns the SQLite **Registry** and an internal **PKI** (CA that
 issues mTLS certs to Agents). The Gateway exposes the OpenAI-compatible
@@ -32,7 +36,12 @@ authenticated by a **shared internal token**.
 
 ---
 
-## 1. Building the images
+## 1. Building the images (optional — build your own)
+
+> The published GHCR images (`ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0`)
+> are the default; you only need this section to build and push images to your
+> **own** registry (private / air-gapped). To use the published images, skip
+> straight to [§2](#2-installing-with-helm).
 
 All three images build **locally with Docker** from the **repository root** as
 the build context (the Dockerfiles `COPY` sibling module trees, so the context
@@ -132,13 +141,21 @@ done
 ## 2. Installing with Helm
 
 The chart lives at `deploy/helm/purser` (validated with `helm lint` +
-`helm template`).
+`helm template`). Its default `values.yaml` points at the **published GHCR
+images**, so the default install pulls prebuilt images with **no build step**.
+The chart is not (yet) published to a chart registry, so install it from the
+cloned repo directory.
 
 ```bash
-# Default install (images pulled as purser/<component>:<appVersion>):
+# Default install — pulls the published images from GHCR:
+#   ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0
 helm install purser deploy/helm/purser
 
-# Point at your registry + tag:
+# Expose the Control Plane so the out-of-cluster LAN fleet can enroll (see §3):
+helm install purser deploy/helm/purser \
+  --set controlPlane.service.type=LoadBalancer
+
+# Point at your OWN registry + tag (e.g. after building your own images, §1):
 helm install purser deploy/helm/purser \
   --set image.controlPlane.repository=registry.example.com/purser/control-plane \
   --set image.gateway.repository=registry.example.com/purser/gateway \
@@ -146,6 +163,20 @@ helm install purser deploy/helm/purser \
   --set image.controlPlane.tag=0.1.0 \
   --set image.gateway.tag=0.1.0 \
   --set image.ui.tag=0.1.0
+```
+
+### Image visibility & private registries
+
+For the cluster to pull the default GHCR images anonymously, the packages must be
+**public** (they are — or ask the org admin to set them Public under the GitHub
+org's *Packages* settings). If they are **private** — or you push to a private
+registry of your own — create a pull secret and reference it via
+`imagePullSecrets`:
+
+```bash
+kubectl create secret docker-registry ghcr \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<GITHUB_PAT>
+helm install purser deploy/helm/purser --set imagePullSecrets[0].name=ghcr
 ```
 
 ### Key values

@@ -84,8 +84,15 @@ Nota disco: profilo Rust "lean" (`[profile.dev] debug=0`) per contenere `target/
 - **Deploy pipeline multi-nodo**: ogni agent registra i propri *advertised address* (AgentService + inference) nel `JoinRequest` (`advertised_agent_addr` / `advertised_inference_addr`); il `RegistrationService` li persiste sul Node e il `Resolver` dell'orchestrator li usa (fallback per-faccia alla convenzione `hostname:porta`). Split su 2 nodi (worker→host) con chat reale — dimostrato da `tools/e2e_multinode.sh`.
 - **Calibrazione stime Planner**: modello di decode **memory-bandwidth-bound** (byte di pesi attivi letti per token / banda), con `memBandwidthUtilFraction` (MBU), speed-up speculativo effettivo e rapporto prefill/decode. Le stime tok/s decode/prefill ora escono **non nulle e plausibili** (le costanti restano `CALIBRATABLE` con benchmark reali + `tc netem`).
 - **Validazione vincoli operatore**: `validatePlanMemory` ri-verifica il piano assemblato contro la memoria utile di ogni nodo dopo l'applicazione dei vincoli. Un pin che fa sforare un nodo, o `ForceNodeCount=1` su un modello che non entra sul nodo top, ora producono un `PlanError` motivato invece di un piano con headroom negativo.
+- **Artefatti prebuilt pubblicati (Release + GHCR)** — installare non richiede più di compilare. La **Release `v0.1.0`** allega gli artefatti installabili: pacchetti nativi dell'Agent **`.deb`** (`purser-agent_0.1.0_amd64.deb`) e **`.rpm`** (`purser-agent-0.1.0-1.x86_64.rpm`), i **tarball** dei tre componenti (`purser-{agent,control-plane,gateway}-0.1.0-linux-amd64.tar.gz`) e `SHA256SUMS`. I package nativi (servizio host **non** K8s — accedono a GPU/device, engine RPC non sandboxato) sono prodotti da `make package-agent` con **nfpm**; si installano con `sudo apt install ./…deb` / `yum install ./…rpm` (unit **systemd** + `/etc/purser/agent.env`).
+- **Immagini container su GHCR + Helm chart (default GHCR)** — control-plane / gateway / UI pubblicati come `ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0` (+ `:latest`). Il `deploy/helm/purser/values.yaml` ha i **default puntati su GHCR**, quindi `helm install purser deploy/helm/purser` scarica le immagini prebuilt **senza build**; `--set controlPlane.service.type=LoadBalancer` per farsi raggiungere dagli Agent LAN. Chart validato con `helm lint`/`helm template`. Nota: l'HA multi-replica su K8s resta dietro il **Registry replicato Raft** (enterprise) — il SQLite embedded regge un pod singolo.
 
 ## Backlog / follow-up (onesto, prioritizzato)
+
+**Distribuzione degli artefatti (residui)**
+- **Chart Helm non ancora su registry OCI**: oggi si installa dalla dir del repo clonato (`helm install purser deploy/helm/purser`), **non** con `helm install oci://…` senza clone — pubblicare il chart su un registry OCI è il follow-up.
+- **Visibilità package GHCR**: il pull anonimo richiede package **Public** (in corso: l'admin li sta rendendo pubblici via UI GitHub); finché sono privati serve un `imagePullSecret` (`kubectl create secret docker-registry` + `--set imagePullSecrets`).
+- **Installer host mancanti**: `.pkg` (macOS/pkgbuild) e `.msi` (Windows/WiX) oltre alle unit systemd/launchd + script servizio Windows **che già spediscono**.
 
 **Backend reale**
 - **llama.cpp live**: adapter (flag builder, GGUF reader, metrics parser) implementato e unit-testato; il test di conformità live è opt-in (`PURSER_LLAMACPP_BIN`). Manca la validazione con binari llama.cpp reali + hardware GPU.
@@ -103,9 +110,9 @@ Nota disco: profilo Rust "lean" (`[profile.dev] debug=0`) per contenere `target/
 - Compliance: audit log tamper-evident, isolamento forte multi-tenant, chargeback/usage accounting.
 - Fleet-at-scale: enrollment MDM/Ansible/golden-image, bundle air-gap firmati, CA enterprise.
 - Failover *execution* (il reconciler rileva e pianifica; l'esecuzione del ribilanciamento va completata).
-- **Pacchetti nativi dell'Agent** (servizio host, **non** K8s — accede a GPU/device e l'engine RPC non è sandboxato): `.deb`/`.rpm` (es. via `nfpm` o `cargo-deb`), `.pkg` (macOS), `.msi` (Windows/WiX), oltre alle unit systemd/launchd + script servizio Windows **che già spediscono**; distribuzione a scala flotta via repo **apt/yum + MDM/Ansible/Intune/GPO** (enrollment di massa). Modello descritto in [`packaging/README.md`](packaging/README.md).
-- **Kubernetes/Helm per il control plane**: Dockerfile per control-plane/gateway/UI + **Helm chart** (+ immagini container) come target enterprise. Nota: l'HA multi-replica su K8s dipende dal **Registry replicato Raft** (feature enterprise, vedi sopra) — il Registry SQLite embedded single-node regge solo in un pod singolo.
 - Bundle air-gap firmati, self-update firmato.
+
+> Nota: i **pacchetti nativi dell'Agent** (.deb/.rpm) e **Kubernetes/Helm** con immagini GHCR non sono più backlog — sono **spediti e allegati alla Release / pubblicati su GHCR** (vedi "Chiuso in v0.1.0" e "Distribuzione degli artefatti" sopra). Restano qui solo la distribuzione a scala flotta (repo **apt/yum + MDM/Ansible/Intune/GPO**, enrollment di massa, CA enterprise), già coperta da *Fleet-at-scale*.
 
 **Community / discovery**
 - Gossip SWIM (foca) — oggi discovery = mDNS+seed+heartbeat.

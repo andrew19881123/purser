@@ -37,108 +37,63 @@ If you know Kubernetes, the mental model is familiar:
 - **Bring your own engine** — the Engine Adapter abstracts the backend, so the
   orchestrator never hard-codes model or engine specifics.
 
-## Try it in 2 minutes
+## Install
 
-No GPU required — the end-to-end demo runs entirely on a **built-in mock engine**.
+Purser ships **prebuilt artifacts** for v0.1.0 — you do **not** need to compile
+anything to run it. It comes as **two kinds of workload**, matching its two
+planes:
 
-```bash
-make setup                 # install the project-local toolchain into .toolchain/ (idempotent)
-make build                 # build the Rust workspace (agent + gateway) and Go modules
-source ./env.sh            # put cargo / go / buf on PATH
-( cd go/controlplane && go build -o ../../bin/control-plane . )   # stage the control-plane binary
-bash tools/e2e_full.sh     # the full vertical: enroll -> deploy -> real streaming chat
-```
+- **Control Plane, API Gateway, and UI** — **container images** on GHCR,
+  deployed with **Helm on Kubernetes**.
+- **Agent** — a native **host package** (`.deb` / `.rpm`) or **binary tarball**
+  on each fleet node. The Agent needs the node's GPUs/accelerators and supervises
+  an inference-engine worker that is *not* sandboxed, so it runs on the host and
+  **not** in Kubernetes.
 
-`tools/e2e_full.sh` boots **real binaries** — the control plane, the gateway, and
-one agent node — and walks the entire zero-config path:
-
-1. **Start** the control plane + API gateway.
-2. **Mint** a single-use join token and **enroll** the agent over gRPC; the node
-   reports a real hardware profile and reaches `READY`.
-3. **Seed** a model (`llama-8b`) and trigger a deploy.
-4. The **Planner** computes a layer-split plan; the **Orchestrator** issues
-   `StartEngine`; the mock engine comes up and the deployment goes `ACTIVE`.
-5. Routes **sync** from the control plane to the gateway, so `GET /v1/models`
-   now lists the model.
-6. A **real OpenAI chat completion** streams back over SSE, token by token.
-
-The "money shot" at the end is an actual streaming chat through the gateway —
-illustrative (abbreviated) output:
-
-```text
---- non-stream ---
-{"id":"chatcmpl-...","object":"chat.completion","model":"llama-8b",
- "choices":[{"index":0,"message":{"role":"assistant","content":"..."},"finish_reason":"stop"}]}
-
---- streaming (SSE) ---
-data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{"role":"assistant"}}]}
-data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{"content":"Hello"}}]}
-data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{"content":" there"}}]}
-...
-data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{},"finish_reason":"stop"}]}
-data: [DONE]
-```
-
-Want to see the **split** in action? Run:
-
-```bash
-bash tools/e2e_multinode.sh   # a model too big for one node, split across TWO
-```
-
-It enrolls two agents (each with its own advertised address), picks a model size
-that does **not** fit on one node but **does** fit across two, deploys it, and
-asserts the real properties of a pipeline: a plan with **two assignments
-(HOST + WORKER)** and a `pipeline_order` of length 2, the **worker started before
-the host** on distinct addresses, a deployment that reaches `ACTIVE`, and a real
-chat (non-stream + SSE) proxied to the pipeline host.
-
-## Deployment
-
-Purser ships as **two kinds of workload**, matching its two planes. The **Agent**
-is a native **host package** on your fleet nodes — it needs the node's
-GPUs/accelerators and supervises an inference engine worker that is *not*
-sandboxed, so it runs on the host and **not** in Kubernetes. The **Control Plane,
-API Gateway, and UI** are **container images** deployed with **Helm on
-Kubernetes**.
+Everything is published: the container images live on **GHCR** and the
+packages/tarballs (`+ SHA256SUMS`) are attached to the
+[**v0.1.0 release**](https://github.com/andrew19881123/purser/releases/tag/v0.1.0).
 
 ### Kubernetes (Helm) — Control Plane, Gateway, UI
 
-The **Helm chart** lives in [`deploy/helm/purser`](deploy/helm/purser) and the
-**Dockerfiles** in [`deploy/docker`](deploy/docker). There is **no public image
-registry yet** (one is planned), so for now **build the images and push them to
-your own container registry**, then install the chart pointed at those images:
+The chart's default `values.yaml` already points at the published GHCR images
+(`ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0`), so there is
+**nothing to build** — Helm pulls the images for you. The chart is not yet on a
+chart registry, so install it from the cloned repo:
 
 ```bash
-# 1. Build the three images (run from the repo root — the build context is the repo root):
-docker build -f deploy/docker/control-plane.Dockerfile -t <registry>/purser-control-plane:0.1.0 .
-docker build -f deploy/docker/gateway.Dockerfile       -t <registry>/purser-gateway:0.1.0 .
-docker build -f deploy/docker/ui.Dockerfile            -t <registry>/purser-ui:0.1.0 .
-
-# 2. Push them to your registry:
-docker push <registry>/purser-control-plane:0.1.0
-docker push <registry>/purser-gateway:0.1.0
-docker push <registry>/purser-ui:0.1.0
-
-# 3. Install the chart, pointing each component at your images:
+git clone https://github.com/andrew19881123/purser.git
+cd purser
 helm install purser deploy/helm/purser \
-  --set image.controlPlane.repository=<registry>/purser-control-plane --set image.controlPlane.tag=0.1.0 \
-  --set image.gateway.repository=<registry>/purser-gateway           --set image.gateway.tag=0.1.0 \
-  --set image.ui.repository=<registry>/purser-ui                     --set image.ui.tag=0.1.0 \
   --set controlPlane.service.type=LoadBalancer   # so out-of-cluster LAN Agents can reach it
 ```
 
+`--set controlPlane.service.type=LoadBalancer` (or `NodePort`) exposes the
+Control Plane's gRPC RegistrationService + REST API so Agents running **outside**
+the cluster can enroll. With the default `ClusterIP` the Control Plane is
+reachable only inside the cluster.
+
+**Image visibility.** The GHCR packages must be **public** for Helm to pull them
+anonymously (they are — or ask the org admin to set them Public). If you keep
+them **private**, create a pull secret and reference it:
+
+```bash
+kubectl create secret docker-registry ghcr \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<GITHUB_PAT>
+helm install purser deploy/helm/purser --set imagePullSecrets[0].name=ghcr
+```
+
 Keep `replicaCount: 1`: the SQLite **Registry** and internal **PKI** are
-single-writer. **Multi-replica HA** on Kubernetes requires the **Raft-replicated
-Registry**, an enterprise (source-available, key-gated) feature.
+single-writer. **Multi-replica HA** requires the **Raft-replicated Registry**, an
+enterprise (source-available, key-gated) feature.
 
 ### Linux fleet (native `.deb` / `.rpm` packages) — the Agent
 
-Build the Agent's native packages, then install with your distro's package
-manager:
+Download the package for your distro from the
+[**v0.1.0 release**](https://github.com/andrew19881123/purser/releases/tag/v0.1.0)
+and install it with your package manager — **no build required**:
 
 ```bash
-make package-agent   # produces dist/purser-agent_0.1.0_amd64.deb + dist/purser-agent-0.1.0-1.x86_64.rpm
-
 sudo apt install ./purser-agent_0.1.0_amd64.deb        # Debian / Ubuntu
 sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm     # RHEL / Fedora / openSUSE
 ```
@@ -146,8 +101,23 @@ sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm     # RHEL / Fedora / openSUS
 The package installs the `purser-agent` **systemd** service and a config file at
 `/etc/purser/agent.env` — set `PURSER_JOIN_TOKEN` and the control-plane address
 there, then `sudo systemctl enable --now purser-agent`. At **fleet scale**,
-publish the `.deb` / `.rpm` to an internal **apt / yum** repository and roll them
+mirror the `.deb` / `.rpm` into an internal **apt / yum** repository and roll them
 out with **MDM / Ansible / Intune**.
+
+### Binaries (tarballs)
+
+If you don't use the native packages, grab the prebuilt Linux binaries from the
+same release — one tarball per component — and verify them against the published
+`SHA256SUMS`:
+
+```bash
+# Release assets (linux-amd64):
+#   purser-agent-0.1.0-linux-amd64.tar.gz
+#   purser-control-plane-0.1.0-linux-amd64.tar.gz
+#   purser-gateway-0.1.0-linux-amd64.tar.gz
+sha256sum -c SHA256SUMS                                 # verify against the release checksums
+tar -xzf purser-agent-0.1.0-linux-amd64.tar.gz
+```
 
 ### macOS / Windows — the Agent
 
@@ -156,7 +126,7 @@ Install the Agent as a **launchd** daemon (macOS) or a **Windows service** — s
 
 ---
 
-For the full **Kubernetes** guide (image build internals, chart values,
+For the full **Kubernetes** guide (chart values, image visibility / pull secrets,
 networking to the LAN fleet) see [`deploy/README.md`](deploy/README.md); for host
 install and the **enterprise deployment model**, see
 [`packaging/README.md`](packaging/README.md).
@@ -220,7 +190,7 @@ spread across machines.
 - **Add nodes.** Install the `purser-agent` on each machine as a managed service
   — native **`.deb` / `.rpm`** packages (via **apt / yum**), or the systemd /
   launchd / Windows service units — and point it at the control plane with a join
-  token. See [Deployment](#deployment) for the commands; the service unit files
+  token. See [Install](#install) for the commands; the service unit files
   and environment templates are in [`packaging/`](packaging/README.md).
 - **Deploy a model.** Register it and deploy via the control plane REST API:
 
@@ -255,6 +225,64 @@ internet), and the full environment-variable reference, and
 picture — agents as native host packages, control plane/gateway/UI as containers
 + Helm on Kubernetes — see the **Enterprise deployment model** in
 [`packaging/README.md`](packaging/README.md).
+
+## Build from source & local demo
+
+You only need this if you want to **try the zero-config flow without a cluster**
+(everything runs on one host against the built-in **mock engine** — no GPU
+required), or if you're **developing** Purser. This is **not** the way to install
+a real deployment — for that, use the prebuilt artifacts in [Install](#install).
+
+```bash
+make setup                 # install the project-local toolchain into .toolchain/ (idempotent)
+make build                 # build the Rust workspace (agent + gateway) and Go modules
+source ./env.sh            # put cargo / go / buf on PATH
+( cd go/controlplane && go build -o ../../bin/control-plane . )   # stage the control-plane binary
+bash tools/e2e_full.sh     # the full vertical: enroll -> deploy -> real streaming chat
+```
+
+`tools/e2e_full.sh` boots **real binaries** — the control plane, the gateway, and
+one agent node — and walks the entire zero-config path:
+
+1. **Start** the control plane + API gateway.
+2. **Mint** a single-use join token and **enroll** the agent over gRPC; the node
+   reports a real hardware profile and reaches `READY`.
+3. **Seed** a model (`llama-8b`) and trigger a deploy.
+4. The **Planner** computes a layer-split plan; the **Orchestrator** issues
+   `StartEngine`; the mock engine comes up and the deployment goes `ACTIVE`.
+5. Routes **sync** from the control plane to the gateway, so `GET /v1/models`
+   now lists the model.
+6. A **real OpenAI chat completion** streams back over SSE, token by token.
+
+The "money shot" at the end is an actual streaming chat through the gateway —
+illustrative (abbreviated) output:
+
+```text
+--- non-stream ---
+{"id":"chatcmpl-...","object":"chat.completion","model":"llama-8b",
+ "choices":[{"index":0,"message":{"role":"assistant","content":"..."},"finish_reason":"stop"}]}
+
+--- streaming (SSE) ---
+data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{"role":"assistant"}}]}
+data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{"content":"Hello"}}]}
+data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{"content":" there"}}]}
+...
+data: {"object":"chat.completion.chunk","model":"llama-8b","choices":[{"delta":{},"finish_reason":"stop"}]}
+data: [DONE]
+```
+
+Want to see the **split** in action? Run:
+
+```bash
+bash tools/e2e_multinode.sh   # a model too big for one node, split across TWO
+```
+
+It enrolls two agents (each with its own advertised address), picks a model size
+that does **not** fit on one node but **does** fit across two, deploys it, and
+asserts the real properties of a pipeline: a plan with **two assignments
+(HOST + WORKER)** and a `pipeline_order` of length 2, the **worker started before
+the host** on distinct addresses, a deployment that reaches `ACTIVE`, and a real
+chat (non-stream + SSE) proxied to the pipeline host.
 
 ## Project layout & development
 
