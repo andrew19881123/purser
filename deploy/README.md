@@ -167,11 +167,10 @@ helm install purser deploy/helm/purser \
 
 ### Image visibility & private registries
 
-For the cluster to pull the default GHCR images anonymously, the packages must be
-**public** (they are — or ask the org admin to set them Public under the GitHub
-org's *Packages* settings). If they are **private** — or you push to a private
-registry of your own — create a pull secret and reference it via
-`imagePullSecrets`:
+The official GHCR images are **public** — an anonymous `docker pull` works — so
+the default install needs **no pull secret**. You only need one if you push the
+images to a **private** registry of your own (or make your fork's packages
+private); create it and reference it via `imagePullSecrets`:
 
 ```bash
 kubectl create secret docker-registry ghcr \

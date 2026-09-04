@@ -57,9 +57,9 @@ packages/tarballs (`+ SHA256SUMS`) are attached to the
 ### Kubernetes (Helm) — Control Plane, Gateway, UI
 
 The chart's default `values.yaml` already points at the published GHCR images
-(`ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0`), so there is
-**nothing to build** — Helm pulls the images for you. The chart is not yet on a
-chart registry, so install it from the cloned repo:
+(`ghcr.io/andrew19881123/purser-{control-plane,gateway,ui}:0.1.0`), which are
+**public** — Helm pulls them for you with **no build step and no pull secret**.
+The chart is not yet on a chart registry, so install it from the cloned repo:
 
 ```bash
 git clone https://github.com/andrew19881123/purser.git
@@ -73,15 +73,9 @@ Control Plane's gRPC RegistrationService + REST API so Agents running **outside*
 the cluster can enroll. With the default `ClusterIP` the Control Plane is
 reachable only inside the cluster.
 
-**Image visibility.** The GHCR packages must be **public** for Helm to pull them
-anonymously (they are — or ask the org admin to set them Public). If you keep
-them **private**, create a pull secret and reference it:
-
-```bash
-kubectl create secret docker-registry ghcr \
-  --docker-server=ghcr.io --docker-username=<user> --docker-password=<GITHUB_PAT>
-helm install purser deploy/helm/purser --set imagePullSecrets[0].name=ghcr
-```
+> **Private registry (optional).** Only if you host the images in your **own**
+> private registry do you need a pull secret — create one and reference it with
+> `--set imagePullSecrets[0].name=ghcr` (see [`deploy/README.md`](deploy/README.md)).
 
 Keep `replicaCount: 1`: the SQLite **Registry** and internal **PKI** are
 single-writer. **Multi-replica HA** requires the **Raft-replicated Registry**, an
