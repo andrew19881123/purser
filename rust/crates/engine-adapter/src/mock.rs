@@ -15,7 +15,9 @@ use async_trait::async_trait;
 use purser_proto::v1::{EngineEvent, EngineEventKind, EngineMetrics, EngineParams, Role};
 use tokio::sync::mpsc;
 
-use crate::backend::{Capabilities, EngineBackend, EngineHandle, HostStart, SpecMethod, WorkerStart};
+use crate::backend::{
+    Capabilities, EngineBackend, EngineHandle, HostStart, SpecMethod, WorkerStart,
+};
 use crate::error::{EngineError, Result};
 
 /// Bounded capacity of the per-engine event channel.
@@ -247,7 +249,11 @@ async fn run_lifecycle(
 ) {
     // LOADING
     let _ = tx
-        .send(make_event(EngineEventKind::Loading, "loading model weights", None))
+        .send(make_event(
+            EngineEventKind::Loading,
+            "loading model weights",
+            None,
+        ))
         .await;
 
     tokio::time::sleep(config.load_delay).await;
@@ -262,7 +268,11 @@ async fn run_lifecycle(
         }
     }
     let _ = tx
-        .send(make_event(EngineEventKind::Ready, "engine ready to serve", None))
+        .send(make_event(
+            EngineEventKind::Ready,
+            "engine ready to serve",
+            None,
+        ))
         .await;
 
     // METRICS
@@ -292,7 +302,9 @@ async fn run_lifecycle(
             }
         };
         if should_emit {
-            let _ = tx.send(make_event(EngineEventKind::Error, detail, None)).await;
+            let _ = tx
+                .send(make_event(EngineEventKind::Error, detail, None))
+                .await;
         }
     }
 }

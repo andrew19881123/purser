@@ -123,8 +123,7 @@ impl AgentConfig {
                 .parse()
                 .with_context(|| format!("invalid PURSER_INFERENCE_PORT: {port:?}"))?;
         }
-        cfg.advertised_agent_addr =
-            non_empty(std::env::var("PURSER_AGENT_ADVERTISED_ADDR").ok());
+        cfg.advertised_agent_addr = non_empty(std::env::var("PURSER_AGENT_ADVERTISED_ADDR").ok());
         cfg.advertised_inference_addr =
             non_empty(std::env::var("PURSER_INFERENCE_ADVERTISED_ADDR").ok());
 
@@ -182,15 +181,19 @@ fn derive_advertised_addrs(
     // IPv6, so both advertised addresses stay dial-able.
     let agent = match explicit_agent {
         Some(a) => a.to_string(),
-        None => SocketAddr::new(host.expect("host resolved when agent addr derived"), bind_addr.port())
-            .to_string(),
+        None => SocketAddr::new(
+            host.expect("host resolved when agent addr derived"),
+            bind_addr.port(),
+        )
+        .to_string(),
     };
     let inference = match explicit_inference {
         Some(i) => i.to_string(),
-        None => {
-            SocketAddr::new(host.expect("host resolved when inference addr derived"), inference_port)
-                .to_string()
-        }
+        None => SocketAddr::new(
+            host.expect("host resolved when inference addr derived"),
+            inference_port,
+        )
+        .to_string(),
     };
     (agent, inference)
 }

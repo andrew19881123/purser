@@ -137,7 +137,10 @@ impl LlamaCppBackend {
     /// Discover model metadata from a GGUF file (architecture, layer count,
     /// context length, quantization, MoE-ness). Independent of any running
     /// engine and safe to call without llama.cpp installed.
-    pub fn inspect_gguf<P: AsRef<Path>>(&self, path: P) -> std::result::Result<GgufDiscovery, GgufError> {
+    pub fn inspect_gguf<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> std::result::Result<GgufDiscovery, GgufError> {
         gguf::read_metadata_from_file(path).map(|m| m.discovery())
     }
 
@@ -180,7 +183,12 @@ impl LlamaCppBackend {
     }
 
     fn lookup(&self, handle: &EngineHandle) -> Option<Arc<Instance>> {
-        self.state.lock().unwrap().instances.get(handle.id()).cloned()
+        self.state
+            .lock()
+            .unwrap()
+            .instances
+            .get(handle.id())
+            .cloned()
     }
 }
 
@@ -372,7 +380,9 @@ async fn run_lifecycle(
 /// Read the next line from an optional line reader. When the reader is `None`
 /// the future never resolves (the branch is guarded by `is_some()`), so this is
 /// only ever polled with `Some`.
-async fn next_line<R: AsyncRead + Unpin>(reader: &mut Option<Lines<BufReader<R>>>) -> Option<String> {
+async fn next_line<R: AsyncRead + Unpin>(
+    reader: &mut Option<Lines<BufReader<R>>>,
+) -> Option<String> {
     match reader.as_mut() {
         Some(lines) => match lines.next_line().await {
             Ok(Some(l)) => Some(l),
@@ -400,7 +410,11 @@ async fn handle_line(inst: &Arc<Instance>, tx: &mpsc::Sender<EngineEvent>, line:
 
     if became_ready {
         let _ = tx
-            .send(make_event(EngineEventKind::Ready, "engine ready to serve", None))
+            .send(make_event(
+                EngineEventKind::Ready,
+                "engine ready to serve",
+                None,
+            ))
             .await;
         let m = current_metrics(inst);
         let _ = tx
@@ -432,7 +446,9 @@ async fn on_unexpected_exit(
         Err(e) => format!("failed to wait on llama.cpp process: {e}"),
     };
     *inst.crash_detail.lock().unwrap() = Some(detail.clone());
-    let _ = tx.send(make_event(EngineEventKind::Error, &detail, None)).await;
+    let _ = tx
+        .send(make_event(EngineEventKind::Error, &detail, None))
+        .await;
 }
 
 /// Gracefully stop a child: `SIGTERM`, wait up to `grace`, then `SIGKILL`.
@@ -509,10 +525,11 @@ mod tests {
     fn test_config() -> LlamaCppConfig {
         // Absolute, guaranteed-missing binaries so spawn attempts fail
         // deterministically regardless of whether llama.cpp is installed.
-        let mut c = LlamaCppConfig::default();
-        c.rpc_server_bin = "/nonexistent/purser/rpc-server".into();
-        c.llama_server_bin = "/nonexistent/purser/llama-server".into();
-        c
+        LlamaCppConfig {
+            rpc_server_bin: "/nonexistent/purser/rpc-server".into(),
+            llama_server_bin: "/nonexistent/purser/llama-server".into(),
+            ..Default::default()
+        }
     }
 
     #[test]

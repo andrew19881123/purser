@@ -290,12 +290,14 @@ impl LinkBencher {
 
         let sample = self.probe.sample(target).await?;
         let mut state = self.state.lock().unwrap();
-        let entry = state.entry(target.to_string()).or_insert_with(|| TargetState {
-            rtt: Ewma::new(self.alpha),
-            bw: Ewma::new(self.alpha),
-            last: LinkMetric::default(),
-            measured_at: Instant::now(),
-        });
+        let entry = state
+            .entry(target.to_string())
+            .or_insert_with(|| TargetState {
+                rtt: Ewma::new(self.alpha),
+                bw: Ewma::new(self.alpha),
+                last: LinkMetric::default(),
+                measured_at: Instant::now(),
+            });
         let rtt = entry.rtt.update(sample.rtt_ms);
         let bw = entry.bw.update(sample.bandwidth_gbs);
         let metric = LinkMetric {
@@ -406,9 +408,9 @@ mod tests {
         let bencher = LinkBencher::new("a", probe, 0.5, Duration::from_secs(60));
         bencher.benchmark("b").await.unwrap();
         bencher.benchmark("b").await.unwrap(); // served from cache
-        // Only one real probe call despite two benchmark() calls.
-        // (Downcast via a second handle isn't available; assert via behaviour:
-        // the cached path returns without error and identical values.)
+                                               // Only one real probe call despite two benchmark() calls.
+                                               // (Downcast via a second handle isn't available; assert via behaviour:
+                                               // the cached path returns without error and identical values.)
         let m = bencher.benchmark("b").await.unwrap();
         assert!((m.bandwidth_gbs - 5.0).abs() < 1e-9);
     }

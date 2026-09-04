@@ -91,8 +91,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Link-benchmark reflector for peers, on the agent port + 1 (best-effort).
-    let reflector_addr =
-        SocketAddr::new(config.bind_addr.ip(), config.bind_addr.port().wrapping_add(1));
+    let reflector_addr = SocketAddr::new(
+        config.bind_addr.ip(),
+        config.bind_addr.port().wrapping_add(1),
+    );
     match BandwidthReflector::bind(&reflector_addr.to_string()).await {
         Ok(reflector) => {
             tracing::info!(%reflector_addr, "link-benchmark reflector listening");
@@ -275,8 +277,7 @@ async fn main() -> anyhow::Result<()> {
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     // `try_init` so tests or repeated init never panic.
     let _ = fmt().with_env_filter(filter).try_init();
 }

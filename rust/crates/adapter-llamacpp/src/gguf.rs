@@ -83,7 +83,10 @@ pub enum GgufValue {
     Bool(bool),
     String(String),
     /// An array's element type and length (contents skipped).
-    Array { elem_type: u32, len: u64 },
+    Array {
+        elem_type: u32,
+        len: u64,
+    },
 }
 
 impl GgufValue {
@@ -136,7 +139,9 @@ impl GgufMetadata {
     /// Look up an architecture-scoped key (`<arch>.<suffix>`).
     fn arch_u32(&self, suffix: &str) -> Option<u32> {
         let arch = self.architecture()?;
-        self.kv.get(&format!("{arch}.{suffix}")).and_then(|v| v.as_u32())
+        self.kv
+            .get(&format!("{arch}.{suffix}"))
+            .and_then(|v| v.as_u32())
     }
 
     /// Number of transformer blocks (`<arch>.block_count`) — the layer count.
@@ -332,15 +337,17 @@ fn read_array<R: Read + Seek>(r: &mut R) -> Result<GgufValue, GgufError> {
     let elem_type = read_u32(r)?;
     let len = read_u64(r)?;
     if len > MAX_COUNT {
-        return Err(GgufError::Malformed(format!("implausible array length {len}")));
+        return Err(GgufError::Malformed(format!(
+            "implausible array length {len}"
+        )));
     }
 
     match scalar_size(elem_type) {
         Some(size) => {
             // Fixed-size elements: skip in one seek.
-            let bytes = (len as i64).checked_mul(size as i64).ok_or_else(|| {
-                GgufError::Malformed("array byte length overflow".to_string())
-            })?;
+            let bytes = (len as i64)
+                .checked_mul(size as i64)
+                .ok_or_else(|| GgufError::Malformed("array byte length overflow".to_string()))?;
             r.seek(SeekFrom::Current(bytes))?;
         }
         None if elem_type == vtype::STRING => {
@@ -380,7 +387,9 @@ fn scalar_size(elem_type: u32) -> Option<u64> {
 fn read_string<R: Read>(r: &mut R) -> Result<String, GgufError> {
     let len = read_u64(r)?;
     if len > MAX_STRING_LEN {
-        return Err(GgufError::Malformed(format!("string too long ({len} bytes)")));
+        return Err(GgufError::Malformed(format!(
+            "string too long ({len} bytes)"
+        )));
     }
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf)?;
@@ -455,7 +464,8 @@ mod tests {
             self.str(key);
             self.buf.extend_from_slice(&vtype::ARRAY.to_le_bytes());
             self.buf.extend_from_slice(&vtype::STRING.to_le_bytes());
-            self.buf.extend_from_slice(&(vals.len() as u64).to_le_bytes());
+            self.buf
+                .extend_from_slice(&(vals.len() as u64).to_le_bytes());
             for v in vals {
                 self.str(v);
             }

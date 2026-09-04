@@ -171,8 +171,10 @@ mod tests {
 
     #[test]
     fn absolute_missing_binary_reported_absent() {
-        let mut c = LlamaCppConfig::default();
-        c.rpc_server_bin = PathBuf::from("/nonexistent/definitely/rpc-server");
+        let c = LlamaCppConfig {
+            rpc_server_bin: PathBuf::from("/nonexistent/definitely/rpc-server"),
+            ..Default::default()
+        };
         assert!(!c.binaries_present());
     }
 }

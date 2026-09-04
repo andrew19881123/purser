@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(wd.record_miss(), Liveness::Healthy); // 1
         assert_eq!(wd.record_miss(), Liveness::Healthy); // 2
         assert_eq!(wd.record_miss(), Liveness::Unhealthy); // 3 == threshold
-        // A beat clears it.
+                                                           // A beat clears it.
         wd.beat();
         assert_eq!(wd.liveness(), Liveness::Healthy);
         assert_eq!(wd.missed(), 0);
@@ -282,7 +282,9 @@ mod tests {
 
     #[test]
     fn health_monitor_drives_state_machine() {
-        let machine = Arc::new(Mutex::new(NodeStateMachine::starting_at(NodeState::Running)));
+        let machine = Arc::new(Mutex::new(NodeStateMachine::starting_at(
+            NodeState::Running,
+        )));
         let mut mon = NodeHealthMonitor::new(Arc::clone(&machine), 2);
 
         assert_eq!(mon.on_heartbeat_miss(), Liveness::Healthy); // 1

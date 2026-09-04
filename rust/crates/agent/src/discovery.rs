@@ -252,7 +252,7 @@ impl Discoverer for MdnsDiscoverer {
                         });
                     }
                 }
-                Ok(Ok(_)) => {} // other events: ignore
+                Ok(Ok(_)) => {}      // other events: ignore
                 Ok(Err(_)) => break, // channel closed
                 Err(_) => break,     // browse window elapsed
             }
@@ -553,9 +553,7 @@ mod tests {
         }
         assert_eq!(seen.len(), 3);
         assert!(seen.iter().all(|h| h.node_id == "node-7"));
-        assert!(seen
-            .iter()
-            .all(|h| h.state == NodeState::Running as i32));
+        assert!(seen.iter().all(|h| h.state == NodeState::Running as i32));
         assert!(seen.iter().all(|h| h.ts.is_some()));
     }
 }

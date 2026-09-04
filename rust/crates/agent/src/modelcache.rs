@@ -57,12 +57,14 @@ pub enum CacheError {
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CacheError::ChecksumMismatch { expected, actual } => write!(
-                f,
-                "checksum mismatch: expected {expected}, got {actual}"
-            ),
+            CacheError::ChecksumMismatch { expected, actual } => {
+                write!(f, "checksum mismatch: expected {expected}, got {actual}")
+            }
             CacheError::TooLarge { size, budget } => {
-                write!(f, "artifact ({size} bytes) exceeds cache budget ({budget} bytes)")
+                write!(
+                    f,
+                    "artifact ({size} bytes) exceeds cache budget ({budget} bytes)"
+                )
             }
             CacheError::Io(e) => write!(f, "cache io error: {e}"),
         }
@@ -252,7 +254,11 @@ impl ModelCache {
 
     /// Pin `model_ref` so it is never evicted (e.g. the running model).
     pub fn pin(&self, model_ref: &str) {
-        self.inner.lock().unwrap().pinned.insert(model_ref.to_string());
+        self.inner
+            .lock()
+            .unwrap()
+            .pinned
+            .insert(model_ref.to_string());
     }
 
     /// Remove a pin.
@@ -262,7 +268,13 @@ impl ModelCache {
 
     /// Total bytes currently accounted in the cache.
     pub fn total_bytes(&self) -> u64 {
-        self.inner.lock().unwrap().entries.values().map(|e| e.size).sum()
+        self.inner
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .map(|e| e.size)
+            .sum()
     }
 
     /// Logical model refs currently cached (sorted).

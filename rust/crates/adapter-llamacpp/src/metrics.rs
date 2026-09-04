@@ -174,7 +174,9 @@ fn mib_to_gib(mib: f64) -> f64 {
 
 /// A GPU/accelerator buffer line (as opposed to a CPU one).
 fn is_gpu_line(line: &str) -> bool {
-    const MARKERS: &[&str] = &["CUDA", "ROCm", "HIP", "Metal", "Vulkan", "SYCL", "GPU", "Kompute"];
+    const MARKERS: &[&str] = &[
+        "CUDA", "ROCm", "HIP", "Metal", "Vulkan", "SYCL", "GPU", "Kompute",
+    ];
     MARKERS.iter().any(|m| line.contains(m))
 }
 
@@ -197,7 +199,9 @@ fn last_float_before(s: &str, needle: &str) -> Option<f64> {
     let idx = s.find(needle)?;
     let head = s[..idx].trim_end();
     let start = head
-        .rfind(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+        .rfind(|c: char| {
+            !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+        })
         .map(|i| i + 1)
         .unwrap_or(0);
     head[start..].parse::<f64>().ok()
@@ -224,7 +228,7 @@ fn acceptance_ratio(line: &str) -> Option<f64> {
     let last = line
         .split(|c: char| c.is_whitespace() || c == '=' || c == ',')
         .filter_map(|tok| tok.parse::<f64>().ok())
-        .last()?;
+        .next_back()?;
     if (0.0..=1.0).contains(&last) {
         Some(last)
     } else {

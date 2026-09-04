@@ -6,8 +6,8 @@
 //!
 //! - Worker: `rpc-server -H <ip> -p <port>` — provides compute only.
 //! - Host:   `llama-server -m <model.gguf> --rpc <ip1:port,ip2:port,...> -ngl 99
-//!           --host 0.0.0.0 --port <p> -c <ctx>` — loads the GGUF and shards
-//!           layers across the workers.
+//!   --host 0.0.0.0 --port <p> -c <ctx>` — loads the GGUF and shards
+//!   layers across the workers.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -80,15 +80,16 @@ pub fn build_host_launch(
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(config.n_gpu_layers);
 
-    let mut args: Vec<String> = Vec::new();
-    args.push("-m".to_string());
-    args.push(model_ref.to_string());
-    args.push("--host".to_string());
-    args.push(host_bind.clone());
-    args.push("--port".to_string());
-    args.push(port.to_string());
-    args.push("-ngl".to_string());
-    args.push(ngl.to_string());
+    let mut args: Vec<String> = vec![
+        "-m".to_string(),
+        model_ref.to_string(),
+        "--host".to_string(),
+        host_bind.clone(),
+        "--port".to_string(),
+        port.to_string(),
+        "-ngl".to_string(),
+        ngl.to_string(),
+    ];
 
     if params.context > 0 {
         args.push("-c".to_string());
@@ -237,7 +238,10 @@ mod tests {
         let workers = vec!["10.0.0.2:50052".to_string(), "10.0.0.3:50052".to_string()];
         let launch = build_host_launch(&cfg(), "/m.gguf", &workers, &params).unwrap();
         let joined = launch.args.join(" ");
-        assert!(joined.contains("--rpc 10.0.0.2:50052,10.0.0.3:50052"), "{joined}");
+        assert!(
+            joined.contains("--rpc 10.0.0.2:50052,10.0.0.3:50052"),
+            "{joined}"
+        );
         assert!(joined.contains("--draft-max 16"), "{joined}");
         assert!(joined.contains("-c 8192"), "{joined}");
     }

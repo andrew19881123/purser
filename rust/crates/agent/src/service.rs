@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use purser_proto::v1::agent_service_server::AgentService;
 use purser_proto::v1::{
-    DrainReply, DrainRequest, EngineEvent, EngineMetrics, EngineParams, HardwareProfile,
-    HealthReport, HealthRequest, LinkMetric, LinkRequest, NodeState, ProbeRequest, Role,
-    StartEngineRequest, StopEngineRequest, StopReply, UpdateReply, UpdateRequest,
+    DrainReply, DrainRequest, EngineEvent, EngineMetrics, HardwareProfile, HealthReport,
+    HealthRequest, LinkMetric, LinkRequest, NodeState, ProbeRequest, Role, StartEngineRequest,
+    StopEngineRequest, StopReply, UpdateReply, UpdateRequest,
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
@@ -96,7 +96,10 @@ pub struct AgentHeartbeatSource {
 impl AgentHeartbeatSource {
     /// Build a heartbeat source over the shared state machine + supervisor.
     pub fn new(machine: Arc<Mutex<NodeStateMachine>>, supervisor: Arc<Supervisor>) -> Self {
-        Self { machine, supervisor }
+        Self {
+            machine,
+            supervisor,
+        }
     }
 }
 
@@ -186,7 +189,7 @@ impl AgentService for AgentSvc {
             peers: req.peers,
             // TODO(phase2): allocate a real engine bind port; the mock ignores it.
             bind_addr: "0.0.0.0:0".to_string(),
-            params: req.params.unwrap_or(EngineParams::default()),
+            params: req.params.unwrap_or_default(),
         };
 
         let rx = self.supervisor.start(spec);
@@ -236,10 +239,7 @@ impl AgentService for AgentSvc {
 
     // ---- Drain: REAL --------------------------------------------------------
     // Quiesce: flip to DRAINING and stop the running engine.
-    async fn drain(
-        &self,
-        _request: Request<DrainRequest>,
-    ) -> Result<Response<DrainReply>, Status> {
+    async fn drain(&self, _request: Request<DrainRequest>) -> Result<Response<DrainReply>, Status> {
         tracing::info!("drain requested");
         {
             let mut sm = self.machine.lock().unwrap();
@@ -380,9 +380,7 @@ mod tests {
     #[tokio::test]
     async fn drain_transitions_to_draining() {
         let s = svc();
-        s.drain(Request::new(DrainRequest {}))
-            .await
-            .expect("drain");
+        s.drain(Request::new(DrainRequest {})).await.expect("drain");
         assert_eq!(s.machine.lock().unwrap().current(), NodeState::Draining);
     }
 }

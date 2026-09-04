@@ -85,8 +85,7 @@ async fn main() -> ExitCode {
 fn tracing_subscriber_init() {
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let _ = fmt()
         .json()

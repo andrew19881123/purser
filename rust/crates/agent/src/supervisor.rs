@@ -312,7 +312,7 @@ impl Supervisor {
 
     /// The most recent metrics sample observed from the engine, if any.
     pub fn latest_metrics(&self) -> Option<EngineMetrics> {
-        self.shared.latest_metrics.lock().unwrap().clone()
+        *self.shared.latest_metrics.lock().unwrap()
     }
 
     /// Current engine phase.
@@ -576,7 +576,10 @@ impl Supervisor {
                 // synthetic endpoint but nothing actually listens. Stand up a
                 // real OpenAI-compatible server so the gateway can proxy a live
                 // chat; the reported endpoint becomes its root address.
-                let endpoint = self.start_mock_inference(&spec.model_ref).await.unwrap_or(h.endpoint);
+                let endpoint = self
+                    .start_mock_inference(&spec.model_ref)
+                    .await
+                    .unwrap_or(h.endpoint);
                 *self.shared.endpoint.lock().unwrap() = Some(endpoint.clone());
                 tracing::info!(endpoint = %endpoint, "engine host serving");
                 Ok((h.handle, h.events))
@@ -592,7 +595,7 @@ impl Supervisor {
             tokio::select! {
                 maybe = events.recv() => match maybe {
                     Some(ev) => {
-                        if let Some(m) = ev.metrics.clone() {
+                        if let Some(m) = ev.metrics {
                             self.set_metrics(m);
                         }
                         match kind_of(ev.kind) {
@@ -654,7 +657,7 @@ impl Supervisor {
             }
             match self.backend.metrics(handle).await {
                 Ok(m) => {
-                    self.set_metrics(m.clone());
+                    self.set_metrics(m);
                     // Best-effort periodic METRICS event; ignore a full/closed channel.
                     let _ = out.try_send(metrics_event(m));
                 }
@@ -662,11 +665,15 @@ impl Supervisor {
                 Err(EngineError::Unavailable(_)) => return false, // stopped externally
                 Err(EngineError::Crashed(detail)) => {
                     self.set_phase(EnginePhase::Crashed);
-                    let _ = out.send(err_event(&format!("engine crashed: {detail}"))).await;
+                    let _ = out
+                        .send(err_event(&format!("engine crashed: {detail}")))
+                        .await;
                     return true;
                 }
                 Err(e) => {
-                    let _ = out.send(err_event(&format!("metrics unavailable: {e}"))).await;
+                    let _ = out
+                        .send(err_event(&format!("metrics unavailable: {e}")))
+                        .await;
                     return true;
                 }
             }
@@ -785,10 +792,22 @@ mod tests {
     fn backoff_base_is_geometric_and_capped() {
         let initial = Duration::from_millis(100);
         let max = Duration::from_secs(1);
-        assert_eq!(backoff_base(initial, max, 2.0, 0), Duration::from_millis(100));
-        assert_eq!(backoff_base(initial, max, 2.0, 1), Duration::from_millis(200));
-        assert_eq!(backoff_base(initial, max, 2.0, 2), Duration::from_millis(400));
-        assert_eq!(backoff_base(initial, max, 2.0, 3), Duration::from_millis(800));
+        assert_eq!(
+            backoff_base(initial, max, 2.0, 0),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            backoff_base(initial, max, 2.0, 1),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            backoff_base(initial, max, 2.0, 2),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            backoff_base(initial, max, 2.0, 3),
+            Duration::from_millis(800)
+        );
         // Capped at max.
         assert_eq!(backoff_base(initial, max, 2.0, 4), Duration::from_secs(1));
         assert_eq!(backoff_base(initial, max, 2.0, 20), Duration::from_secs(1));
@@ -905,7 +924,10 @@ mod tests {
             }
         }
 
-        assert!(loading >= 2, "expected at least one restart (LOADING); got {loading}");
+        assert!(
+            loading >= 2,
+            "expected at least one restart (LOADING); got {loading}"
+        );
         assert!(errors >= 2, "expected repeated crash ERRORs; got {errors}");
         assert!(gave_up, "expected a crash-loop give-up event");
         assert_eq!(sup.phase(), EnginePhase::Failed);
@@ -992,7 +1014,10 @@ mod tests {
 
         let handle_id = sup.current_handle_id().unwrap_or_default();
         let _ = sup.stop(&handle_id).await;
-        assert!(sup.serving_endpoint().is_none(), "endpoint should be cleared on stop");
+        assert!(
+            sup.serving_endpoint().is_none(),
+            "endpoint should be cleared on stop"
+        );
         assert!(
             TcpStream::connect(addr).await.is_err(),
             "server should no longer be listening after stop"

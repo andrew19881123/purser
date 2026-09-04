@@ -204,7 +204,11 @@ async fn strict_auth_rejects_unknown_key_but_accepts_known() {
     // Unknown key -> 401.
     let payload = json!({"model": "anything", "messages": [{"role":"user","content":"hi"}]});
     let response = app(state.clone())
-        .oneshot(post_json("/v1/chat/completions", Some("sk-bogus"), &payload))
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            Some("sk-bogus"),
+            &payload,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -269,7 +273,10 @@ async fn route_sync_put_and_delete_update_the_table() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(state.active_model_ids().await.contains(&"llama-3-8b".to_string()));
+    assert!(state
+        .active_model_ids()
+        .await
+        .contains(&"llama-3-8b".to_string()));
 
     let models = body_json(app(state.clone()).oneshot(get("/v1/models")).await.unwrap()).await;
     let ids: Vec<String> = models["data"]
@@ -346,7 +353,10 @@ async fn streaming_proxies_real_tokens_from_host() {
     assert!(ct.starts_with("text/event-stream"), "got {ct}");
 
     let text = body_text(response).await;
-    assert!(text.contains("echo:hello-stream"), "streamed tokens: {text}");
+    assert!(
+        text.contains("echo:hello-stream"),
+        "streamed tokens: {text}"
+    );
     assert!(text.trim_end().ends_with("data: [DONE]"), "SSE terminator");
 }
 
@@ -368,10 +378,7 @@ async fn non_streaming_proxies_json_from_host() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(
-        body["choices"][0]["message"]["content"],
-        "echo:hello-json"
-    );
+    assert_eq!(body["choices"][0]["message"]["content"], "echo:hello-json");
 }
 
 #[tokio::test]
@@ -398,7 +405,8 @@ async fn unknown_model_is_404_with_available_list() {
 #[tokio::test]
 async fn host_down_is_503() {
     // with_mock points MOCK_MODEL at a closed port; no live host registered.
-    let payload = json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
+    let payload =
+        json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
     let response = app(AppState::with_mock())
         .oneshot(post_json(
             "/v1/chat/completions",
@@ -408,7 +416,10 @@ async fn host_down_is_503() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(body_json(response).await["error"]["code"], "node_unavailable");
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "node_unavailable"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +487,9 @@ fn backpressure_ceiling_sheds_load_deterministically() {
 
     drop(g1);
     assert_eq!(limiter.global_inflight(), 0);
-    let _g3 = limiter.acquire("key-c", &quota, 1).expect("admitted after release");
+    let _g3 = limiter
+        .acquire("key-c", &quota, 1)
+        .expect("admitted after release");
     assert_eq!(limiter.global_inflight(), 1);
 }
 
@@ -549,12 +562,18 @@ async fn concurrent_tenants_never_see_each_others_output() {
     let text_a = body_text(resp_a.unwrap()).await;
     let text_b = body_text(resp_b.unwrap()).await;
 
-    assert!(text_a.contains("echo:SECRET-ALPHA"), "A sees its own: {text_a}");
+    assert!(
+        text_a.contains("echo:SECRET-ALPHA"),
+        "A sees its own: {text_a}"
+    );
     assert!(
         !text_a.contains("SECRET-BRAVO"),
         "ISOLATION VIOLATION: tenant A saw tenant B's content: {text_a}"
     );
-    assert!(text_b.contains("echo:SECRET-BRAVO"), "B sees its own: {text_b}");
+    assert!(
+        text_b.contains("echo:SECRET-BRAVO"),
+        "B sees its own: {text_b}"
+    );
     assert!(
         !text_b.contains("SECRET-ALPHA"),
         "ISOLATION VIOLATION: tenant B saw tenant A's content: {text_b}"
@@ -570,7 +589,8 @@ async fn metrics_endpoint_exposes_prometheus_after_a_request() {
     let (state, _host) = state_with_mock_host().await;
 
     // Drive one request so at least one metric is emitted.
-    let payload = json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
+    let payload =
+        json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
     let _ = app(state.clone())
         .oneshot(post_json(
             "/v1/chat/completions",

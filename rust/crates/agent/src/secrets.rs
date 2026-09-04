@@ -118,7 +118,10 @@ mod tests {
         let store = InMemorySecretStore::new();
         assert!(store.get("cert").unwrap().is_none());
         store.put("cert", b"pem-bytes").unwrap();
-        assert_eq!(store.get("cert").unwrap().as_deref(), Some(&b"pem-bytes"[..]));
+        assert_eq!(
+            store.get("cert").unwrap().as_deref(),
+            Some(&b"pem-bytes"[..])
+        );
         store.delete("cert").unwrap();
         assert!(store.get("cert").unwrap().is_none());
     }

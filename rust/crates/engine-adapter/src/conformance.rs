@@ -71,7 +71,10 @@ pub async fn conformance_tests<B: EngineBackend + ?Sized>(backend: &B) {
 fn check_capabilities<B: EngineBackend + ?Sized>(backend: &B) {
     let a = backend.capabilities();
     let b = backend.capabilities();
-    assert_eq!(a, b, "capabilities() must be deterministic / side-effect free");
+    assert_eq!(
+        a, b,
+        "capabilities() must be deterministic / side-effect free"
+    );
 }
 
 /// start_worker -> valid handle; LOADING precedes READY; metrics after READY;
@@ -166,7 +169,10 @@ async fn check_host_lifecycle<B: EngineBackend + ?Sized>(backend: &B) {
         .expect("host metrics must succeed after READY");
     assert_plausible_metrics(&m);
 
-    backend.stop(&host.handle).await.expect("host stop must succeed");
+    backend
+        .stop(&host.handle)
+        .await
+        .expect("host stop must succeed");
     backend
         .stop(&host.handle)
         .await

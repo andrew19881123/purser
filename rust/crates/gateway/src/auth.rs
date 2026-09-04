@@ -140,8 +140,7 @@ impl AuthConfig {
         let token = token.trim();
         if token.is_empty() {
             return Err(ApiError::Unauthorized(
-                "Empty API key. Provide a valid key via 'Authorization: Bearer <key>'."
-                    .to_string(),
+                "Empty API key. Provide a valid key via 'Authorization: Bearer <key>'.".to_string(),
             ));
         }
         if let Some(info) = self.keys.get(token) {
@@ -220,15 +219,14 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app = AppState::from_ref(state);
 
-        let expected = match app.auth.internal_token.as_deref() {
-            Some(t) if !t.is_empty() => t,
-            _ => {
-                return Err(ApiError::Forbidden(
+        let expected =
+            match app.auth.internal_token.as_deref() {
+                Some(t) if !t.is_empty() => t,
+                _ => return Err(ApiError::Forbidden(
                     "Management API is disabled: no internal token is configured on the gateway."
                         .to_string(),
-                ))
-            }
-        };
+                )),
+            };
 
         let provided = parts
             .headers

@@ -102,10 +102,11 @@ async fn proxy_inference(
 ) -> Result<Response, ApiError> {
     let session_id = gen_id("sess");
 
-    let routed: RoutedRequest = serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest {
-        message: format!("Invalid JSON request body: {e}"),
-        code: Some("invalid_body".to_string()),
-    })?;
+    let routed: RoutedRequest =
+        serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest {
+            message: format!("Invalid JSON request body: {e}"),
+            code: Some("invalid_body".to_string()),
+        })?;
     let model = routed.model;
     let want_stream = routed.stream;
 

@@ -265,7 +265,9 @@ fn chat_chunk(id: &str, created: u64, model: &str, delta: Value, finish: Option<
 /// The canned assistant reply. Mentions the served model so tests (and humans)
 /// can see the loop is live end-to-end.
 fn canned_reply(model: &str) -> String {
-    format!("Hello from the Purser mock host serving model {model}. The end-to-end chat loop is live.")
+    format!(
+        "Hello from the Purser mock host serving model {model}. The end-to-end chat loop is live."
+    )
 }
 
 /// Split a reply into OpenAI-style streamed pieces (whitespace-preserving so the
@@ -343,8 +345,14 @@ mod tests {
 
         // GET /v1/models -> the served model.
         let models_resp = http_request(addr, "GET", "/v1/models", "").await;
-        assert!(models_resp.contains("200 OK"), "models status: {models_resp}");
-        assert!(models_resp.contains(model), "models body missing model: {models_resp}");
+        assert!(
+            models_resp.contains("200 OK"),
+            "models status: {models_resp}"
+        );
+        assert!(
+            models_resp.contains(model),
+            "models body missing model: {models_resp}"
+        );
         assert!(models_resp.contains("\"object\":\"list\""));
 
         // POST /v1/chat/completions, stream:false -> full chat.completion JSON.
@@ -373,9 +381,15 @@ mod tests {
             streamed.contains("text/event-stream"),
             "expected SSE content-type: {streamed}"
         );
-        assert!(streamed.contains("chat.completion.chunk"), "expected SSE chunks");
+        assert!(
+            streamed.contains("chat.completion.chunk"),
+            "expected SSE chunks"
+        );
         assert!(streamed.contains("\"delta\""), "expected delta frames");
-        assert!(streamed.contains("data: [DONE]"), "SSE must terminate with [DONE]");
+        assert!(
+            streamed.contains("data: [DONE]"),
+            "SSE must terminate with [DONE]"
+        );
 
         server.shutdown().await;
 

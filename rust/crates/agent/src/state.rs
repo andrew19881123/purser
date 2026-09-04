@@ -230,7 +230,7 @@ impl NodeStateMachine {
                 | (Loading, Draining)
                 | (Degraded, Draining)
                 | (Draining, Decommissioned)
-                | (Draining, Ready)    // drain cancelled
+                | (Draining, Ready) // drain cancelled
         )
     }
 }
@@ -279,7 +279,10 @@ mod tests {
     #[test]
     fn self_transition_is_idempotent() {
         let mut sm = NodeStateMachine::starting_at(NodeState::Running);
-        assert_eq!(sm.transition(NodeState::Running).unwrap(), NodeState::Running);
+        assert_eq!(
+            sm.transition(NodeState::Running).unwrap(),
+            NodeState::Running
+        );
     }
 
     #[test]
