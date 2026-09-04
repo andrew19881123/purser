@@ -161,6 +161,111 @@ func TestPlan_ExcludeAllNodes(t *testing.T) {
 	}
 }
 
+// TestPlan_ForceNodeCountSingleInfeasible is the blindatura gate for the
+// force-count bypass (design 08 §14): ForceNodeCount == 1 short-circuits to a
+// single-node plan even for a model that only fits across several nodes. The
+// backstop (validatePlanMemory) must reject it with a motivated *PlanError
+// instead of emitting a plan with negative headroom.
+func TestPlan_ForceNodeCountSingleInfeasible(t *testing.T) {
+	// 40 GB weights over two 30 GB nodes: fits across two, not on one.
+	nodes := []Node{node("A", 30, 150), node("B", 30, 120)}
+	links := []Link{{From: "A", To: "B", RTTms: 3, BandwidthGBs: 12}}
+	model, _ := dpTestModel(8, 40)
+
+	one := 1
+	dp, err := Plan(nodes, links, model, Constraints{ForceNodeCount: &one})
+	if dp != nil {
+		t.Fatalf("expected no plan (single node too small), got headroom %.2f: %+v", dp.Estimated.HeadroomGB, dp)
+	}
+	var pe *PlanError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PlanError, got %T: %v", err, err)
+	}
+	if pe.DeficitGB <= 0 {
+		t.Errorf("expected a positive deficit on the forced single-node plan, got %.2f", pe.DeficitGB)
+	}
+}
+
+// TestPlan_ForceNodeCountValid is the companion "piano valido" case: a COHERENT
+// force count (two nodes for a model that needs two) yields a valid plan whose
+// reported headroom is never negative.
+func TestPlan_ForceNodeCountValid(t *testing.T) {
+	nodes := []Node{node("A", 30, 150), node("B", 30, 120)}
+	links := []Link{{From: "A", To: "B", RTTms: 3, BandwidthGBs: 12}}
+	model, _ := dpTestModel(8, 40)
+
+	two := 2
+	dp, err := Plan(nodes, links, model, Constraints{ForceNodeCount: &two})
+	if err != nil {
+		t.Fatalf("expected a valid two-node plan, got error: %v", err)
+	}
+	if len(dp.Assignments) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(dp.Assignments))
+	}
+	if dp.Estimated.HeadroomGB < 0 {
+		t.Errorf("forced-count plan must never report negative headroom, got %.2f", dp.Estimated.HeadroomGB)
+	}
+	checkContiguousCover(t, dp.Assignments, model.Layers)
+}
+
+// TestEstimatePerformance_NonZeroPlausible pins down PROBLEM 1: for an example
+// fleet the reported decode/prefill ranges must be strictly positive, ordered
+// (min <= max), coherent (prefill above decode, since prefill is compute-bound
+// and batched), and not absurd. It also checks the two calibratable levers that
+// most affect the number: the unknown-bandwidth fallback (never a zero rate) and
+// the speculative-draft speed-up.
+func TestEstimatePerformance_NonZeroPlausible(t *testing.T) {
+	// A modest single node (CPU-class: ~15 GB usable, 50 GB/s) serving an 8B model
+	// quantized to q4_k_m (10 GB) — the E2E's flotta di esempio.
+	nodes := []Node{{ID: "cpu", RAMAvailableGB: 15, UnifiedMemory: true, MemBandwidthGBs: 50}}
+	model := ModelSpec{
+		ID: "acme/llama-8b", Layers: 32, ParamsTotalB: 8,
+		NKVHeads: 8, HeadDim: 128, AttentionType: AttentionGQA, ContextMax: 8192,
+		Quantizations: []Quantization{{Name: "q4_k_m", SizeGB: 10, Quality: 0.8}},
+	}
+
+	dp, err := Plan(nodes, nil, model, Constraints{})
+	if err != nil {
+		t.Fatalf("expected a plan, got error: %v", err)
+	}
+	e := dp.Estimated
+	if e.DecodeTokSMin <= 0 || e.PrefillTokSMin <= 0 {
+		t.Fatalf("estimate must be strictly positive: %+v", e)
+	}
+	if e.DecodeTokSMax < e.DecodeTokSMin || e.PrefillTokSMax < e.PrefillTokSMin {
+		t.Fatalf("estimate ranges must be ordered (min <= max): %+v", e)
+	}
+	if e.PrefillTokSMin <= e.DecodeTokSMax {
+		t.Errorf("prefill (%.2f..) should exceed decode (..%.2f): %+v", e.PrefillTokSMin, e.DecodeTokSMax, e)
+	}
+	// Sanity ceiling: an 8B q4 model on a 50 GB/s node cannot decode thousands of
+	// tok/s — guards against a units bug reappearing (GB/s vs Gbps, ms vs s).
+	if e.DecodeTokSMax > 1000 {
+		t.Errorf("decode estimate implausibly high (%.1f tok/s) — check units", e.DecodeTokSMax)
+	}
+
+	// Unknown bandwidth must still yield a finite, non-zero rate (fallback).
+	noBW := []Node{{ID: "mystery", RAMAvailableGB: 15, UnifiedMemory: true}}
+	dp2, err := Plan(noBW, nil, model, Constraints{})
+	if err != nil {
+		t.Fatalf("expected a plan for the unknown-bandwidth node, got: %v", err)
+	}
+	if dp2.Estimated.DecodeTokSMin <= 0 {
+		t.Errorf("unknown-bandwidth node must not report a zero decode rate: %+v", dp2.Estimated)
+	}
+
+	// A speculative draft must raise the decode rate (expectedAcceptedTokens).
+	withDraft := model
+	withDraft.Draft = DraftInfo{Available: true, Type: "mtp", TailLayers: 2}
+	dp3, err := Plan(nodes, nil, withDraft, Constraints{})
+	if err != nil {
+		t.Fatalf("expected a plan for the draft model, got: %v", err)
+	}
+	if dp3.Estimated.DecodeTokSMax <= e.DecodeTokSMax {
+		t.Errorf("draft decode (%.2f) should exceed non-draft decode (%.2f)", dp3.Estimated.DecodeTokSMax, e.DecodeTokSMax)
+	}
+}
+
 func TestEstimateKVCache_AttentionFactor(t *testing.T) {
 	base := ModelSpec{Layers: 32, NKVHeads: 8, HeadDim: 128}
 	ctx := 32768

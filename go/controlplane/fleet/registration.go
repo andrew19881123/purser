@@ -45,7 +45,8 @@ func (s *RegistrationServer) Metrics() *LiveMetrics { return s.metrics }
 
 // Join enrolls a node and returns its node ID, client cert and CA cert.
 func (s *RegistrationServer) Join(ctx context.Context, req *purserv1.JoinRequest) (*purserv1.JoinReply, error) {
-	res, err := s.mgr.Join(ctx, req.GetJoinToken(), req.GetHardwareProfile())
+	res, err := s.mgr.Join(ctx, req.GetJoinToken(), req.GetHardwareProfile(),
+		req.GetAdvertisedAgentAddr(), req.GetAdvertisedInferenceAddr())
 	if err != nil {
 		if errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrTokenUsed) {
 			return nil, status.Error(codes.PermissionDenied, err.Error())

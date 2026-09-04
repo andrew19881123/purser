@@ -26,9 +26,12 @@ type Resolver interface {
 	Resolve(ctx context.Context, nodeID string) (Endpoint, error)
 }
 
-// RegistryResolver derives endpoints from the node's hostname recorded in the
-// registry, combined with well-known ports. This is the MVP convention until
-// agents advertise their listen addresses explicitly.
+// RegistryResolver resolves a node's endpoints from the registry. It prefers
+// the addresses the agent advertised at Join time (Node.AdvertisedAgentAddr /
+// Node.AdvertisedInferenceAddr) and falls back, per face, to the MVP convention
+// of the node's hostname combined with a well-known port. The advertised
+// addresses are what let multiple agents share a host; the fallback keeps
+// zero-config single-node deploys working.
 type RegistryResolver struct {
 	Reg           registry.Registry
 	AgentPort     int
@@ -44,12 +47,11 @@ type RegistryResolver struct {
 // is still overridable here via NewRegistryResolver (main.go reads
 // PURSER_AGENT_PORT).
 //
-// TODO(multi-agent): this host:well-known-port convention cannot address more
-// than one agent on the SAME host — every agent would resolve to the same
-// address. Supporting multiple agents per host requires each agent to register
-// its own advertised address (a RegistrationService/proto change), after which
-// the resolver should read the node's advertised AgentAddr instead of
-// synthesizing host:DefaultAgentPort. Out of scope for now; documented only.
+// The host + well-known-port convention below cannot address more than one
+// agent on the SAME host — every agent would resolve to the same address. That
+// is why agents now advertise their own AgentService and inference addresses in
+// the JoinRequest (persisted on the Node); Resolve uses those when present and
+// only synthesizes host:DefaultAgentPort as a fallback.
 const (
 	DefaultAgentPort     = 50151
 	DefaultInferencePort = 8000
@@ -73,14 +75,25 @@ func (r *RegistryResolver) Resolve(ctx context.Context, nodeID string) (Endpoint
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("orchestrator: resolve node %q: %w", nodeID, err)
 	}
-	host := n.Hostname
-	if host == "" {
-		return Endpoint{}, fmt.Errorf("orchestrator: node %q has no hostname to resolve", nodeID)
+	// Prefer the addresses the agent advertised at Join time; fall back per face
+	// to the hostname + well-known-port convention.
+	ep := Endpoint{
+		AgentAddr:     n.AdvertisedAgentAddr,
+		InferenceAddr: n.AdvertisedInferenceAddr,
 	}
-	return Endpoint{
-		AgentAddr:     net.JoinHostPort(host, strconv.Itoa(r.AgentPort)),
-		InferenceAddr: net.JoinHostPort(host, strconv.Itoa(r.InferencePort)),
-	}, nil
+	if ep.AgentAddr == "" || ep.InferenceAddr == "" {
+		host := n.Hostname
+		if host == "" {
+			return Endpoint{}, fmt.Errorf("orchestrator: node %q has neither an advertised address nor a hostname to resolve", nodeID)
+		}
+		if ep.AgentAddr == "" {
+			ep.AgentAddr = net.JoinHostPort(host, strconv.Itoa(r.AgentPort))
+		}
+		if ep.InferenceAddr == "" {
+			ep.InferenceAddr = net.JoinHostPort(host, strconv.Itoa(r.InferencePort))
+		}
+	}
+	return ep, nil
 }
 
 // MapResolver is a static Resolver for tests and fixed topologies.

@@ -2,6 +2,7 @@ package registry_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -215,5 +216,121 @@ func TestAppendAudit(t *testing.T) {
 	// Newest first.
 	if entries[0].Action != "stop" {
 		t.Errorf("expected newest-first ordering, got first action %q", entries[0].Action)
+	}
+}
+
+// TestNodeAdvertisedAddrsRoundTrip verifies the advertised address columns are
+// persisted and read back on both create and update.
+func TestNodeAdvertisedAddrsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	reg := openTemp(t)
+
+	n := &registry.Node{
+		ID:                      "adv-node",
+		Hostname:                "gpu.local",
+		State:                   "NODE_STATE_ENROLLED",
+		AdvertisedAgentAddr:     "10.0.0.5:50151",
+		AdvertisedInferenceAddr: "10.0.0.5:8000",
+	}
+	if err := reg.CreateNode(ctx, n); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	got, err := reg.GetNode(ctx, "adv-node")
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if got.AdvertisedAgentAddr != "10.0.0.5:50151" || got.AdvertisedInferenceAddr != "10.0.0.5:8000" {
+		t.Fatalf("advertised addrs not persisted: agent=%q inf=%q",
+			got.AdvertisedAgentAddr, got.AdvertisedInferenceAddr)
+	}
+
+	// Update path must preserve/overwrite the columns too.
+	got.AdvertisedAgentAddr = "10.0.0.5:41000"
+	if err := reg.UpdateNode(ctx, got); err != nil {
+		t.Fatalf("update node: %v", err)
+	}
+	got2, err := reg.GetNode(ctx, "adv-node")
+	if err != nil {
+		t.Fatalf("get node after update: %v", err)
+	}
+	if got2.AdvertisedAgentAddr != "10.0.0.5:41000" {
+		t.Errorf("updated agent addr = %q, want 10.0.0.5:41000", got2.AdvertisedAgentAddr)
+	}
+}
+
+// TestMigrateAddsAdvertisedColumnsToLegacyDB proves the additive migration is
+// idempotent: a pre-existing nodes table lacking the advertised columns is
+// upgraded in place, and running Migrate again is a no-op.
+func TestMigrateAddsAdvertisedColumnsToLegacyDB(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	// Build a "legacy" schema: a nodes table without the advertised columns.
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `CREATE TABLE nodes (
+		id TEXT PRIMARY KEY,
+		hostname TEXT NOT NULL DEFAULT '',
+		os TEXT NOT NULL DEFAULT '',
+		arch TEXT NOT NULL DEFAULT '',
+		ram_gb REAL NOT NULL DEFAULT 0,
+		vram_gb REAL NOT NULL DEFAULT 0,
+		state TEXT NOT NULL DEFAULT '',
+		last_seen TEXT,
+		hardware_profile TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `INSERT INTO nodes (id, hostname, created_at, updated_at)
+		VALUES ('legacy-1', 'old.local', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')`)
+	if err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	db.Close()
+
+	// Open through the registry and migrate (twice, to prove idempotency).
+	reg, err := registry.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open registry: %v", err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	if err := reg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate #1: %v", err)
+	}
+	if err := reg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate #2 (must be idempotent): %v", err)
+	}
+
+	// The legacy row must now scan (columns present, defaulted to '').
+	n, err := reg.GetNode(ctx, "legacy-1")
+	if err != nil {
+		t.Fatalf("get legacy node: %v", err)
+	}
+	if n.AdvertisedAgentAddr != "" || n.AdvertisedInferenceAddr != "" {
+		t.Errorf("legacy advertised addrs should default empty, got agent=%q inf=%q",
+			n.AdvertisedAgentAddr, n.AdvertisedInferenceAddr)
+	}
+
+	// And new writes to the upgraded table must persist the columns.
+	if err := reg.UpdateNode(ctx, &registry.Node{
+		ID:                      "legacy-1",
+		Hostname:                "old.local",
+		AdvertisedAgentAddr:     "1.2.3.4:50151",
+		AdvertisedInferenceAddr: "1.2.3.4:8000",
+	}); err != nil {
+		t.Fatalf("update upgraded node: %v", err)
+	}
+	got, err := reg.GetNode(ctx, "legacy-1")
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if got.AdvertisedAgentAddr != "1.2.3.4:50151" || got.AdvertisedInferenceAddr != "1.2.3.4:8000" {
+		t.Errorf("advertised addrs after upgrade not persisted: agent=%q inf=%q",
+			got.AdvertisedAgentAddr, got.AdvertisedInferenceAddr)
 	}
 }

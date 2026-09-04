@@ -170,7 +170,14 @@ type JoinResult struct {
 // Join validates the token, registers (or updates) the node as ENROLLED, issues
 // its mTLS client certificate via the CA, and returns the node ID plus the
 // client and CA certificates.
-func (m *Manager) Join(ctx context.Context, token string, hw *purserv1.HardwareProfile) (*JoinResult, error) {
+//
+// advAgentAddr and advInfAddr are the node's self-advertised AgentService and
+// inference addresses ("host:port"), as sent in the JoinRequest. They are
+// persisted on the node so the orchestrator's resolver can dial the agent and
+// route inference traffic without relying on the hostname + fixed-port
+// convention (which cannot distinguish multiple agents on one host). Either may
+// be empty, in which case the resolver falls back to that convention.
+func (m *Manager) Join(ctx context.Context, token string, hw *purserv1.HardwareProfile, advAgentAddr, advInfAddr string) (*JoinResult, error) {
 	if err := m.validateToken(token); err != nil {
 		return nil, err
 	}
@@ -183,8 +190,10 @@ func (m *Manager) Join(ctx context.Context, token string, hw *purserv1.HardwareP
 	}
 
 	node := &registry.Node{
-		ID:    nodeID,
-		State: NodeStateEnrolled,
+		ID:                      nodeID,
+		State:                   NodeStateEnrolled,
+		AdvertisedAgentAddr:     advAgentAddr,
+		AdvertisedInferenceAddr: advInfAddr,
 	}
 	if hw != nil {
 		node.Hostname = hw.GetHostname()
@@ -248,7 +257,7 @@ func (m *Manager) Enroll(ctx context.Context, token string, profile *registry.No
 		return errors.New("fleet: nil profile")
 	}
 	hw := &purserv1.HardwareProfile{NodeId: profile.ID, Hostname: profile.Hostname, RamTotalGb: profile.RAMGB}
-	_, err := m.Join(ctx, token, hw)
+	_, err := m.Join(ctx, token, hw, profile.AdvertisedAgentAddr, profile.AdvertisedInferenceAddr)
 	return err
 }
 

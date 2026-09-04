@@ -115,6 +115,62 @@ func TestRegistration_JoinIssuesCert(t *testing.T) {
 	}
 }
 
+func TestRegistration_JoinStoresAdvertisedAddrs(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	tok, err := h.mgr.GenerateJoinToken(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("token: %v", err)
+	}
+
+	reply, err := h.client.Join(ctx, &purserv1.JoinRequest{
+		JoinToken:               tok.Token,
+		HardwareProfile:         &purserv1.HardwareProfile{NodeId: "adv-1", Hostname: "adv.local"},
+		AdvertisedAgentAddr:     "192.168.1.10:50151",
+		AdvertisedInferenceAddr: "192.168.1.10:8000",
+	})
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if reply.GetNodeId() != "adv-1" {
+		t.Fatalf("node id = %q, want adv-1", reply.GetNodeId())
+	}
+
+	// Re-read the node and verify the advertised addresses were persisted.
+	n, err := h.reg.GetNode(ctx, "adv-1")
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if n.AdvertisedAgentAddr != "192.168.1.10:50151" {
+		t.Errorf("AdvertisedAgentAddr = %q, want 192.168.1.10:50151", n.AdvertisedAgentAddr)
+	}
+	if n.AdvertisedInferenceAddr != "192.168.1.10:8000" {
+		t.Errorf("AdvertisedInferenceAddr = %q, want 192.168.1.10:8000", n.AdvertisedInferenceAddr)
+	}
+}
+
+func TestRegistration_JoinWithoutAdvertisedAddrs(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	tok, _ := h.mgr.GenerateJoinToken(ctx, time.Hour)
+	if _, err := h.client.Join(ctx, &purserv1.JoinRequest{
+		JoinToken:       tok.Token,
+		HardwareProfile: &purserv1.HardwareProfile{NodeId: "noadv-1", Hostname: "noadv.local"},
+	}); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	n, err := h.reg.GetNode(ctx, "noadv-1")
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if n.AdvertisedAgentAddr != "" || n.AdvertisedInferenceAddr != "" {
+		t.Errorf("expected empty advertised addrs, got agent=%q inf=%q",
+			n.AdvertisedAgentAddr, n.AdvertisedInferenceAddr)
+	}
+}
+
 func TestRegistration_JoinRejectsBadAndReusedToken(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

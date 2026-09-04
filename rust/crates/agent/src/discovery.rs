@@ -85,18 +85,33 @@ impl std::fmt::Debug for Enrollment {
 /// Enroll into the cluster: `Join` with the token + hardware profile, receiving
 /// the assigned identity and certificates.
 ///
+/// `advertised_agent_addr` / `advertised_inference_addr` are the `host:port`
+/// endpoints (see [`AgentConfig::advertised_addrs`](crate::config::AgentConfig::advertised_addrs))
+/// the control plane should use to reach this node's `AgentService` and to route
+/// inference traffic — advertised here so the CP need not guess "hostname + fixed
+/// port", which breaks with multiple agents per host.
+///
 /// The `join_token` is never logged.
 pub async fn join(
     control_plane_addr: &str,
     join_token: &str,
     profile: HardwareProfile,
+    advertised_agent_addr: String,
+    advertised_inference_addr: String,
 ) -> anyhow::Result<Enrollment> {
     let endpoint = normalize_endpoint(control_plane_addr);
     let mut client = RegistrationServiceClient::connect(endpoint).await?;
+    tracing::info!(
+        agent_addr = %advertised_agent_addr,
+        inference_addr = %advertised_inference_addr,
+        "advertising endpoints in Join"
+    );
     let reply = client
         .join(JoinRequest {
             join_token: join_token.to_string(),
             hardware_profile: Some(profile),
+            advertised_agent_addr,
+            advertised_inference_addr,
         })
         .await?
         .into_inner();

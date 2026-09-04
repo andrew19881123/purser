@@ -5,7 +5,7 @@
 //! boot on a fresh node with zero configuration. Orchestration decisions are
 //! made by the control plane, never here.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -54,6 +54,18 @@ pub struct AgentConfig {
     /// Defaults to [`DEFAULT_INFERENCE_PORT`] to match the control plane's
     /// advertised host endpoint. Overridable via `PURSER_INFERENCE_PORT`.
     pub inference_port: u16,
+
+    /// Explicit `host:port` this node's `AgentService` is reachable at, as seen
+    /// by the control plane. `None` derives it from [`bind_addr`](Self::bind_addr)
+    /// at Join time (see [`AgentConfig::advertised_addrs`]). Overridable via
+    /// `PURSER_AGENT_ADVERTISED_ADDR`.
+    pub advertised_agent_addr: Option<String>,
+
+    /// Explicit `host:port` where this node serves OpenAI-compatible inference,
+    /// as seen by the control plane / gateway. `None` derives it from the
+    /// advertised host plus [`inference_port`](Self::inference_port). Overridable
+    /// via `PURSER_INFERENCE_ADVERTISED_ADDR`.
+    pub advertised_inference_addr: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -66,6 +78,8 @@ impl Default for AgentConfig {
             join_token: None,
             health_interval: Duration::from_secs(5),
             inference_port: DEFAULT_INFERENCE_PORT,
+            advertised_agent_addr: None,
+            advertised_inference_addr: None,
         }
     }
 }
@@ -82,6 +96,8 @@ impl AgentConfig {
     /// - `PURSER_JOIN_TOKEN`
     /// - `PURSER_HEALTH_INTERVAL_SECS`
     /// - `PURSER_INFERENCE_PORT`         — e.g. `8000`
+    /// - `PURSER_AGENT_ADVERTISED_ADDR`  — e.g. `192.168.1.10:50151`
+    /// - `PURSER_INFERENCE_ADVERTISED_ADDR` — e.g. `192.168.1.10:8000`
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -107,9 +123,104 @@ impl AgentConfig {
                 .parse()
                 .with_context(|| format!("invalid PURSER_INFERENCE_PORT: {port:?}"))?;
         }
+        cfg.advertised_agent_addr =
+            non_empty(std::env::var("PURSER_AGENT_ADVERTISED_ADDR").ok());
+        cfg.advertised_inference_addr =
+            non_empty(std::env::var("PURSER_INFERENCE_ADVERTISED_ADDR").ok());
 
         Ok(cfg)
     }
+
+    /// Resolve the `(agent, inference)` `host:port` pair to advertise to the
+    /// control plane at Join time.
+    ///
+    /// Precedence for each: an explicit override wins verbatim; otherwise the
+    /// address is derived from [`bind_addr`](Self::bind_addr). When `bind_addr`
+    /// carries a concrete (non-wildcard) host that host is reused as-is; when it
+    /// is a wildcard (`0.0.0.0` / `::`) the primary local non-loopback IPv4 is
+    /// detected best-effort, falling back to `127.0.0.1`. The inference address
+    /// reuses that host with [`inference_port`](Self::inference_port).
+    ///
+    /// Best-effort and infallible: it never fails a Join.
+    pub fn advertised_addrs(&self) -> (String, String) {
+        derive_advertised_addrs(
+            self.bind_addr,
+            self.inference_port,
+            self.advertised_agent_addr.as_deref(),
+            self.advertised_inference_addr.as_deref(),
+            primary_local_ipv4,
+        )
+    }
+}
+
+/// Pure derivation of the advertised `(agent, inference)` addresses.
+///
+/// `resolve_wildcard_host` supplies the concrete host to use when `bind_addr`
+/// is a wildcard; it is only invoked in that case, which keeps this function
+/// pure and testable without touching the network.
+fn derive_advertised_addrs(
+    bind_addr: SocketAddr,
+    inference_port: u16,
+    explicit_agent: Option<&str>,
+    explicit_inference: Option<&str>,
+    resolve_wildcard_host: impl FnOnce() -> IpAddr,
+) -> (String, String) {
+    // Resolve the advertised host only when a derivation actually needs it, so
+    // the (possibly network-touching) resolver is skipped when both addresses
+    // are explicit.
+    let host: Option<IpAddr> = if explicit_agent.is_none() || explicit_inference.is_none() {
+        Some(if bind_addr.ip().is_unspecified() {
+            resolve_wildcard_host()
+        } else {
+            bind_addr.ip()
+        })
+    } else {
+        None
+    };
+
+    // `SocketAddr` formatting yields `host:port` for IPv4 and `[host]:port` for
+    // IPv6, so both advertised addresses stay dial-able.
+    let agent = match explicit_agent {
+        Some(a) => a.to_string(),
+        None => SocketAddr::new(host.expect("host resolved when agent addr derived"), bind_addr.port())
+            .to_string(),
+    };
+    let inference = match explicit_inference {
+        Some(i) => i.to_string(),
+        None => {
+            SocketAddr::new(host.expect("host resolved when inference addr derived"), inference_port)
+                .to_string()
+        }
+    };
+    (agent, inference)
+}
+
+/// Best-effort detection of the primary local non-loopback IPv4 address.
+///
+/// Uses the standard "connected UDP socket" trick: connecting a UDP socket
+/// sends no packets, it just makes the OS pick — via the routing table — the
+/// source address it would use to reach the target, so this works offline.
+/// Falls back to `127.0.0.1` when detection is not possible. No new deps.
+fn primary_local_ipv4() -> IpAddr {
+    use std::net::UdpSocket;
+
+    const LOOPBACK: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+    let sock = match UdpSocket::bind(("0.0.0.0", 0)) {
+        Ok(s) => s,
+        Err(_) => return LOOPBACK,
+    };
+    // A TEST-NET-3 (RFC 5737) target: never routed, only used to consult the
+    // routing table for the local source address.
+    if sock.connect(("203.0.113.1", 80)).is_ok() {
+        if let Ok(local) = sock.local_addr() {
+            let ip = local.ip();
+            if !ip.is_loopback() && !ip.is_unspecified() {
+                return ip;
+            }
+        }
+    }
+    LOOPBACK
 }
 
 /// Treat empty strings as absent — avoids `Some("")` surprises from the env.
@@ -136,5 +247,64 @@ mod tests {
         assert_eq!(non_empty(Some("  ".into())), None);
         assert_eq!(non_empty(Some("x".into())), Some("x".into()));
         assert_eq!(non_empty(None), None);
+    }
+
+    // A wildcard resolver that must NOT be called when a concrete host is
+    // available — it panics so the test proves the wildcard branch is skipped.
+    fn no_wildcard() -> IpAddr {
+        panic!("wildcard resolver must not be called when bind host is concrete");
+    }
+
+    #[test]
+    fn derive_uses_bind_when_non_wildcard() {
+        let bind: SocketAddr = "10.0.0.7:50151".parse().unwrap();
+        let (agent, inference) = derive_advertised_addrs(bind, 8000, None, None, no_wildcard);
+        assert_eq!(agent, "10.0.0.7:50151");
+        // Inference derives from the same host with the inference port.
+        assert_eq!(inference, "10.0.0.7:8000");
+    }
+
+    #[test]
+    fn derive_prefers_explicit_overrides_verbatim() {
+        let bind: SocketAddr = "0.0.0.0:50151".parse().unwrap();
+        let (agent, inference) = derive_advertised_addrs(
+            bind,
+            8000,
+            Some("agent.internal:9999"),
+            Some("infer.internal:1234"),
+            // Explicit values win even under a wildcard bind, so no resolution.
+            no_wildcard,
+        );
+        assert_eq!(agent, "agent.internal:9999");
+        assert_eq!(inference, "infer.internal:1234");
+    }
+
+    #[test]
+    fn derive_resolves_wildcard_host_for_both() {
+        let bind: SocketAddr = "0.0.0.0:50151".parse().unwrap();
+        let (agent, inference) =
+            derive_advertised_addrs(bind, 8000, None, None, || IpAddr::from([192, 168, 1, 42]));
+        // Wildcard bind → resolved host, keeping the respective ports.
+        assert_eq!(agent, "192.168.1.42:50151");
+        assert_eq!(inference, "192.168.1.42:8000");
+    }
+
+    #[test]
+    fn derive_mixes_explicit_agent_with_derived_inference() {
+        let bind: SocketAddr = "10.0.0.7:50151".parse().unwrap();
+        let (agent, inference) =
+            derive_advertised_addrs(bind, 8000, Some("agent.internal:9999"), None, no_wildcard);
+        assert_eq!(agent, "agent.internal:9999");
+        assert_eq!(inference, "10.0.0.7:8000");
+    }
+
+    #[test]
+    fn advertised_addrs_default_config_never_panics() {
+        // Default config binds on 0.0.0.0 → exercises the real best-effort
+        // detector; it must return usable host:port pairs without failing.
+        let cfg = AgentConfig::default();
+        let (agent, inference) = cfg.advertised_addrs();
+        assert!(agent.ends_with(&format!(":{DEFAULT_AGENT_PORT}")));
+        assert!(inference.ends_with(&format!(":{DEFAULT_INFERENCE_PORT}")));
     }
 }

@@ -35,6 +35,15 @@ node READY con HW profile reale → seed modello → **fit del Planner** → dep
 orchestrator `StartEngine(host)` → mock engine READY → **deployment ACTIVE** → **route-sync CP→Gateway** →
 `GET /v1/models` mostra il modello → **chat reale** (non-stream + SSE token-by-token fino a `[DONE]`).
 
+### E2E multi-nodo dimostrato (split su 2 nodi, binari reali, mock engine)
+`bash tools/e2e_multinode.sh` prova il caso pipeline-parallel: enrolla **due agent** (sullo stesso host, ognuno con il
+proprio *advertised address* AgentService + inference, così il Resolver li distingue), sceglie una taglia di modello
+**troppo grande per un nodo ma che entra su due**, la deploya e verifica: (1) due nodi READY con advertised addr distinti;
+(2) piano con **2 assignment (HOST+WORKER)** e `pipeline_order` di lunghezza 2; (3) deployment **ACTIVE**; (4) l'orchestrator
+avvia il **WORKER prima dell'HOST** su advertised addr distinti (:50151 vs :50161); (5) **chat reale** (non-stream + SSE)
+proxata all'advertised inference addr dell'HOST; (6) stime di performance del piano **non nulle** (path di calibrazione
+esercitato).
+
 ## Come si costruisce ed esegue
 
 ```bash
@@ -42,28 +51,32 @@ source ./env.sh          # toolchain project-local nel PATH
 make setup               # installa toolchain (idempotente)
 make gen                 # rigenera i tipi dai .proto (buf + tonic)
 make build && make test  # build + test di tutti i workspace
-bash tools/e2e_full.sh   # dimostrazione end-to-end (enroll→deploy→chat)
+bash tools/e2e_full.sh   # dimostrazione end-to-end single-node (enroll→deploy→chat)
+bash tools/e2e_multinode.sh  # dimostrazione end-to-end multi-nodo (split su 2 nodi, worker→host, chat)
 ```
 Nota disco: profilo Rust "lean" (`[profile.dev] debug=0`) per contenere `target/`. Binari in `rust/target/debug/` e `bin/`.
 
+## Chiuso in questa milestone (era backlog → ora fatto/dimostrato)
+
+- **Deploy pipeline multi-nodo**: ogni agent registra i propri *advertised address* (AgentService + inference) nel `JoinRequest` (`advertised_agent_addr` / `advertised_inference_addr`); il `RegistrationService` li persiste sul Node e il `Resolver` dell'orchestrator li usa (fallback per-faccia alla convenzione `hostname:porta`). Split su 2 nodi (worker→host) con chat reale — dimostrato da `tools/e2e_multinode.sh`.
+- **Calibrazione stime Planner**: modello di decode **memory-bandwidth-bound** (byte di pesi attivi letti per token / banda), con `memBandwidthUtilFraction` (MBU), speed-up speculativo effettivo e rapporto prefill/decode. Le stime tok/s decode/prefill ora escono **non nulle e plausibili** (le costanti restano `CALIBRATABLE` con benchmark reali + `tc netem`).
+- **Validazione vincoli operatore**: `validatePlanMemory` ri-verifica il piano assemblato contro la memoria utile di ogni nodo dopo l'applicazione dei vincoli. Un pin che fa sforare un nodo, o `ForceNodeCount=1` su un modello che non entra sul nodo top, ora producono un `PlanError` motivato invece di un piano con headroom negativo.
+
 ## Backlog / follow-up (onesto, prioritizzato)
-
-**Correttezza / calibrazione**
-- **Calibrazione Planner**: i coefficienti `computeTime`/`commTime`/perf sono placeholder → le stime tok/s escono ~0. Servono benchmark reali + emulazione `tc netem`. Costanti in `plan.go`/`partition.go` (`W1..W5`, `HEADROOM`, `expectedAcceptedTokens`, ecc.).
-- **Vincoli operatore**: `applyPinnedRanges` è best-effort e non ri-verifica la memoria dopo lo spostamento; `ForceNodeCount=1` bypassa il fit single-node → aggiungere validazione post-vincolo + `PlanError`.
-
-**Integrazione multi-nodo**
-- **Deploy pipeline multi-nodo**: oggi provato single-node. Per più agent (soprattutto sullo stesso host) serve che ogni agent registri il proprio *advertised address* nel `RegistrationService` (campo nel proto) e che il `Resolver` dell'orchestrator lo usi invece della convenzione `host:porta`.
 
 **Backend reale**
 - **llama.cpp live**: adapter (flag builder, GGUF reader, metrics parser) implementato e unit-testato; il test di conformità live è opt-in (`PURSER_LLAMACPP_BIN`). Manca la validazione con binari llama.cpp reali + hardware GPU.
 - **DwarfStar adapter**, speculative tuning, tensor-parallelism opportunistico (vLLM/SGLang).
 
-**Contratti UI↔backend da congelare** (assunti dalla UI, alcuni non ancora esposti dal CP)
+**API / contratti UI↔backend da congelare** (assunti dalla UI, alcuni non ancora esposti dal CP)
+- Manca l'endpoint **`DELETE /api/v1/models/{id}`** (oggi non si può rimuovere un modello dal catalogo — vedi il probe throwaway in `e2e_multinode.sh`).
 - `POST /nodes/{id}/drain|restart`, `DELETE /nodes/{id}`, `POST /models/{id}/plan` (preview), `GET/DELETE /apikeys`, wiring del join-token nella UI; schema del frame SSE `/api/v1/metrics`; casing JSON (protojson camelCase).
 
 **Enterprise / hardening (tier premium, per lo più)**
 - Gossip SWIM (foca) — oggi discovery = mDNS+seed+heartbeat.
 - HA control-plane (Raft) + replica Registry; RBAC/SSO/LDAP; audit; isolamento forte multi-tenant.
 - Failover *execution* (il reconciler rileva e pianifica; l'esecuzione del ribilanciamento va completata).
-- Packaging servizi di sistema (systemd/launchd/MSI), bundle air-gap firmati, pipeline CI, self-update firmato.
+- Packaging servizi di sistema (systemd/launchd/MSI), bundle air-gap firmati, self-update firmato.
+
+**CI / qualità**
+- **CI da portare a verde**, inclusi i **4 warning clippy preesistenti** in `purser-agent`.

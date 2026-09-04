@@ -59,7 +59,7 @@ func TestHandleJoinToken(t *testing.T) {
 	}
 
 	// The minted token must be usable by the fleet manager: Join enrolls a node.
-	jr, err := mgr.Join(context.Background(), resp.Token, &purserv1.HardwareProfile{NodeId: "n-e2e", Hostname: "h1"})
+	jr, err := mgr.Join(context.Background(), resp.Token, &purserv1.HardwareProfile{NodeId: "n-e2e", Hostname: "h1"}, "", "")
 	if err != nil {
 		t.Fatalf("join with minted token: %v", err)
 	}

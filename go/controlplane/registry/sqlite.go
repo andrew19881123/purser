@@ -51,7 +51,57 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("registry: migrate: %w", err)
 	}
+	// Additive, idempotent column migrations for databases created before a
+	// column existed. CREATE TABLE IF NOT EXISTS never alters an existing table,
+	// so promoted columns added after the first release are backfilled here.
+	for _, m := range []struct{ table, column, def string }{
+		{"nodes", "advertised_agent_addr", "TEXT NOT NULL DEFAULT ''"},
+		{"nodes", "advertised_inference_addr", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
+			return fmt.Errorf("registry: migrate: %w", err)
+		}
+	}
 	return nil
+}
+
+// ensureColumn adds column (with the given type/default DDL) to table if it is
+// not already present. It is idempotent: a column that already exists is left
+// untouched. SQLite has no "ADD COLUMN IF NOT EXISTS", so the current columns
+// are inspected via PRAGMA table_info first.
+func (r *SQLiteRegistry) ensureColumn(ctx context.Context, table, column, def string) error {
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if found {
+		return nil
+	}
+	_, err = r.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def))
+	return err
 }
 
 func (r *SQLiteRegistry) Ping(ctx context.Context) error { return r.db.PingContext(ctx) }
@@ -107,9 +157,10 @@ func (r *SQLiteRegistry) CreateNode(ctx context.Context, n *Node) error {
 	}
 	n.UpdatedAt = now
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO nodes (id, hostname, os, arch, ram_gb, vram_gb, state, last_seen, hardware_profile, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO nodes (id, hostname, os, arch, ram_gb, vram_gb, state, advertised_agent_addr, advertised_inference_addr, last_seen, hardware_profile, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.ID, n.Hostname, n.OS, n.Arch, n.RAMGB, n.VRAMGB, n.State,
+		n.AdvertisedAgentAddr, n.AdvertisedInferenceAddr,
 		fmtNullTime(n.LastSeen), jsonOrEmpty(n.HardwareProfile),
 		fmtTime(n.CreatedAt), fmtTime(n.UpdatedAt))
 	if err != nil {
@@ -127,7 +178,8 @@ func scanNode(s interface{ Scan(...any) error }) (*Node, error) {
 		hw       string
 	)
 	if err := s.Scan(&n.ID, &n.Hostname, &n.OS, &n.Arch, &n.RAMGB, &n.VRAMGB,
-		&n.State, &lastSeen, &hw, &created, &updated); err != nil {
+		&n.State, &n.AdvertisedAgentAddr, &n.AdvertisedInferenceAddr,
+		&lastSeen, &hw, &created, &updated); err != nil {
 		return nil, err
 	}
 	n.LastSeen = parseTime(lastSeen)
@@ -137,7 +189,7 @@ func scanNode(s interface{ Scan(...any) error }) (*Node, error) {
 	return &n, nil
 }
 
-const nodeCols = `id, hostname, os, arch, ram_gb, vram_gb, state, last_seen, hardware_profile, created_at, updated_at`
+const nodeCols = `id, hostname, os, arch, ram_gb, vram_gb, state, advertised_agent_addr, advertised_inference_addr, last_seen, hardware_profile, created_at, updated_at`
 
 func (r *SQLiteRegistry) GetNode(ctx context.Context, id string) (*Node, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+nodeCols+` FROM nodes WHERE id = ?`, id)
@@ -172,9 +224,11 @@ func (r *SQLiteRegistry) UpdateNode(ctx context.Context, n *Node) error {
 	n.UpdatedAt = nowUTC()
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE nodes SET hostname=?, os=?, arch=?, ram_gb=?, vram_gb=?, state=?,
+			advertised_agent_addr=?, advertised_inference_addr=?,
 			last_seen=?, hardware_profile=?, updated_at=?
 		WHERE id=?`,
 		n.Hostname, n.OS, n.Arch, n.RAMGB, n.VRAMGB, n.State,
+		n.AdvertisedAgentAddr, n.AdvertisedInferenceAddr,
 		fmtNullTime(n.LastSeen), jsonOrEmpty(n.HardwareProfile), fmtTime(n.UpdatedAt), n.ID)
 	if err != nil {
 		return fmt.Errorf("registry: update node %q: %w", n.ID, err)

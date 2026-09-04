@@ -33,6 +33,16 @@ type Node struct {
 	VRAMGB   float64 `json:"vram_gb"`
 	// State is the lifecycle state (e.g. NODE_STATE_READY).
 	State string `json:"state"`
+	// AdvertisedAgentAddr is the "host:port" of this node's AgentService as the
+	// agent advertised it at Join time. Empty when the agent did not advertise
+	// one, in which case callers fall back to the hostname + well-known-port
+	// convention. Promoted to its own column so the orchestrator's resolver can
+	// read it without decoding the hardware profile.
+	AdvertisedAgentAddr string `json:"advertised_agent_addr,omitempty"`
+	// AdvertisedInferenceAddr is the "host:port" where this node serves the
+	// OpenAI-compatible inference API, as advertised at Join time. Empty when not
+	// advertised (fall back to hostname + well-known inference port).
+	AdvertisedInferenceAddr string `json:"advertised_inference_addr,omitempty"`
 	// LastSeen is the timestamp of the most recent heartbeat; zero if never.
 	LastSeen time.Time `json:"last_seen"`
 	// HardwareProfile is the full purserv1.HardwareProfile encoded as JSON.

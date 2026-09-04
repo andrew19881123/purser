@@ -254,31 +254,79 @@ func isContiguousCover(assignments []Assignment, layers int) bool {
 }
 
 // TestPlan_PinnedRespected is the deterministic gate for the Pinned part of
-// invariant (3): the shard covering a pinned layer is assigned to the pinned
-// node (best-effort pinning, design 08 §6/§14).
+// invariant (3): a pin CONSISTENT with the chosen partition (the pinned layer's
+// shard already sits on the pinned node) is honoured and the plan stays feasible
+// (best-effort pinning, design 08 §6/§14). It derives the pin from the natural
+// plan so it does not hard-code the DP's shard boundaries.
 func TestPlan_PinnedRespected(t *testing.T) {
 	// 40 GB weights over two 30 GB nodes: both nodes are in the subset (k_min=2).
 	nodes := []Node{node("A", 30, 150), node("B", 30, 120)}
 	links := []Link{{From: "A", To: "B", RTTms: 3, BandwidthGBs: 12}}
 	model, _ := dpTestModel(8, 40)
 
-	// Pin a tail-ish layer to A (the host); the shard containing it must land on A.
-	pinned := map[LayerRange]NodeID{{Start: 6, End: 6}: "A"}
+	// The unpinned plan tells us which node naturally serves the layer.
+	base, err := Plan(nodes, links, model, Constraints{})
+	if err != nil {
+		t.Fatalf("baseline plan: %v", err)
+	}
+	const layer = 6
+	natural := ""
+	for _, a := range base.Assignments {
+		if a.LayerStart <= layer && layer <= a.LayerEnd {
+			natural = a.NodeID
+		}
+	}
+	if natural == "" {
+		t.Fatalf("baseline plan has no shard covering layer %d: %+v", layer, base.Assignments)
+	}
+
+	// Pin the layer to the node that already serves it: honoured, plan feasible.
+	pinned := map[LayerRange]NodeID{{Start: layer, End: layer}: NodeID(natural)}
 	dp, err := Plan(nodes, links, model, Constraints{Pinned: pinned})
 	if err != nil {
-		t.Fatalf("expected a plan, got error: %v", err)
+		t.Fatalf("a pin consistent with the partition must stay feasible, got: %v", err)
 	}
 
 	found := false
 	for _, a := range dp.Assignments {
-		if a.LayerStart <= 6 && 6 <= a.LayerEnd {
+		if a.LayerStart <= layer && layer <= a.LayerEnd {
 			found = true
-			if a.NodeID != "A" {
-				t.Fatalf("pinned layer 6 served by %q, want A (order %v)", a.NodeID, dp.PipelineOrder)
+			if a.NodeID != natural {
+				t.Fatalf("pinned layer %d served by %q, want %q (order %v)", layer, a.NodeID, natural, dp.PipelineOrder)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("no shard covers pinned layer 6: %+v", dp.Assignments)
+		t.Fatalf("no shard covers pinned layer %d: %+v", layer, dp.Assignments)
+	}
+}
+
+// TestPlan_PinnedOverflowRejected is the blindatura gate for pins (design 08
+// §6/§14): a pin that would relocate a shard onto a node with no room must be
+// REJECTED with a motivated *PlanError, not silently emitted as a plan that
+// violates memory/headroom. A hosts the head shard [0,k); pinning a TAIL layer
+// to A would pile all layers onto the single 30 GB node. Best-effort pinning
+// cannot re-partition around that, so validatePlanMemory must catch it.
+func TestPlan_PinnedOverflowRejected(t *testing.T) {
+	nodes := []Node{node("A", 30, 150), node("B", 30, 120)}
+	links := []Link{{From: "A", To: "B", RTTms: 3, BandwidthGBs: 12}}
+	model, _ := dpTestModel(8, 40) // needs both nodes; neither holds it alone
+
+	// Layer 6 can never sit on the host A (that would need A to serve >=7 layers),
+	// so it is always on the tail node; pinning it to A forces the overflow.
+	pinned := map[LayerRange]NodeID{{Start: 6, End: 6}: "A"}
+	dp, err := Plan(nodes, links, model, Constraints{Pinned: pinned})
+	if dp != nil {
+		t.Fatalf("expected no plan (pin overflows A), got %+v", dp)
+	}
+	var pe *PlanError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PlanError, got %T: %v", err, err)
+	}
+	if pe.DeficitGB <= 0 {
+		t.Errorf("expected a positive memory deficit on the rejected pin, got %.2f", pe.DeficitGB)
+	}
+	if len(pe.Suggestions) == 0 {
+		t.Error("expected remediation suggestions on the rejected pin")
 	}
 }

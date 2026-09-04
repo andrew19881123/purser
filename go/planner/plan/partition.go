@@ -131,14 +131,31 @@ func commTime(model ModelSpec, link *Link) float64 {
 }
 
 // computeTime estimates the seconds per decoded token the node spends on the
-// shard layers[i:j) (design 08 §6, computeTime). The model is memory-bound at
-// decode: bytes of *active* weights streamed per token / memory bandwidth. For
-// MoE only the active parameters are read, so the weight bytes are scaled by
-// ParamsActiveB/ParamsTotalB.
+// shard layers[i:j) (design 08 §6, computeTime). Decode is MEMORY-BANDWIDTH
+// bound: the engine streams the shard's weights once per token, so the per-token
+// time is (bytes of active weights read) / (memory bandwidth):
 //
-// CALIBRATABLE PLACEHOLDER: this is a FLOP/bandwidth proxy. Real per-node
-// compute profiles (design 08 §15, "profili di computeTime") must be measured
-// at first deploy; without them the DP optimises on approximate data.
+//	bytes_per_token ≈ quant.SizeGB·1e9 · activeFraction · (j-i)/Layers
+//	                  └─────────────── active params × bytes/weight for this shard
+//	computeTime      = bytes_per_token / (MemBandwidthGBs · 1e9)
+//
+// quant.SizeGB is the measured quantized weight footprint, so SizeGB/Layers is
+// the per-layer weight bytes and (SizeGB·1e9·activeFraction) is exactly
+// params_active × bytes_per_weight — no separate bits-per-weight constant is
+// needed. For MoE only the ACTIVE experts are read per token, so the bytes are
+// scaled by ParamsActiveB/ParamsTotalB.
+//
+// This is the DP's stage-cost proxy and uses PEAK bandwidth on purpose: the DP
+// only compares stages, so a common efficiency factor would not change its
+// min-max choice, and keeping it peak-based leaves the compute/comm balance (and
+// the DP == brute-force proof) exactly as the phase-C tests calibrated it. The
+// realised-bandwidth (MBU) correction that turns this into a wall-clock tok/s
+// figure is applied once, centrally, in estimatePerformance. A node that reports
+// no bandwidth falls back to referenceMemBandwidthGBs — neutral, so its stage
+// stays comparable rather than free.
+//
+// CALIBRATABLE: real per-node decode profiles (design 08 §15, "profili di
+// computeTime") should replace this proxy at first deploy.
 func computeTime(n Node, model ModelSpec, quant Quantization, i, j int) float64 {
 	if model.Layers <= 0 {
 		return 0

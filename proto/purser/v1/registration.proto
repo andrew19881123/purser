@@ -25,6 +25,19 @@ service RegistrationService {
 message JoinRequest {
   string join_token = 1;
   HardwareProfile hardware_profile = 2;
+
+  // Address (host:port) of this node's AgentService, as reachable by the
+  // control plane. The agent advertises it at Join time so the control plane
+  // can dial it directly instead of guessing "hostname + fixed port" — a
+  // convention that breaks when multiple agents run on the same host.
+  // Example: "192.168.1.10:50151".
+  string advertised_agent_addr = 3;
+
+  // Base address (host:port) where this node will serve the OpenAI-compatible
+  // inference API. Advertised at Join time so the control plane knows where to
+  // route inference traffic for deployments landed on this node.
+  // Example: "192.168.1.10:8000".
+  string advertised_inference_addr = 4;
 }
 
 message JoinReply {

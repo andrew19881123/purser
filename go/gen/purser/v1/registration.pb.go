@@ -31,8 +31,19 @@ type JoinRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	JoinToken       string                 `protobuf:"bytes,1,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
 	HardwareProfile *HardwareProfile       `protobuf:"bytes,2,opt,name=hardware_profile,json=hardwareProfile,proto3" json:"hardware_profile,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Address (host:port) of this node's AgentService, as reachable by the
+	// control plane. The agent advertises it at Join time so the control plane
+	// can dial it directly instead of guessing "hostname + fixed port" — a
+	// convention that breaks when multiple agents run on the same host.
+	// Example: "192.168.1.10:50151".
+	AdvertisedAgentAddr string `protobuf:"bytes,3,opt,name=advertised_agent_addr,json=advertisedAgentAddr,proto3" json:"advertised_agent_addr,omitempty"`
+	// Base address (host:port) where this node will serve the OpenAI-compatible
+	// inference API. Advertised at Join time so the control plane knows where to
+	// route inference traffic for deployments landed on this node.
+	// Example: "192.168.1.10:8000".
+	AdvertisedInferenceAddr string `protobuf:"bytes,4,opt,name=advertised_inference_addr,json=advertisedInferenceAddr,proto3" json:"advertised_inference_addr,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *JoinRequest) Reset() {
@@ -77,6 +88,20 @@ func (x *JoinRequest) GetHardwareProfile() *HardwareProfile {
 		return x.HardwareProfile
 	}
 	return nil
+}
+
+func (x *JoinRequest) GetAdvertisedAgentAddr() string {
+	if x != nil {
+		return x.AdvertisedAgentAddr
+	}
+	return ""
+}
+
+func (x *JoinRequest) GetAdvertisedInferenceAddr() string {
+	if x != nil {
+		return x.AdvertisedInferenceAddr
+	}
+	return ""
 }
 
 type JoinReply struct {
@@ -247,11 +272,13 @@ var File_purser_v1_registration_proto protoreflect.FileDescriptor
 
 const file_purser_v1_registration_proto_rawDesc = "" +
 	"\n" +
-	"\x1cpurser/v1/registration.proto\x12\tpurser.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16purser/v1/common.proto\"s\n" +
+	"\x1cpurser/v1/registration.proto\x12\tpurser.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16purser/v1/common.proto\"\xe3\x01\n" +
 	"\vJoinRequest\x12\x1d\n" +
 	"\n" +
 	"join_token\x18\x01 \x01(\tR\tjoinToken\x12E\n" +
-	"\x10hardware_profile\x18\x02 \x01(\v2\x1a.purser.v1.HardwareProfileR\x0fhardwareProfile\"^\n" +
+	"\x10hardware_profile\x18\x02 \x01(\v2\x1a.purser.v1.HardwareProfileR\x0fhardwareProfile\x122\n" +
+	"\x15advertised_agent_addr\x18\x03 \x01(\tR\x13advertisedAgentAddr\x12:\n" +
+	"\x19advertised_inference_addr\x18\x04 \x01(\tR\x17advertisedInferenceAddr\"^\n" +
 	"\tJoinReply\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1f\n" +
 	"\vclient_cert\x18\x02 \x01(\fR\n" +

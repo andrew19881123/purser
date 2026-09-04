@@ -160,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(cp_addr) = config.control_plane_addr.clone() {
         let profile = probe.probe();
         let join_token = config.join_token.clone().unwrap_or_default();
+        let (advertised_agent_addr, advertised_inference_addr) = config.advertised_addrs();
         let hb_source = Arc::new(AgentHeartbeatSource::new(
             Arc::clone(&machine),
             Arc::clone(&supervisor),
@@ -174,7 +175,15 @@ async fn main() -> anyhow::Result<()> {
                 token = %secrets::Redacted::new(&join_token),
                 "attempting enrollment"
             );
-            match discovery::join(&cp_addr, &join_token, profile).await {
+            match discovery::join(
+                &cp_addr,
+                &join_token,
+                profile,
+                advertised_agent_addr,
+                advertised_inference_addr,
+            )
+            .await
+            {
                 Ok(enrollment) => {
                     // Persist certificates via the secret store (never logged).
                     let _ = secret_store.put("client_cert", &enrollment.client_cert);

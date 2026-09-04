@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     ram_gb           REAL NOT NULL DEFAULT 0,
     vram_gb          REAL NOT NULL DEFAULT 0,
     state            TEXT NOT NULL DEFAULT '',
+    -- Addresses the agent advertised at Join time (host:port). Empty when not
+    -- advertised; the orchestrator then falls back to hostname + well-known port.
+    -- Added additively for existing databases by Migrate (see ensureColumn).
+    advertised_agent_addr     TEXT NOT NULL DEFAULT '',
+    advertised_inference_addr TEXT NOT NULL DEFAULT '',
     last_seen        TEXT,
     hardware_profile TEXT NOT NULL DEFAULT '{}',
     created_at       TEXT NOT NULL,

@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
-// Tuning constants. These are deliberately coarse placeholders — the design
-// (08 §10–§12) calls for calibrating them against real micro-benchmarks.
+// Tuning constants. Every performance coefficient below is a NAMED, CALIBRATABLE
+// knob: the values are defensible first-order estimates, but the design
+// (08 §10–§12, §15) calls for tightening them against real micro-benchmarks —
+// per-node decode profiles for the memory-bandwidth terms, and `tc netem`
+// sweeps for the link (commTime) terms. None of them is a magic number buried in
+// an expression; change them here and the whole planner re-calibrates.
 const (
 	// overheadOSRuntimeGB is the per-node memory reserved for the OS and the
 	// inference runtime, added on top of weights + KV cache (design 08 §4).
@@ -18,26 +22,44 @@ const (
 
 	// defaultHeadroomFraction is the fraction of a node's useful memory kept
 	// free as headroom (design 08 §6 uses HEADROOM in the stage-fit check).
-	// The minimal single-node skeleton reports headroom but does not enforce
-	// this margin yet.
+	// Multi-node stages must fit WITH this margin; the single-node plan (rule G3)
+	// only needs a non-negative fit. Enforced end-to-end by validatePlanMemory.
 	defaultHeadroomFraction = 0.10
 
 	// referenceMemBandwidthGBs normalises a node's memory bandwidth into a
-	// unit-less weight for usefulCapacity ranking (design 08 §5, normalize()).
+	// unit-less weight for usefulCapacity ranking (design 08 §5, normalize()). It
+	// also stands in as a NEUTRAL bandwidth when a node reports none, so an
+	// unknown-bandwidth node still yields a finite (not zero) time estimate.
 	referenceMemBandwidthGBs = 100.0
 
-	// expectedAcceptedTokens is the speculative-decoding acceptance count used
-	// to amortise the per-token round trip (design 08 §11, ~4–5 on coding).
+	// memBandwidthUtilFraction is the fraction of a node's PEAK memory bandwidth
+	// actually realised while streaming weights at decode — the Model-Bandwidth
+	// Utilisation (MBU). Real engines sustain only ~50–85% of the spec sheet
+	// figure (kernel launch gaps, non-contiguous experts, partial cache lines),
+	// so the raw peak-bandwidth model overestimates tok/s. 0.70 is a conservative
+	// mid-range default; CALIBRATABLE per engine/backend with a decode benchmark.
+	memBandwidthUtilFraction = 0.70
+
+	// expectedAcceptedTokens is the speculative-decoding effective speed-up
+	// applied to the decode rate when the model ships a draft: each verified
+	// target step advances the sequence by roughly this many tokens (design 08
+	// §11, ~4–5 accepted on coding-style traffic). CALIBRATABLE — the realised
+	// speed-up depends on the draft/target acceptance rate for the workload.
 	expectedAcceptedTokens = 4.5
 
 	// perfBandFraction is the ±band applied around the point estimate to build
-	// the min/max range shown in the UI. Uncalibrated placeholder.
+	// the min/max range shown in the UI. The point estimate rests on coarse,
+	// yet-to-be-calibrated coefficients, so the band makes that uncertainty
+	// explicit rather than implying false precision. CALIBRATABLE — narrow it as
+	// the coefficients are pinned down by benchmarks (design 08 §11, §15).
 	perfBandFraction = 0.30
 
 	// prefillComputeMultiple is how much faster prefill runs than decode: decode
-	// is memory-bound (streams weights per token) while prefill is compute-bound
-	// and batched. Rough placeholder multiple applied to the decode rate to get
-	// the prefill rate (design 08 §11). Uncalibrated — CALIBRATABLE.
+	// is memory-bound (streams weights once PER token) while prefill is
+	// compute-bound and processes the whole prompt in large batched matmuls that
+	// reuse each weight across many tokens. Applied as a multiple of the decode
+	// rate to get a prefill rate (design 08 §11). CALIBRATABLE — the true ratio
+	// depends on batch size, sequence length and the compute/bandwidth roofline.
 	prefillComputeMultiple = 8.0
 )
 
@@ -126,6 +148,12 @@ func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, co
 		}
 	}
 
+	// One node index shared by the multi-node loop and the final fit check.
+	nodeByID := make(map[string]Node, len(nodes))
+	for _, n := range nodes {
+		nodeByID[n.ID] = n
+	}
+
 	var plan *DeploymentPlan
 	if len(subsets[0]) == 1 {
 		// Rule G3 (design 08 §5): if the model fits on one node, don't
@@ -135,11 +163,6 @@ func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, co
 	} else {
 		// Phase C/D — evaluate each candidate subset and keep the cheapest
 		// feasible plan (design 08 §5 selection loop, §6 partition DP).
-		nodeByID := make(map[string]Node, len(nodes))
-		for _, n := range nodes {
-			nodeByID[n.ID] = n
-		}
-
 		var best *DeploymentPlan
 		for _, subset := range subsets {
 			if len(subset) < 2 {
@@ -170,6 +193,19 @@ func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, co
 			}
 		}
 		plan = best
+	}
+
+	// Blindatura dei vincoli (design 08 §6/§14): the AUTO pipeline guarantees
+	// every node fits its shard — phase B sizes the single-node case and the
+	// phase-C DP enforces the HEADROOM margin per stage — but the operator
+	// constraint passes can BYPASS those guarantees. applyPinnedRanges relocates
+	// a whole shard onto the pinned node without re-checking its memory, and
+	// ForceNodeCount == 1 short-circuits to a single-node plan that never verifies
+	// the fit. Re-verify the assembled plan against every node's useful memory and
+	// turn a constraint that makes it infeasible into a motivated *PlanError,
+	// rather than emitting a plan that silently violates memory/headroom.
+	if err := validatePlanMemory(plan, nodeByID, model, quant, c); err != nil {
+		return nil, err
 	}
 
 	// Phase E — speculative-draft placement on the pipeline tail (design 08 §8).
@@ -322,43 +358,155 @@ func singleNodePlan(n Node, model ModelSpec, quant Quantization, kv float64, lin
 	}
 }
 
-// estimateSingleNode produces a coarse, memory-bound decode/prefill RANGE for a
-// single-node deployment (design 08 §11). The whole model runs on one node, so
-// the pipeline bottleneck is just that node's per-token weight-streaming time;
-// estimatePerformance turns it into a min/max band. Coefficients are
-// uncalibrated placeholders.
-func estimateSingleNode(n Node, model ModelSpec, quant Quantization, headroom float64) PerfEstimate {
-	// Bytes of (active) weights streamed per decoded token. For MoE only the
-	// active experts are read, so scale the weight bytes by active/total.
-	activeFraction := 1.0
-	if model.ParamsTotalB > 0 && model.ParamsActiveB > 0 {
-		activeFraction = model.ParamsActiveB / model.ParamsTotalB
+// validatePlanMemory re-verifies, after all operator constraints have been
+// applied, that every node in the assembled plan actually holds everything now
+// assigned to it within its useful memory (design 08 §6/§14). It is the backstop
+// for the two constraint passes that can bypass the AUTO pipeline's own fit
+// guarantees:
+//
+//   - applyPinnedRanges relocates a whole shard onto the pinned node WITHOUT
+//     re-checking that node's memory, so a pin can pile more than one shard onto
+//     one node and blow past its capacity.
+//   - ForceNodeCount == 1 short-circuits to singleNodePlan, which reports but
+//     does not enforce the fit, so a model too large for the top node yields a
+//     plan with NEGATIVE headroom.
+//
+// The need is aggregated PER NODE across every shard assigned to it — weights +
+// KV share, plus a SINGLE per-node overhead (not one per shard) — and compared
+// to that node's useful memory. A plan that spans more than one distinct node
+// must additionally clear the design's HEADROOM margin (the same one the phase-C
+// DP enforces); a single-node plan (rule G3) need only be non-negative. On a
+// violation it returns a motivated *PlanError naming the offending node and the
+// constraint at fault, instead of letting an invalid plan escape.
+func validatePlanMemory(plan *DeploymentPlan, nodeByID map[string]Node, model ModelSpec, quant Quantization, c Constraints) error {
+	if plan == nil || len(plan.Assignments) == 0 {
+		return nil
 	}
-	activeWeightBytes := quant.SizeGB * 1e9 * activeFraction
+	ctx := model.ContextMax
 
-	bottleneck := 0.0 // seconds per decoded token (the single "stage")
-	if n.MemBandwidthGBs > 0 && activeWeightBytes > 0 {
-		bottleneck = activeWeightBytes / (n.MemBandwidthGBs * 1e9)
+	// Aggregate the layer count assigned to each distinct node (a pin can map two
+	// shards to the same node); preserve first-seen order for a stable message.
+	layersOn := make(map[string]int, len(plan.Assignments))
+	order := make([]string, 0, len(plan.Assignments))
+	for _, a := range plan.Assignments {
+		if _, seen := layersOn[a.NodeID]; !seen {
+			order = append(order, a.NodeID)
+		}
+		layersOn[a.NodeID] += a.LayerEnd - a.LayerStart + 1
 	}
+	multiNode := len(order) > 1
+
+	for _, id := range order {
+		n, ok := nodeByID[id]
+		if !ok {
+			return &PlanError{
+				Reason:      fmt.Sprintf("plan assigns layers to unknown node %q", id),
+				Suggestions: []string{"re-run planning against the current fleet"},
+			}
+		}
+		nLayers := layersOn[id]
+		weight := quant.SizeGB * float64(nLayers) / float64(model.Layers)
+		required := weight + kvCachePerNode(model, nLayers, ctx) + overheadOSRuntimeGB
+		useful := usefulMemory(n)
+
+		// Single-node plans (rule G3) do not reserve the HEADROOM margin; multi-node
+		// stages must, matching the phase-C DP's stage-fit check.
+		limit := useful
+		if multiNode {
+			limit = useful * (1 - defaultHeadroomFraction)
+		}
+		if required > limit {
+			return &PlanError{
+				Reason: fmt.Sprintf(
+					"%s forces %d of %d layer(s) onto node %q, needing %.1f GB but only %.1f GB is usable%s — the plan would violate memory/headroom",
+					constraintCulprit(c), nLayers, model.Layers, id, required, limit, headroomSuffix(multiNode)),
+				DeficitGB:   required - limit,
+				Suggestions: constraintSuggestions(c),
+			}
+		}
+	}
+	return nil
+}
+
+// constraintCulprit names the operator override most likely responsible for an
+// over-capacity node, for the validatePlanMemory error message.
+func constraintCulprit(c Constraints) string {
+	switch {
+	case len(c.Pinned) > 0 && c.ForceNodeCount != nil:
+		return "the pin/force-node-count constraints"
+	case len(c.Pinned) > 0:
+		return "a pinned layer range"
+	case c.ForceNodeCount != nil:
+		return fmt.Sprintf("force_node_count=%d", *c.ForceNodeCount)
+	default:
+		return "the plan"
+	}
+}
+
+// headroomSuffix annotates whether the usable figure already discounts HEADROOM.
+func headroomSuffix(multiNode bool) string {
+	if multiNode {
+		return fmt.Sprintf(" (after the %.0f%% headroom margin)", defaultHeadroomFraction*100)
+	}
+	return ""
+}
+
+// constraintSuggestions tailors the remediation hints to the offending override.
+func constraintSuggestions(c Constraints) []string {
+	switch {
+	case len(c.Pinned) > 0 && c.ForceNodeCount != nil:
+		return []string{"relax the pinned ranges", "drop or raise force_node_count", "add memory to the constrained node"}
+	case len(c.Pinned) > 0:
+		return []string{"pin the range to a node with more memory", "pin fewer layers", "drop the pin to let the DP balance the split"}
+	case c.ForceNodeCount != nil:
+		return []string{"raise force_node_count to spread the model across more nodes", "drop force_node_count to let phase B choose", "choose a smaller quantization"}
+	default:
+		return []string{"choose a smaller quantization", "add nodes with more (V)RAM"}
+	}
+}
+
+// estimateSingleNode produces a memory-bound decode/prefill RANGE for a
+// single-node deployment (design 08 §11). The whole model runs on one node, so
+// the pipeline "bottleneck" is just that node's per-token weight-streaming time
+// over ALL layers — exactly computeTime for the full shard [0, Layers). Reusing
+// computeTime (rather than re-deriving the formula here) keeps the single-node
+// and multi-node estimates consistent and inherits its memory-bandwidth model,
+// the MBU factor, and the unknown-bandwidth fallback — so this never returns a
+// zero rate for a node that merely failed to report its bandwidth.
+func estimateSingleNode(n Node, model ModelSpec, quant Quantization, headroom float64) PerfEstimate {
+	bottleneck := computeTime(n, model, quant, 0, model.Layers)
 	return estimatePerformance(bottleneck, headroom, model)
 }
 
-// estimatePerformance turns a pipeline bottleneck (seconds per decoded token,
-// already including any inter-stage communication) into a decode/prefill
-// throughput RANGE (design 08 §11). The bottleneck — the slowest ("collo")
-// stage — sets the pipeline throughput, so decode ≈ 1 / bottleneck. When the
-// model ships a speculative draft, each verified step advances the sequence by
-// ~expectedAcceptedTokens tokens, so the decode rate is scaled up accordingly.
+// estimatePerformance turns a pipeline bottleneck (seconds per decoded token at
+// PEAK bandwidth, already including any inter-stage communication) into a
+// decode/prefill throughput RANGE (design 08 §11). The bottleneck — the slowest
+// ("collo") stage — sets the pipeline pace, so decode ≈ 1 / bottleneck.
 //
-// The result is deliberately a RANGE, never a single number: the underlying
-// coefficients (computeTime/commTime, the prefill multiple, the acceptance
-// count) are uncalibrated, so the point estimate is widened by ±perfBandFraction
-// to make that uncertainty explicit in the UI (design 08 §11, §15). All
-// coefficients are named, CALIBRATABLE constants.
+// The point estimate is built in three documented, calibratable steps:
+//
+//  1. MBU correction: computeTime uses PEAK memory bandwidth, but engines sustain
+//     only memBandwidthUtilFraction of it at decode. Dividing the bottleneck by
+//     that fraction converts the peak-bandwidth time into a realised wall-clock
+//     time. (The correction is exact for the compute-bound bottleneck of a
+//     single node; on a multi-node bottleneck it also scales the usually-small
+//     comm term, which is conservative — it can only lower the reported rate.)
+//  2. Speculative decoding: when the model ships a draft, each verified target
+//     step advances the sequence by ~expectedAcceptedTokens tokens, so the
+//     decode rate is scaled up by that effective speed-up (design 08 §11).
+//  3. Prefill: compute-bound and batched, so far higher throughput than the
+//     memory-bound decode — a prefillComputeMultiple multiple of the decode rate.
+//
+// The result is deliberately a RANGE, never a single number: the coefficients
+// are coarse and not yet calibrated, so the point estimate is widened by
+// ±perfBandFraction to make that uncertainty explicit in the UI (design 08 §11,
+// §15). Every coefficient above is a named, CALIBRATABLE constant.
 func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec) PerfEstimate {
 	decode := 0.0
-	if bottleneckSecPerTok > 0 {
-		decode = 1.0 / bottleneckSecPerTok
+	if bottleneckSecPerTok > 0 && memBandwidthUtilFraction > 0 {
+		// Realised time = peak-bandwidth time / MBU; decode rate is its inverse.
+		realisedSecPerTok := bottleneckSecPerTok / memBandwidthUtilFraction
+		decode = 1.0 / realisedSecPerTok
 	}
 	if model.Draft.Available {
 		// Speculative decoding amortises the per-token round trip over the
