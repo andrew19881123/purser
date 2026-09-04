@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Purser Fleet Agent — macOS launchd daemon.
+
+  Install as a SYSTEM daemon:
+    sudo cp dev.purser.agent.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/dev.purser.agent.plist
+    sudo chmod 644        /Library/LaunchDaemons/dev.purser.agent.plist
+    sudo mkdir -p /usr/local/var/log/purser
+    sudo launchctl load -w /Library/LaunchDaemons/dev.purser.agent.plist
+
+  Unload:
+    sudo launchctl unload -w /Library/LaunchDaemons/dev.purser.agent.plist
+
+  launchd has no EnvironmentFile equivalent. Either edit the inline
+  EnvironmentVariables below, or keep them out of the plist and export them
+  from a wrapper script referenced by ProgramArguments. Keep the join token and
+  any secrets out of world-readable files.
+
+  SECURITY: set PURSER_AGENT_BIND to a trusted-subnet address; the inference
+  engine worker is NOT sandboxed and must never face the public internet.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.purser.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/purser-agent</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PURSER_AGENT_BIND</key>
+        <string>0.0.0.0:50151</string>
+        <key>PURSER_INFERENCE_PORT</key>
+        <string>8000</string>
+        <key>PURSER_CONTROL_PLANE_ADDR</key>
+        <string>http://cp.internal:9443</string>
+        <key>PURSER_CLUSTER_ID</key>
+        <string>default</string>
+        <!-- One-time join token issued by the control plane. -->
+        <key>PURSER_JOIN_TOKEN</key>
+        <string>replace-me</string>
+    </dict>
+
+    <!-- Start at boot and restart on crash. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/purser/agent.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/purser/agent.err.log</string>
+</dict>
+</plist>

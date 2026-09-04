@@ -23,6 +23,9 @@ ui/build/
 # --- Built binaries ---
 /bin/
 
+# --- Release staging (scripts/build-release.sh) ---
+/dist/
+
 # --- Runtime state (NEVER commit — may contain keys/tokens) ---
 *.db
 *.sqlite

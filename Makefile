@@ -31,7 +31,7 @@ BUF   := $(GOBIN)/buf
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean
+.PHONY: all help setup gen build test lint fmt clean release
 
 all: gen build
 
@@ -44,6 +44,7 @@ help:
 	@echo "  make lint    clippy (Rust) + go vet (Go)"
 	@echo "  make fmt     rustfmt (Rust) + go fmt (Go)"
 	@echo "  make clean   Remove build artifacts"
+	@echo "  make release Build stripped release binaries + stage dist/ (scripts/build-release.sh)"
 
 setup:
 	./tools/setup-toolchain.sh
@@ -77,6 +78,9 @@ fmt:
 	@for m in $(GO_MODULES); do \
 		( cd go/$$m && "$(GO)" fmt ./... ); \
 	done
+
+release:
+	./scripts/build-release.sh
 
 clean:
 	-"$(CARGO)" clean --manifest-path $(RUST_MANIFEST)

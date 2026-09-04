@@ -1,7 +1,9 @@
 // Package license implements Purser's open-core license gate.
 //
-// Purser is AGPL-3.0 community software; a handful of enterprise capabilities
-// (see LICENSING.md) are compiled into the public tree but only *enabled* in
+// Purser's core is MIT-licensed open-source software; the code under
+// enterprise/ (including this package) is source-available under the Purser
+// Enterprise License and is key-gated. These enterprise capabilities (see
+// LICENSING.md) are compiled into the public tree but only *enabled* in
 // production by a valid, cryptographically signed license key. Verification is
 // entirely OFFLINE — Purser is designed to run air-gapped, so there is no
 // phone-home, no license server, and no network dependency of any kind. A key

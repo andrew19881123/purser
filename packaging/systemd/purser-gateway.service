@@ -1,0 +1,32 @@
+[Unit]
+Description=Purser API Gateway (OpenAI-compatible /v1 endpoint, auth, quota, SSE)
+Documentation=https://github.com/purser/purser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=purser
+Group=purser
+# Environment. PURSER_GATEWAY_HOST and PURSER_GATEWAY_PORT are MANDATORY —
+# the gateway refuses to start without them. See /etc/purser/gateway.env
+# (install from gateway.env.example).
+EnvironmentFile=/etc/purser/gateway.env
+ExecStart=/usr/local/bin/purser-gateway
+Restart=on-failure
+RestartSec=2
+
+# --- Sandboxing / hardening -------------------------------------------------
+# The gateway is stateless; StateDirectory is provided for parity / future use.
+StateDirectory=purser
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

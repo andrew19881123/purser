@@ -1,0 +1,35 @@
+[Unit]
+Description=Purser Control Plane (registry, orchestrator, reconciler, internal PKI, REST + gRPC API)
+Documentation=https://github.com/purser/purser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=purser
+Group=purser
+# Environment (PURSER_ADDR, PURSER_GRPC_ADDR, PURSER_DB, PURSER_PKI_DIR, ...).
+# See /etc/purser/control-plane.env (install from control-plane.env.example).
+EnvironmentFile=/etc/purser/control-plane.env
+ExecStart=/usr/local/bin/control-plane
+Restart=on-failure
+RestartSec=2
+
+# --- Sandboxing / hardening -------------------------------------------------
+# systemd creates and owns /var/lib/purser (StateDirectory), mode 0700, owned
+# by User=purser. Under ProtectSystem=strict it is the ONLY writable location,
+# so point PURSER_DB and PURSER_PKI_DIR inside it, e.g.:
+#   PURSER_DB=/var/lib/purser/purser-registry.db
+#   PURSER_PKI_DIR=/var/lib/purser/pki-state
+StateDirectory=purser
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
