@@ -6,6 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![CI](https://github.com/andrew19881123/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/andrew19881123/purser/actions/workflows/ci.yml)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](PROJECT_STATUS.md)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://andrew19881123.github.io/purser/)
+
+📖 **[Full documentation → andrew19881123.github.io/purser](https://andrew19881123.github.io/purser/)**
 
 ## What is Purser
 
