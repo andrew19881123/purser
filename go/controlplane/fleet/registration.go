@@ -108,14 +108,15 @@ func (s *RegistrationServer) applyHeartbeat(ctx context.Context, hb *purserv1.He
 
 // NodeMetrics is the latest heartbeat sample for a node.
 type NodeMetrics struct {
-	NodeID     string    `json:"node_id"`
-	State      string    `json:"state"`
-	PrefillTps float64   `json:"prefill_tok_s"`
-	DecodeTps  float64   `json:"decode_tok_s"`
-	RAMUsedGB  float64   `json:"ram_used_gb"`
-	VRAMUsedGB float64   `json:"vram_used_gb"`
-	QueueDepth uint32    `json:"queue_depth"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	NodeID              string    `json:"node_id"`
+	State               string    `json:"state"`
+	PrefillTps          float64   `json:"prefill_tok_s"`
+	DecodeTps           float64   `json:"decode_tok_s"`
+	RAMUsedGB           float64   `json:"ram_used_gb"`
+	VRAMUsedGB          float64   `json:"vram_used_gb"`
+	QueueDepth          uint32    `json:"queue_depth"`
+	AcceptedTokensRatio float64   `json:"accepted_tokens_ratio"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // LiveMetrics is a concurrency-safe cache of the latest per-node metrics,
@@ -139,20 +140,73 @@ func (l *LiveMetrics) Update(nodeID, state string, m *purserv1.EngineMetrics, ts
 		nm.RAMUsedGB = m.GetRamUsedGb()
 		nm.VRAMUsedGB = m.GetVramUsedGb()
 		nm.QueueDepth = m.GetQueueDepth()
+		nm.AcceptedTokensRatio = m.GetAcceptedTokensRatio()
 	}
 	l.mu.Lock()
 	l.byID[nodeID] = nm
 	l.mu.Unlock()
 }
 
-// Snapshot returns the current per-node metrics. It satisfies the HTTP server's
-// MetricsSource interface.
+// Get returns the latest metrics sample for nodeID. ok is false when the node
+// has not yet sent a heartbeat.
+func (l *LiveMetrics) Get(nodeID string) (NodeMetrics, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	m, ok := l.byID[nodeID]
+	return m, ok
+}
+
+// Snapshot returns the current per-node metrics in the SSE wire format. It
+// satisfies the HTTP server's MetricsSource interface. Only nodes that have
+// reported at least one heartbeat appear; use the server's metricsSnapshot
+// (which joins against the registry) when zero-fill for silent nodes is
+// needed.
+//
+// Wire shape:
+//
+//	{
+//	  "at":                     "RFC3339",
+//	  "aggregate_decode_tok_s": 0.0,
+//	  "nodes": [
+//	    {"node_id": "...", "state": "...", "metrics": {decode_tok_s, …}}
+//	  ]
+//	}
 func (l *LiveMetrics) Snapshot(_ context.Context) (any, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	out := make([]NodeMetrics, 0, len(l.byID))
-	for _, m := range l.byID {
-		out = append(out, m)
+	type metricsWire struct {
+		PrefillTokS         float64 `json:"prefill_tok_s"`
+		DecodeTokS          float64 `json:"decode_tok_s"`
+		RAMUsedGB           float64 `json:"ram_used_gb"`
+		VRAMUsedGB          float64 `json:"vram_used_gb"`
+		QueueDepth          uint32  `json:"queue_depth"`
+		AcceptedTokensRatio float64 `json:"accepted_tokens_ratio"`
 	}
-	return map[string]any{"nodes": out, "count": len(out)}, nil
+	type nodeWire struct {
+		NodeID  string      `json:"node_id"`
+		State   string      `json:"state"`
+		Metrics metricsWire `json:"metrics"`
+	}
+	out := make([]nodeWire, 0, len(l.byID))
+	var aggDecode float64
+	for _, m := range l.byID {
+		out = append(out, nodeWire{
+			NodeID: m.NodeID,
+			State:  m.State,
+			Metrics: metricsWire{
+				PrefillTokS:         m.PrefillTps,
+				DecodeTokS:          m.DecodeTps,
+				RAMUsedGB:           m.RAMUsedGB,
+				VRAMUsedGB:          m.VRAMUsedGB,
+				QueueDepth:          m.QueueDepth,
+				AcceptedTokensRatio: m.AcceptedTokensRatio,
+			},
+		})
+		aggDecode += m.DecodeTps
+	}
+	return map[string]any{
+		"at":                     time.Now().UTC().Format(time.RFC3339),
+		"aggregate_decode_tok_s": aggDecode,
+		"nodes":                  out,
+	}, nil
 }

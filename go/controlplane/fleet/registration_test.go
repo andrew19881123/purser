@@ -3,6 +3,7 @@ package fleet_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net"
 	"testing"
 	"time"
@@ -254,10 +255,32 @@ func TestRegistration_HeartbeatUpdatesRegistryAndMetrics(t *testing.T) {
 		t.Error("last_seen not updated by heartbeat")
 	}
 
-	// Live metrics cache updated.
-	snap, _ := h.srv.Metrics().Snapshot(ctx)
-	m, ok := snap.(map[string]any)
-	if !ok || m["count"].(int) < 1 {
-		t.Errorf("expected live metrics for the node, got %+v", snap)
+	// Live metrics cache updated: verify the new nested SSE wire format.
+	snap, err := h.srv.Metrics().Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	// Marshal → unmarshal through JSON so we can inspect any struct type.
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	nodes, ok := payload["nodes"].([]any)
+	if !ok || len(nodes) < 1 {
+		t.Errorf("expected at least one node in snapshot, got: %s", string(b))
+	}
+	if _, hasAt := payload["at"]; !hasAt {
+		t.Errorf("snapshot missing 'at' field; got: %s", string(b))
+	}
+	// Verify nested metrics sub-object is present.
+	if len(nodes) > 0 {
+		node0, _ := nodes[0].(map[string]any)
+		if _, hasMetrics := node0["metrics"]; !hasMetrics {
+			t.Errorf("node entry missing nested 'metrics' field; got: %v", node0)
+		}
 	}
 }
