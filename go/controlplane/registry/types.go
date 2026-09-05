@@ -63,15 +63,35 @@ type Link struct {
 
 // Model is a catalog entry. Spec carries the full purserv1.ModelSpec as JSON
 // (architecture, quantizations, draft info, ...).
+//
+// Convention for the Type field:
+//
+//   - "llm"       — autoregressive language model (chat/completions endpoints).
+//   - "embedding" — encoder model served via the /v1/embeddings endpoint.
+//
+// The default is "llm". The Planner treats all models identically regardless of
+// Type (it is informational only at this stage); the field exists so the catalog
+// and the UI can label and filter models by their primary capability.
+//
+// Source carries the import provenance (HuggingFace Hub, s3://, gs://, az://) as
+// a JSON blob; it is omitted for models registered directly via POST /api/v1/models.
+// The agent reads DownloadURL from Source to fetch the model weights at deploy time.
 type Model struct {
-	ID           string          `json:"id"`
-	Family       string          `json:"family"`
-	Architecture string          `json:"architecture"`
-	ParamsTotalB float64         `json:"params_total_b"`
-	Engine       string          `json:"engine"`
-	Spec         json.RawMessage `json:"spec,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID           string  `json:"id"`
+	Family       string  `json:"family"`
+	Architecture string  `json:"architecture"`
+	ParamsTotalB float64 `json:"params_total_b"`
+	Engine       string  `json:"engine"`
+	// Type distinguishes the model's primary serving mode: "llm" or "embedding".
+	// Defaults to "llm" when not supplied by the caller.
+	Type string          `json:"type,omitempty"`
+	Spec json.RawMessage `json:"spec,omitempty"`
+	// Source is the import provenance stored as an opaque JSON blob. The shape
+	// depends on the import source type (e.g. {"type":"huggingface","repo":"..."} or
+	// {"type":"s3","bucket":"...","download_url":"..."}).
+	Source    json.RawMessage `json:"source,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // Plan is a DeploymentPlan produced by the planner. Plan carries the full
@@ -98,10 +118,15 @@ type Deployment struct {
 
 // APIKey is a gateway credential. Only a hash of the key is ever persisted.
 type APIKey struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	KeyHash   string    `json:"-"`
-	Tenant    string    `json:"tenant"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	KeyHash string `json:"-"`
+	Tenant  string `json:"tenant"`
+	// Role controls what the key may do: "admin" (full CP access), "viewer"
+	// (GET-only on /api/v1), or "inference" (gateway /v1 only — cannot call
+	// the CP management surface directly). Defaults to "admin" so keys created
+	// before RBAC was introduced retain full access.
+	Role      string    `json:"role"`
 	Quota     int64     `json:"quota"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
@@ -135,6 +160,23 @@ type AuditEntry struct {
 	Seq       uint64          `json:"seq"`
 	PrevHash  string          `json:"prev_hash"`
 	Hash      string          `json:"hash"`
+}
+
+// KeyUsageSummary is the aggregate token usage for a single API key.
+type KeyUsageSummary struct {
+	APIKeyID      string `json:"api_key_id"`
+	TotalRequests int64  `json:"total_requests"`
+	InputTokens   int64  `json:"input_tokens"`
+	OutputTokens  int64  `json:"output_tokens"`
+}
+
+// TenantUsage is aggregate token usage grouped by tenant, returned by
+// GetUsageSummary.
+type TenantUsage struct {
+	Tenant        string `json:"tenant"`
+	TotalRequests int64  `json:"total_requests"`
+	InputTokens   int64  `json:"input_tokens"`
+	OutputTokens  int64  `json:"output_tokens"`
 }
 
 // Cert tracks a certificate issued by the internal CA (see package pki).

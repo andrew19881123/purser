@@ -7,9 +7,9 @@ description: >-
   gRPC/mTLS; expose the Control Plane via LoadBalancer/NodePort to reach them.
 type: application
 # Chart version — bump on any change to the chart itself.
-version: 0.1.1
+version: 0.2.0
 # Version of the Purser application shipped by this chart (image tag default).
-appVersion: "0.1.1"
+appVersion: "0.2.0"
 keywords:
   - purser
   - llm

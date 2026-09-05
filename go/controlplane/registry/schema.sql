@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS models (
     params_total_b REAL NOT NULL DEFAULT 0,
     engine         TEXT NOT NULL DEFAULT '',
     spec           TEXT NOT NULL DEFAULT '{}',
+    -- source carries import provenance (HuggingFace Hub, s3://, gs://, az://)
+    -- as a JSON blob. Added additively for existing databases by Migrate (see
+    -- ensureColumn). Empty for models registered directly.
+    source         TEXT NOT NULL DEFAULT '{}',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
 );
@@ -118,3 +122,15 @@ CREATE TABLE IF NOT EXISTS certs (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_certs_state ON certs (state);
+
+-- usage_log: per-request token accounting for chargeback/billing.
+CREATE TABLE IF NOT EXISTS usage_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id    TEXT NOT NULL,
+    model_id      TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    request_at    TEXT NOT NULL  -- RFC3339
+);
+CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log (api_key_id);
+CREATE INDEX IF NOT EXISTS idx_usage_log_request_at ON usage_log (request_at);

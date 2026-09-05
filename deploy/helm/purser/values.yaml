@@ -17,13 +17,13 @@ image:
   controlPlane:
     repository: ghcr.io/andrew19881123/purser-control-plane
     # Defaults to .Chart.AppVersion when left empty.
-    tag: "0.1.1"
+    tag: "0.2.0"
   gateway:
     repository: ghcr.io/andrew19881123/purser-gateway
-    tag: "0.1.1"
+    tag: "0.2.0"
   ui:
     repository: ghcr.io/andrew19881123/purser-ui
-    tag: "0.1.1"
+    tag: "0.2.0"
 
 # Secrets for pulling from a private registry, e.g. [{ name: regcred }].
 imagePullSecrets: []
@@ -130,11 +130,46 @@ ingress:
   host: ""                # required when enabled; e.g. purser.example.com
   tls: []                 # standard Ingress TLS list
 
+# -- TLS / cert-manager integration.
+# When tls.certManager.enabled=true the chart renders a cert-manager.io/v1
+# Certificate CR for the Control Plane gRPC/mTLS endpoint. The Certificate
+# targets the same secret name that the Control Plane mounts for its server
+# certificate ({{ fullname }}-control-plane-tls). Requires cert-manager v1.x
+# installed in the cluster.
+tls:
+  certManager:
+    enabled: false        # set true to use cert-manager for control-plane TLS
+    issuerRef:
+      name: ""            # e.g. "letsencrypt-prod" or "internal-ca"
+      kind: "ClusterIssuer"
+    duration: "8760h"     # 1 year
+    renewBefore: "720h"   # 30 days
+
 # Enterprise license (offline-verified against the embedded public key; no
 # phone-home). Optional. When set, it is stored in a Secret and exposed to the
 # Control Plane as PURSER_LICENSE_KEY. Empty => community edition.
 license:
   key: ""
+
+# -- External Secrets Operator (ESO) integration.
+# When externalSecrets.enabled=true, ExternalSecret CRDs (apiVersion
+# external-secrets.io/v1beta1) are rendered instead of inline Kubernetes
+# Secrets. Set secretStoreRef to point at your ClusterSecretStore or
+# SecretStore, and fill in the remoteRefs with the vault paths for each secret.
+# Only remoteRefs with a non-empty value generate an ExternalSecret.
+#
+# Requires the External Secrets Operator installed in the cluster:
+#   https://external-secrets.io/latest/introduction/getting-started/
+externalSecrets:
+  enabled: false          # set true to use ESO instead of inline secret values
+  secretStoreRef:
+    name: ""              # name of the ClusterSecretStore or SecretStore
+    kind: "ClusterSecretStore"
+  # per-secret remote key paths — fill in for each secret your vault holds
+  remoteRefs:
+    joinToken: ""         # e.g. "secret/data/purser/join-token"
+    internalToken: ""     # e.g. "secret/data/purser/internal-token"
+    licenseKey: ""        # e.g. "secret/data/purser/license-key"
 
 # Pod-level security context for the Control Plane. The distroless image runs as
 # UID 65532; fsGroup makes the persistent volume group-writable for that user.

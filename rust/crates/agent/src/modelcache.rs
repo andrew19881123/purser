@@ -29,6 +29,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
+#[cfg(feature = "http-fetch")]
+use tokio_stream::StreamExt as _;
 
 /// A model artifact to fetch and cache.
 #[derive(Clone, Debug)]
@@ -121,6 +123,140 @@ impl Fetcher for FileMirrorFetcher {
             .await
             .map_err(|e| anyhow::anyhow!("copy {} -> {}: {e}", src.display(), dest.display()))?;
         Ok(())
+    }
+}
+
+/// Downloads model artifacts over HTTP(S).
+///
+/// Enabled via the `http-fetch` Cargo feature. Each request uses a 30-second
+/// per-request timeout and the `"purser-agent/model-cache"` User-Agent.
+/// Transient failures (5xx responses and network/timeout errors) are retried
+/// up to `max_retries` times; 4xx and other permanent errors fail immediately.
+///
+/// The blob is staged to `<dest>.tmp` first and atomically renamed into place,
+/// so a partial download is never exposed to the checksum verifier.
+#[cfg(feature = "http-fetch")]
+pub struct HttpFetcher {
+    client: reqwest::Client,
+    max_retries: u32,
+}
+
+#[cfg(feature = "http-fetch")]
+impl HttpFetcher {
+    /// Construct an `HttpFetcher` with a 30-second timeout.
+    ///
+    /// `max_retries` is the number of additional attempts after the first
+    /// failure; `0` means try once and give up on any error.
+    pub fn new(max_retries: u32) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent("purser-agent/model-cache")
+            .build()
+            .expect("failed to construct reqwest::Client");
+        Self {
+            client,
+            max_retries,
+        }
+    }
+}
+
+#[cfg(feature = "http-fetch")]
+#[async_trait]
+impl Fetcher for HttpFetcher {
+    async fn fetch(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
+        use tokio::io::AsyncWriteExt as _;
+
+        // Stage to `<dest>.tmp` so a partial download never reaches the verifier.
+        let tmp = {
+            let mut name = dest.file_name().unwrap_or_default().to_os_string();
+            name.push(".tmp");
+            dest.with_file_name(name)
+        };
+
+        let mut last_err: Option<anyhow::Error> = None;
+
+        for attempt in 0..=self.max_retries {
+            // Clean up any leftover staging file from the previous attempt.
+            if attempt > 0 {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                if let Some(e) = &last_err {
+                    tracing::warn!(url, attempt, error = %e, "transient fetch error, retrying");
+                }
+            }
+
+            // ── Send request ──────────────────────────────────────────────
+            let resp = match self.client.get(url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(anyhow::anyhow!("request failed: {e}"));
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            if status.is_server_error() {
+                // 5xx — transient; retry.
+                last_err = Some(anyhow::anyhow!("server error: HTTP {}", status.as_u16()));
+                continue;
+            }
+            if !status.is_success() {
+                // 4xx / exhausted redirects — permanent; fail immediately.
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(anyhow::anyhow!(
+                    "HTTP {} fetching {url}",
+                    status.as_u16()
+                ));
+            }
+
+            // ── Stream body to staging file ───────────────────────────────
+            let mut file = match tokio::fs::File::create(&tmp).await {
+                Ok(f) => f,
+                Err(e) => return Err(anyhow::anyhow!("create staging file: {e}")),
+            };
+
+            let mut stream = Box::pin(resp.bytes_stream());
+            let mut body_err: Option<anyhow::Error> = None;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        if let Err(e) = file.write_all(&bytes).await {
+                            body_err = Some(anyhow::anyhow!("write error: {e}"));
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        body_err = Some(anyhow::anyhow!("stream error: {e}"));
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = body_err {
+                last_err = Some(e);
+                continue;
+            }
+
+            if let Err(e) = file.flush().await {
+                last_err = Some(anyhow::anyhow!("flush staging file: {e}"));
+                continue;
+            }
+            drop(file);
+
+            // ── Atomic promotion ──────────────────────────────────────────
+            // rename(2) is atomic within a filesystem; fall back to copy
+            // for cross-filesystem staging (e.g. /tmp → /mnt/models).
+            if tokio::fs::rename(&tmp, dest).await.is_err() {
+                tokio::fs::copy(&tmp, dest).await.map_err(|e| {
+                    anyhow::anyhow!("finalize {} -> {}: {e}", tmp.display(), dest.display())
+                })?;
+                let _ = tokio::fs::remove_file(&tmp).await;
+            }
+            return Ok(());
+        }
+
+        let _ = tokio::fs::remove_file(&tmp).await;
+        Err(last_err.unwrap_or_else(|| {
+            anyhow::anyhow!("all {} fetch attempt(s) failed", self.max_retries + 1)
+        }))
     }
 }
 
@@ -613,5 +749,124 @@ mod tests {
     fn _assert_send_sync() {
         fn is_send_sync<T: Send + Sync>() {}
         is_send_sync::<Arc<ModelCache>>();
+    }
+
+    // ── HttpFetcher tests (require `http-fetch` feature + a live axum server) ──
+
+    #[cfg(feature = "http-fetch")]
+    mod http_fetcher_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        use axum::{routing::get, Router};
+        use tempfile::tempdir;
+
+        /// Bind a loopback server on an OS-assigned port and return `http://…`.
+        async fn start_server(router: Router) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            format!("http://{addr}")
+        }
+
+        /// A small payload is downloaded and the file contents match.
+        #[tokio::test]
+        async fn http_fetcher_downloads_to_dest() {
+            let app =
+                Router::new().route("/weights.bin", get(|| async { "hello weights" }));
+            let base = start_server(app).await;
+
+            let dir = tempdir().unwrap();
+            let dest = dir.path().join("weights.bin");
+            let fetcher = HttpFetcher::new(0);
+            fetcher
+                .fetch(&format!("{base}/weights.bin"), &dest)
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read(&dest).await.unwrap(),
+                b"hello weights"
+            );
+        }
+
+        /// Two 500s followed by a 200 succeeds with enough retries.
+        #[tokio::test]
+        async fn http_fetcher_retries_on_5xx() {
+            use axum::http::StatusCode;
+
+            let counter = Arc::new(AtomicU32::new(0));
+            let c = Arc::clone(&counter);
+            let app = Router::new().route(
+                "/file",
+                get(move || {
+                    let c = Arc::clone(&c);
+                    async move {
+                        let n = c.fetch_add(1, Ordering::SeqCst);
+                        if n < 2 {
+                            (StatusCode::INTERNAL_SERVER_ERROR, "")
+                        } else {
+                            (StatusCode::OK, "ok data")
+                        }
+                    }
+                }),
+            );
+            let base = start_server(app).await;
+
+            let dir = tempdir().unwrap();
+            let dest = dir.path().join("file");
+            // max_retries=3 → up to 4 attempts; 2 failures + 1 success uses 3.
+            let fetcher = HttpFetcher::new(3);
+            fetcher
+                .fetch(&format!("{base}/file"), &dest)
+                .await
+                .unwrap();
+            assert_eq!(tokio::fs::read(&dest).await.unwrap(), b"ok data");
+            // Server received exactly 3 requests (2 failures + 1 success).
+            assert_eq!(counter.load(Ordering::SeqCst), 3);
+        }
+
+        /// Permanent 500s exhaust all retries and return an error.
+        #[tokio::test]
+        async fn http_fetcher_fails_after_max_retries() {
+            use axum::http::StatusCode;
+
+            let counter = Arc::new(AtomicU32::new(0));
+            let c = Arc::clone(&counter);
+            let app = Router::new().route(
+                "/fail",
+                get(move || {
+                    let c = Arc::clone(&c);
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                }),
+            );
+            let base = start_server(app).await;
+
+            let dir = tempdir().unwrap();
+            let dest = dir.path().join("fail");
+            // max_retries=2 → 3 total attempts, all fail.
+            let fetcher = HttpFetcher::new(2);
+            let err = fetcher
+                .fetch(&format!("{base}/fail"), &dest)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("500")
+                    || err.to_string().contains("server error")
+                    || err.to_string().contains("attempt"),
+                "unexpected error message: {err}"
+            );
+            // dest must not have been created.
+            assert!(!dest.exists(), "dest should not exist after failed fetch");
+            // Server must have received exactly 3 requests.
+            assert_eq!(counter.load(Ordering::SeqCst), 3);
+        }
     }
 }

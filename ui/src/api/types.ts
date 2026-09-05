@@ -303,9 +303,25 @@ export interface JoinInfo {
   expiresAt: string;
 }
 
+/**
+ * Result of POST /api/v1/join-token — an ephemeral, TTL-scoped enrollment
+ * token generated on demand. Shown to the operator exactly once.
+ */
+export interface JoinTokenResult {
+  /** The raw join token string (PURSER_JOIN_TOKEN). */
+  token: string;
+  /** Cluster identifier the agent should join (PURSER_CLUSTER_ID). */
+  clusterId: string;
+  /** ISO-8601 expiry timestamp. */
+  expiresAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Settings — API keys (managed by control plane, used as Bearer tokens on /v1).
 // ---------------------------------------------------------------------------
+
+/** RBAC role for an API key. */
+export type ApiKeyRole = 'admin' | 'viewer' | 'inference';
 
 export interface ApiKey {
   id: string;
@@ -313,6 +329,11 @@ export interface ApiKey {
   team: string;
   /** shown prefix only; the full secret is returned exactly once on creation */
   prefix: string;
+  /**
+   * RBAC role: "admin" = full CP access, "viewer" = GET-only on /api/v1,
+   * "inference" = gateway /v1 only. Defaults to "admin" for backward compat.
+   */
+  role: ApiKeyRole;
   createdAt: string;
   lastUsedAt: string | null;
   /** monthly request quota; null = unlimited */
@@ -359,4 +380,73 @@ export interface OpenAIModel {
   id: string;
   object: 'model';
   ownedBy: string;
+}
+
+// ---------------------------------------------------------------------------
+// Model Studio — import sources and plan-preview response.
+// These are the UI-side contracts for POST /api/v1/models/import
+// (future backend endpoint) and POST /api/v1/models/{id}/plan.
+// ---------------------------------------------------------------------------
+
+export type ImportSourceType =
+  | 'huggingface'
+  | 'object_storage'
+  | 'sagemaker'
+  | 'vertexai'
+  | 'azure_ml'
+  | 'catalog';
+
+export interface HuggingFaceSource {
+  type: 'huggingface';
+  /** Repository identifier, e.g. "meta-llama/Llama-3.1-8B-Instruct". */
+  repo: string;
+  revision?: string;
+  filenamePattern?: string;
+}
+
+export interface ObjectStorageSource {
+  type: 'object_storage';
+  /** Full URI: s3://, gs://, or az://. */
+  uri: string;
+  name: string;
+  family: string;
+}
+
+export interface SageMakerSource {
+  type: 'sagemaker';
+  modelGroup: string;
+  version?: string;
+}
+
+export interface VertexAISource {
+  type: 'vertexai';
+  modelPath: string;
+  version?: string;
+}
+
+export interface AzureMLSource {
+  type: 'azure_ml';
+  workspace: string;
+  modelName: string;
+  version?: string;
+}
+
+/** Union of all external import sources (the 'catalog' source is handled
+ *  separately — it reuses the existing GET /api/v1/models list). */
+export type ImportSource =
+  | HuggingFaceSource
+  | ObjectStorageSource
+  | SageMakerSource
+  | VertexAISource
+  | AzureMLSource;
+
+/**
+ * Response shape for POST /api/v1/models/{id}/plan.
+ * When feasible === false the plan is absent and reason describes why.
+ * When feasible === true the plan carries all assignments/pipeline info.
+ */
+export interface PlanPreviewResult {
+  feasible: boolean;
+  reason?: string;
+  plan?: DeploymentPlan;
 }

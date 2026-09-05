@@ -2,7 +2,9 @@ package plan
 
 import (
 	"math"
+	"os"
 	"sort"
+	"strconv"
 )
 
 // This file implements phase D of the planner (design 08 §7): the pipeline
@@ -53,6 +55,33 @@ const (
 	// added later (design 08 §7, "accoppiamento debole").
 	coOptMaxRounds = 3
 )
+
+// orderingThreshold is the fleet size at or below which orderNodes uses the
+// EXACT Held-Karp algorithm (O(2^N·N²)). Above this threshold the
+// nearest-neighbour + 2-opt heuristic is used instead.
+//
+// For N > threshold, 2-opt approximation is used. Exact ordering
+// (Held-Karp O(2^N·N²)) is feasible up to ~12 nodes; set threshold higher
+// only on powerful planners with enough memory for 2^N·N state.
+//
+// Configurable at startup via the PURSER_PLANNER_ORDERING_THRESHOLD env var.
+// The value is read once at package init; restart the planner to pick up
+// changes.
+var orderingThreshold = getEnvInt("PURSER_PLANNER_ORDERING_THRESHOLD", HeldKarpMaxNodes)
+
+// getEnvInt reads an environment variable as a positive integer. It returns
+// def if the variable is unset, empty, unparseable, or < 1.
+func getEnvInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return def
+	}
+	return n
+}
 
 // bytesPerMs converts a link bandwidth in GB/s into bytes per millisecond, so
 // edgeCost stays in milliseconds (consistent with Link.RTTms). Zero/unknown
@@ -121,7 +150,7 @@ func orderNodes(nodes []Node, model ModelSpec, links []Link, c Constraints) []No
 	hostIdx := chooseHostIndex(ordered, c)
 	ordered[0], ordered[hostIdx] = ordered[hostIdx], ordered[0]
 
-	if n <= HeldKarpMaxNodes {
+	if n <= orderingThreshold {
 		return heldKarpPath(ordered, model, links)
 	}
 	return nearestNeighbor2Opt(ordered, model, links)

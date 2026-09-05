@@ -329,6 +329,11 @@ func NodeFromHardwareProfile(p *purserv1.HardwareProfile) Node {
 		Backends:        backends,
 		FP4Native:       fp4,
 		EngineVersions:  engineVersions,
+		// DiskFreeGB is populated from the proto's disk_free_gb field; used by
+		// estimatePerformance when KVSSDOffload is true (P7).
+		// KVSSDOffload and PrefixCachingFactor have no proto field yet —
+		// see TODO comments in types.go (fase2 follow-up).
+		DiskFreeGB: p.GetDiskFreeGb(),
 	}
 }
 

@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/purser/purser/go/controlplane/audit"
 
 	// modernc.org/sqlite is a pure-Go (CGO-free) SQLite driver. It registers
@@ -70,6 +73,11 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"audit_log", "seq", "INTEGER"},
 		{"audit_log", "prev_hash", "TEXT"},
 		{"audit_log", "hash", "TEXT"},
+		// Import provenance for models (HuggingFace Hub, s3://, gs://, az://).
+		{"models", "source", "TEXT NOT NULL DEFAULT '{}'"},
+		// RBAC role for API keys. Default "admin" preserves full access for
+		// any key created before this column existed.
+		{"api_keys", "role", "TEXT NOT NULL DEFAULT 'admin'"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -324,30 +332,32 @@ func (r *SQLiteRegistry) CreateModel(ctx context.Context, m *Model) error {
 	}
 	m.UpdatedAt = now
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO models (id, family, architecture, params_total_b, engine, spec, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO models (id, family, architecture, params_total_b, engine, spec, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Family, m.Architecture, m.ParamsTotalB, m.Engine,
-		jsonOrEmpty(m.Spec), fmtTime(m.CreatedAt), fmtTime(m.UpdatedAt))
+		jsonOrEmpty(m.Spec), jsonOrEmpty(m.Source), fmtTime(m.CreatedAt), fmtTime(m.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("registry: create model %q: %w", m.ID, err)
 	}
 	return nil
 }
 
-const modelCols = `id, family, architecture, params_total_b, engine, spec, created_at, updated_at`
+const modelCols = `id, family, architecture, params_total_b, engine, spec, source, created_at, updated_at`
 
 func scanModel(s interface{ Scan(...any) error }) (*Model, error) {
 	var (
 		m       Model
 		spec    string
+		source  string
 		created sql.NullString
 		updated sql.NullString
 	)
 	if err := s.Scan(&m.ID, &m.Family, &m.Architecture, &m.ParamsTotalB, &m.Engine,
-		&spec, &created, &updated); err != nil {
+		&spec, &source, &created, &updated); err != nil {
 		return nil, err
 	}
 	m.Spec = json.RawMessage(spec)
+	m.Source = json.RawMessage(source)
 	m.CreatedAt = parseTime(created)
 	m.UpdatedAt = parseTime(updated)
 	return &m, nil
@@ -385,9 +395,9 @@ func (r *SQLiteRegistry) ListModels(ctx context.Context) ([]*Model, error) {
 func (r *SQLiteRegistry) UpdateModel(ctx context.Context, m *Model) error {
 	m.UpdatedAt = nowUTC()
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE models SET family=?, architecture=?, params_total_b=?, engine=?, spec=?, updated_at=?
+		UPDATE models SET family=?, architecture=?, params_total_b=?, engine=?, spec=?, source=?, updated_at=?
 		WHERE id=?`,
-		m.Family, m.Architecture, m.ParamsTotalB, m.Engine, jsonOrEmpty(m.Spec), fmtTime(m.UpdatedAt), m.ID)
+		m.Family, m.Architecture, m.ParamsTotalB, m.Engine, jsonOrEmpty(m.Spec), jsonOrEmpty(m.Source), fmtTime(m.UpdatedAt), m.ID)
 	if err != nil {
 		return fmt.Errorf("registry: update model %q: %w", m.ID, err)
 	}
@@ -565,18 +575,23 @@ func (r *SQLiteRegistry) CreateAPIKey(ctx context.Context, k *APIKey) error {
 		k.CreatedAt = now
 	}
 	k.UpdatedAt = now
+	role := k.Role
+	if role == "" {
+		role = "admin"
+	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, name, key_hash, tenant, quota, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		k.ID, k.Name, k.KeyHash, k.Tenant, k.Quota, boolToInt(k.Enabled),
+		INSERT INTO api_keys (id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		k.ID, k.Name, k.KeyHash, k.Tenant, role, k.Quota, boolToInt(k.Enabled),
 		fmtTime(k.CreatedAt), fmtTime(k.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("registry: create api_key %q: %w", k.ID, err)
 	}
+	k.Role = role
 	return nil
 }
 
-const apiKeyCols = `id, name, key_hash, tenant, quota, enabled, created_at, updated_at`
+const apiKeyCols = `id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at`
 
 func scanAPIKey(s interface{ Scan(...any) error }) (*APIKey, error) {
 	var (
@@ -585,7 +600,7 @@ func scanAPIKey(s interface{ Scan(...any) error }) (*APIKey, error) {
 		created sql.NullString
 		updated sql.NullString
 	)
-	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Quota, &enabled, &created, &updated); err != nil {
+	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Role, &k.Quota, &enabled, &created, &updated); err != nil {
 		return nil, err
 	}
 	k.Enabled = enabled != 0
@@ -625,10 +640,14 @@ func (r *SQLiteRegistry) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 
 func (r *SQLiteRegistry) UpdateAPIKey(ctx context.Context, k *APIKey) error {
 	k.UpdatedAt = nowUTC()
+	role := k.Role
+	if role == "" {
+		role = "admin"
+	}
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE api_keys SET name=?, key_hash=?, tenant=?, quota=?, enabled=?, updated_at=?
+		UPDATE api_keys SET name=?, key_hash=?, tenant=?, role=?, quota=?, enabled=?, updated_at=?
 		WHERE id=?`,
-		k.Name, k.KeyHash, k.Tenant, k.Quota, boolToInt(k.Enabled), fmtTime(k.UpdatedAt), k.ID)
+		k.Name, k.KeyHash, k.Tenant, role, k.Quota, boolToInt(k.Enabled), fmtTime(k.UpdatedAt), k.ID)
 	if err != nil {
 		return fmt.Errorf("registry: update api_key %q: %w", k.ID, err)
 	}
@@ -857,6 +876,22 @@ func (r *SQLiteRegistry) AppendAudit(ctx context.Context, e *AuditEntry) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("registry: append audit: commit: %w", err)
 	}
+
+	// OTEL audit-log bridge: emit each committed audit event as a span event
+	// on the active trace span (if any). When an OTLP endpoint is configured
+	// this ships audit records to Splunk / Elastic / Dynatrace in real time,
+	// correlated with the originating HTTP span. When no tracer is active (or
+	// OTEL is not configured) IsRecording() is false and this is a no-op.
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.AddEvent("purser.audit",
+			trace.WithAttributes(
+				attribute.Int64("audit.seq", int64(e.Seq)),
+				attribute.String("audit.actor", e.Actor),
+				attribute.String("audit.action", e.Action),
+				attribute.String("audit.target", e.Target),
+			),
+		)
+	}
 	return nil
 }
 
@@ -892,6 +927,69 @@ func (r *SQLiteRegistry) ListAudit(ctx context.Context, limit int) ([]*AuditEntr
 		e.PrevHash = prevHash.String
 		e.Hash = hash.String
 		out = append(out, &e)
+	}
+	return out, rows.Err()
+}
+
+// --- Usage log -------------------------------------------------------------
+
+// RecordUsage inserts one usage_log row for a completed inference request.
+func (r *SQLiteRegistry) RecordUsage(ctx context.Context, apiKeyID, modelID string, inputTokens, outputTokens int64) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO usage_log (api_key_id, model_id, input_tokens, output_tokens, request_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		apiKeyID, modelID, inputTokens, outputTokens, fmtTime(nowUTC()))
+	if err != nil {
+		return fmt.Errorf("registry: record usage: %w", err)
+	}
+	return nil
+}
+
+// GetKeyUsage returns aggregate token usage (count + sums) for a single API key.
+// All sums default to 0 for a key with no recorded requests.
+func (r *SQLiteRegistry) GetKeyUsage(ctx context.Context, apiKeyID string) (*KeyUsageSummary, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
+		FROM usage_log WHERE api_key_id = ?`, apiKeyID)
+	s := &KeyUsageSummary{APIKeyID: apiKeyID}
+	if err := row.Scan(&s.TotalRequests, &s.InputTokens, &s.OutputTokens); err != nil {
+		return nil, fmt.Errorf("registry: get key usage %q: %w", apiKeyID, err)
+	}
+	return s, nil
+}
+
+// GetUsageSummary returns per-tenant token usage since since (zero = all time).
+// Rows are ordered by tenant name. Tenants that have no usage records are omitted.
+func (r *SQLiteRegistry) GetUsageSummary(ctx context.Context, since time.Time) ([]TenantUsage, error) {
+	const base = `
+		SELECT k.tenant, COUNT(*) AS total_requests,
+			   COALESCE(SUM(u.input_tokens), 0), COALESCE(SUM(u.output_tokens), 0)
+		FROM usage_log u
+		JOIN api_keys k ON k.id = u.api_key_id
+		%s
+		GROUP BY k.tenant
+		ORDER BY k.tenant`
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if since.IsZero() {
+		rows, err = r.db.QueryContext(ctx, fmt.Sprintf(base, ""))
+	} else {
+		rows, err = r.db.QueryContext(ctx, fmt.Sprintf(base, "WHERE u.request_at >= ?"), fmtTime(since))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("registry: get usage summary: %w", err)
+	}
+	defer rows.Close()
+	var out []TenantUsage
+	for rows.Next() {
+		var tu TenantUsage
+		if err := rows.Scan(&tu.Tenant, &tu.TotalRequests, &tu.InputTokens, &tu.OutputTokens); err != nil {
+			return nil, fmt.Errorf("registry: get usage summary: %w", err)
+		}
+		out = append(out, tu)
 	}
 	return out, rows.Err()
 }

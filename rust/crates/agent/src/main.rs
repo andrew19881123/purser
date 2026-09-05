@@ -16,10 +16,11 @@ use tonic::transport::Server;
 
 use purser_agent::config::AgentConfig;
 use purser_agent::discovery::{self, Membership};
+use purser_agent::swim;
 use purser_agent::healing::{diagnose, DiagnosisInput, Liveness, NodeHealthMonitor};
 use purser_agent::linkbench::BandwidthReflector;
 use purser_agent::probe::{DefaultProbe, HardwareProbe};
-use purser_agent::secrets::{self, InMemorySecretStore, SecretStore};
+use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
 use purser_agent::state::NodeStateMachine;
 use purser_agent::supervisor::{BackendRegistry, RestartPolicy, Supervisor};
@@ -30,6 +31,13 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AgentConfig::from_env().context("loading agent configuration")?;
     let config = Arc::new(config);
+
+    // When http-fetch is enabled: construct an HTTP model fetcher from config.
+    // TODO(phase2): pass to ModelCache::open() when the weight-loading path is
+    // wired in place of FileMirrorFetcher.
+    #[cfg(feature = "http-fetch")]
+    let _http_fetcher =
+        purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
 
     // Security: warn if bound on all interfaces rather than a trusted subnet.
     if config.bind_addr.ip().is_unspecified() {
@@ -74,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         Supervisor::with_state_machine(backend, RestartPolicy::default(), Arc::clone(&machine))
     };
 
-    let probe = Arc::new(DefaultProbe::new(node_id.clone()));
+    let probe = Arc::new(DefaultProbe::with_backends(node_id.clone(), registry.names()));
     let svc = AgentSvc::new(
         Arc::clone(&probe) as Arc<dyn HardwareProbe>,
         Arc::clone(&config),
@@ -125,12 +133,36 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Encrypted-at-rest secret storage (interface). In-memory today; the
-    // enrollment certificates land here rather than in logs or plaintext files.
-    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+    // Encrypted-at-rest secret storage. The store directory and optional
+    // explicit key are sourced from the environment; if no key is set a random
+    // one is auto-generated and persisted so secrets survive restarts.
+    let secret_store: Arc<dyn SecretStore> = {
+        let dir = &config.secret_store_dir;
+        match EncryptedFileSecretStore::from_env_or_generate(dir) {
+            Ok(store) => {
+                tracing::info!(
+                    dir = %dir.display(),
+                    "encrypted file secret store initialised"
+                );
+                Arc::new(store)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %dir.display(),
+                    "encrypted secret store unavailable, falling back to in-memory (secrets will not persist)"
+                );
+                Arc::new(InMemorySecretStore::new())
+            }
+        }
+    };
+
+    // Shutdown broadcast: sent when Ctrl-C fires so SWIM and other
+    // gracefully-shutdown tasks can stop cleanly.
+    let (swim_shutdown_tx, swim_shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Initial peer discovery (seeds + mDNS) into a membership view (best-effort).
-    {
+    let membership = {
         let mut seeds: Vec<String> = Vec::new();
         if let Some(cp) = &config.control_plane_addr {
             seeds.push(strip_scheme(cp));
@@ -144,16 +176,61 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         let membership = Arc::new(Membership::new(Duration::from_secs(30)));
+        let membership_for_spawn = Arc::clone(&membership);
         tokio::spawn(async move {
             let peers = discovery::discover_peers(&seeds, Duration::from_secs(2)).await;
             for peer in peers {
-                membership.observe(peer);
+                membership_for_spawn.observe(peer);
             }
             tracing::info!(
-                known = membership.len(),
-                alive = membership.alive().len(),
+                known = membership_for_spawn.len(),
+                alive = membership_for_spawn.alive().len(),
                 "initial peer discovery complete"
             );
+        });
+        membership
+    };
+
+    // SWIM gossip layer (opt-in, gated by PURSER_SWIM_ENABLED=true).
+    {
+        let swim_seeds: Vec<std::net::SocketAddr> = config
+            .swim_seed_addrs
+            .iter()
+            .filter_map(|s| {
+                s.parse().map_err(|e| {
+                    tracing::warn!(addr = %s, error = %e, "ignoring unparseable SWIM seed address");
+                }).ok()
+            })
+            .collect();
+
+        let bind = config.swim_bind_addr;
+        let enabled = config.swim_enabled;
+        // Derive the gRPC address to embed in the SWIM identity.  The same
+        // address is later sent to the control plane at Join, so peers that
+        // learn about us via gossip already have the correct dial target.
+        // `advertised_addrs()` resolves wildcards (0.0.0.0 → primary LAN IP)
+        // and honours `PURSER_AGENT_ADVERTISED_ADDR` overrides.
+        let grpc_addr: SocketAddr = {
+            let (agent_str, _) = config.advertised_addrs();
+            agent_str.parse::<SocketAddr>().unwrap_or(config.bind_addr)
+        };
+        let membership_swim = Arc::clone(&membership);
+        let shutdown_rx = swim_shutdown_rx.clone();
+        tokio::spawn(async move {
+            match swim::start(enabled, bind, grpc_addr, swim_seeds, membership_swim, shutdown_rx).await {
+                Ok(()) => {
+                    if enabled {
+                        // start() returned Ok after spawning the background tasks — nothing
+                        // more to do in this wrapper task.
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "SWIM gossip layer failed to start; falling back to mDNS + seed discovery"
+                    );
+                }
+            }
         });
     }
 
@@ -263,9 +340,15 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Compose the shutdown future so SWIM tasks also receive the signal.
+    let graceful_shutdown = async move {
+        shutdown_signal().await;
+        let _ = swim_shutdown_tx.send(true);
+    };
+
     Server::builder()
         .add_service(AgentServiceServer::new(svc))
-        .serve_with_shutdown(config.bind_addr, shutdown_signal())
+        .serve_with_shutdown(config.bind_addr, graceful_shutdown)
         .await
         .context("AgentService gRPC server terminated with error")?;
 

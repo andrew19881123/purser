@@ -8,6 +8,7 @@ export const en = {
   'nav.fleet': 'Fleet',
   'nav.catalog': 'Model catalog',
   'nav.deployments': 'Deployments',
+  'nav.joinTokens': 'Add Node',
   'nav.playground': 'Playground',
   'nav.settings': 'Settings',
   'nav.section.operate': 'Operate',
@@ -48,6 +49,7 @@ export const en = {
   'error.deployFailed': 'The deployment could not be started.',
   'error.apikeys': 'Could not load API keys.',
   'error.join': 'Could not load the join token.',
+  'error.jointoken': 'Could not generate the join token.',
 
   // onboarding
   'onboarding.title': 'Add nodes to your cluster',
@@ -177,6 +179,99 @@ export const en = {
   'playground.apikeyHint': 'Sent as Authorization: Bearer to the Gateway. Ignored in mock mode.',
   'playground.error': 'The Gateway did not respond. Check a model is deployed and your API key is valid, then try again.',
 
+  // join token management
+  'jointoken.title': 'Add Node',
+  'jointoken.subtitle':
+    'Generate a one-time join token to enroll a Purser agent into the cluster. The token is shown once — copy it before navigating away.',
+  'jointoken.form.title': 'Generate join token',
+  'jointoken.ttl.label': 'Token lifetime',
+  'jointoken.ttl.1h': '1 hour',
+  'jointoken.ttl.8h': '8 hours',
+  'jointoken.ttl.24h': '24 hours',
+  'jointoken.ttl.7d': '7 days',
+  'jointoken.action.generate': 'Generate',
+  'jointoken.result.title': 'Token ready',
+  'jointoken.result.warning': 'This token is shown only once. Copy it now.',
+  'jointoken.result.token': 'Join token',
+  'jointoken.result.expires': 'Expires {when}',
+  'jointoken.result.env.label': 'Agent environment',
+  'jointoken.result.env.hint': 'Paste these into /etc/purser/agent.env on the target node.',
+  'jointoken.result.instructions.title': 'Connection instructions (Debian / Ubuntu)',
+  // model studio
+  'nav.modelStudio': 'Model Studio',
+  'studio.title': 'Model Studio',
+  'studio.subtitle': 'Import models from any registry, preview how they split across your fleet, and deploy in one click.',
+  'studio.source.label': 'Import source',
+  'studio.source.huggingface': 'HuggingFace Hub',
+  'studio.source.object_storage': 'Object Storage',
+  'studio.source.sagemaker': 'SageMaker',
+  'studio.source.vertexai': 'Vertex AI',
+  'studio.source.azure_ml': 'Azure ML',
+  'studio.source.catalog': 'Purser Catalog',
+  // HuggingFace
+  'studio.hf.repo': 'Repository',
+  'studio.hf.repo.placeholder': 'meta-llama/Llama-3.1-8B-Instruct',
+  'studio.hf.revision': 'Revision',
+  'studio.hf.revision.placeholder': 'main',
+  'studio.hf.filename': 'Filename pattern',
+  'studio.hf.filename.placeholder': '*.gguf',
+  // Object storage
+  'studio.obj.uri': 'Storage URI',
+  'studio.obj.uri.placeholder': 's3://bucket/model.gguf',
+  'studio.obj.name': 'Model name',
+  'studio.obj.family': 'Model family',
+  // SageMaker
+  'studio.sm.modelGroup': 'Model group',
+  'studio.sm.version': 'Version (optional)',
+  // Vertex AI
+  'studio.vertex.modelPath': 'Model path',
+  'studio.vertex.version': 'Version (optional)',
+  // Azure ML
+  'studio.azure.workspace': 'Workspace',
+  'studio.azure.modelName': 'Model name',
+  'studio.azure.version': 'Version (optional)',
+  // Catalog picker
+  'studio.catalog.select': 'Select a model from the Purser catalog',
+  'studio.catalog.empty': 'Catalog is empty. Import a model first.',
+  // Inspect action
+  'studio.action.inspect': 'Inspect model',
+  'studio.action.reimport': 'Re-import',
+  // Model info card
+  'studio.model.title': 'Model info',
+  'studio.model.family': 'Family',
+  'studio.model.size': 'Size (smallest variant)',
+  'studio.model.quantizations': 'Quantizations',
+  'studio.model.source': 'Source',
+  'studio.model.params': 'Parameters',
+  'studio.model.layers': 'Layers',
+  // Deployment preview
+  'studio.preview.title': 'Deployment preview',
+  'studio.preview.compute': 'Preview deployment',
+  'studio.preview.recompute': 'Recompute',
+  'studio.preview.fleet': 'Fleet split',
+  'studio.preview.throughput': 'Estimated throughput',
+  'studio.preview.pipeline': 'Pipeline order',
+  'studio.preview.infeasible': 'Cannot be deployed on this fleet',
+  'studio.preview.layers': 'Layers {start}–{end}',
+  // Node filter
+  'studio.nodes.title': 'Node filter',
+  'studio.nodes.hint': 'Uncheck nodes to exclude them from this deployment.',
+  'studio.nodes.all': 'All {n} ready nodes',
+  // Quantization
+  'studio.quant.label': 'Quantization',
+  // Actions
+  'studio.action.deploy': 'Deploy',
+  'studio.action.importOnly': 'Import only',
+  'studio.action.importOnlyDone': 'Imported',
+  // Success states
+  'studio.deployed.title': 'Deployment started',
+  'studio.deployed.body': 'Deployment {id} is provisioning. Track progress in Deployments.',
+  'studio.imported.title': 'Model imported',
+  'studio.imported.body': '{model} is now in your catalog.',
+  // Errors
+  'error.import': 'Could not import the model. Check the source details and try again.',
+  'error.studioPreview': 'Could not compute a preview. The model may not be in the catalog yet.',
+
   // settings
   'settings.title': 'Settings',
   'settings.subtitle': 'API keys and team quotas. Everything here is also available via CLI and API.',
@@ -202,6 +297,32 @@ export const en = {
   'settings.created.title': 'Key created',
   'settings.created.warning': "Copy it now — the full secret is shown only once.",
   'settings.keys.empty': 'No API keys yet. Create one to let apps reach the Gateway.',
+
+  // join token / enrollment bundle
+  'join.title': 'Node enrollment',
+  'join.subtitle': 'Generate a join token or download a pre-configured agent bundle to enroll nodes.',
+  'join.token.label': 'Join token',
+  'join.bundle.title': 'Download enrollment bundle',
+  'join.bundle.desc': 'Download a ready-to-use .env file. Place it at /etc/purser/agent.env on each node and restart the agent — no manual token copy required.',
+  'join.bundle.ttl': 'Bundle lifetime',
+  'join.bundle.download': 'Download Enrollment Bundle',
+  'join.bundle.downloading': 'Downloading…',
+  'join.bundle.error': 'Could not download the enrollment bundle. Check the control plane is reachable.',
+  'join.bundle.tooltip': 'Save this file to /etc/purser/agent.env on each node',
+  'join.ttl.1h': '1 hour',
+  'join.ttl.24h': '24 hours',
+  'join.ttl.7d': '7 days',
+  'join.ttl.30d': '30 days',
+
+  // RBAC role labels
+  'settings.col.role': 'Role',
+  'settings.create.role': 'Role',
+  'settings.role.admin': 'Admin',
+  'settings.role.viewer': 'Viewer',
+  'settings.role.inference': 'Inference',
+  'settings.role.admin.hint': 'Full access to the control plane',
+  'settings.role.viewer.hint': 'Read-only access to the control plane',
+  'settings.role.inference.hint': 'Gateway inference only — cannot manage the cluster',
 } as const;
 
 export type StringKey = keyof typeof en;

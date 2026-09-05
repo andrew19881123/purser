@@ -23,10 +23,13 @@ import type {
   DeployOverrides,
   Deployment,
   DeploymentPlan,
+  ImportSource,
   JoinInfo,
+  JoinTokenResult,
   MetricsStreamHandlers,
   ModelSpec,
   NodeView,
+  PlanPreviewResult,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -36,6 +39,8 @@ export interface CreateApiKeyInput {
   name: string;
   team: string;
   monthlyQuota: number | null;
+  /** RBAC role; defaults to "admin" on the server if omitted. */
+  role?: 'admin' | 'viewer' | 'inference';
 }
 
 export interface PurserApi {
@@ -50,6 +55,10 @@ export interface PurserApi {
   // --- catalog ---
   getCatalog(): Promise<CatalogEntry[]>;
   getModel(modelId: string): Promise<ModelSpec>;
+  /** POST /api/v1/models/import — inspect and register a model from an external registry. */
+  importModel(source: ImportSource): Promise<ModelSpec>;
+  /** POST /api/v1/models/{id}/plan — dry-run plan; returns feasibility + split diagram. */
+  previewModelPlan(modelId: string): Promise<PlanPreviewResult>;
 
   // --- deployments ---
   planDeployment(modelId: string, overrides: DeployOverrides): Promise<DeploymentPlan>;
@@ -62,6 +71,8 @@ export interface PurserApi {
   // --- onboarding ---
   getJoinInfo(): Promise<JoinInfo>;
   rotateJoinToken(): Promise<JoinInfo>;
+  /** POST /api/v1/join-token — generate a new TTL-scoped join token on demand. */
+  createJoinToken(ttlSeconds: number): Promise<JoinTokenResult>;
 
   // --- settings / api keys ---
   listApiKeys(): Promise<ApiKey[]>;

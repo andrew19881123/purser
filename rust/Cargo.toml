@@ -13,6 +13,13 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[workspace.dependencies]
+aes-gcm = "0.10"
+bytes = "1"
+foca = { version = "0.13", features = ["std", "postcard-codec"] }
+rand = { version = "0.8", features = ["std_rng"] }
+serde = { version = "1", features = ["derive"] }
+
 # Lean build profiles: drop debuginfo (the largest contributor to target size)
 # to keep the target directory small on a disk-constrained host.
 [profile.dev]

@@ -6,6 +6,7 @@
 //! lifecycle from the [`Supervisor`], link measurement from the [`LinkBencher`],
 //! and the node's lifecycle state from the [`NodeStateMachine`].
 
+use std::net::TcpListener;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -181,14 +182,31 @@ impl AgentService for AgentSvc {
             }
         }
 
+        // Allocate a free TCP port for the engine: bind to port 0 so the OS
+        // assigns a free port, read it back, then drop the listener so the
+        // engine can bind the same port itself.  There is a small TOCTOU
+        // window between releasing the listener and the engine binding, but
+        // this is standard practice for port allocation in daemon code.
+        let port = {
+            let listener = TcpListener::bind("0.0.0.0:0")
+                .map_err(|e| Status::internal(format!("failed to allocate engine port: {e}")))?;
+            listener
+                .local_addr()
+                .map_err(|e| {
+                    Status::internal(format!("failed to read allocated engine port: {e}"))
+                })?
+                .port()
+            // listener dropped here — port is free for the engine to bind
+        };
+        tracing::debug!(%port, "allocated engine bind port");
+
         let spec = EngineSpec {
             model_ref: req.model_ref,
             role,
             layer_start: req.layer_start,
             layer_end: req.layer_end,
             peers: req.peers,
-            // TODO(phase2): allocate a real engine bind port; the mock ignores it.
-            bind_addr: "0.0.0.0:0".to_string(),
+            bind_addr: format!("0.0.0.0:{port}"),
             params: req.params.unwrap_or_default(),
         };
 
@@ -382,5 +400,21 @@ mod tests {
         let s = svc();
         s.drain(Request::new(DrainRequest {})).await.expect("drain");
         assert_eq!(s.machine.lock().unwrap().current(), NodeState::Draining);
+    }
+
+    /// Verify the port-allocation mechanism used by `start_engine`:
+    /// binding on port 0 yields a valid, OS-assigned, non-privileged port,
+    /// and dropping the listener before the engine binds is the standard
+    /// TOCTOU trade-off for daemon port allocation.
+    #[test]
+    fn start_engine_allocates_nonzero_port() {
+        let listener =
+            TcpListener::bind("0.0.0.0:0").expect("TcpListener::bind should succeed on loopback");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener); // release before the engine would bind
+        assert!(
+            port > 1024,
+            "OS-allocated engine port {port} must be in the non-privileged range (> 1024)"
+        );
     }
 }

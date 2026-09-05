@@ -6,6 +6,7 @@
 //! made by the control plane, never here.
 
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -27,10 +28,13 @@ pub struct AgentConfig {
     /// Socket address `AgentService` (gRPC) binds to.
     pub bind_addr: SocketAddr,
 
-    /// Address of the control plane's `RegistrationService`, used to enroll and
-    /// heartbeat. `None` until provisioning wires it in.
-    ///
-    /// TODO(phase2): consumed by discovery/enrollment (see `discovery.rs`).
+    /// Address of the control plane's `RegistrationService`, used to enroll
+    /// and heartbeat. When set, the agent connects here at startup to call
+    /// `RegistrationService::Join`, then streams periodic `Heartbeat` RPCs.
+    /// Also seeded into the peer-discovery path so LAN neighbors can be found
+    /// via the control plane's address. When absent, the agent serves
+    /// `AgentService` without registering with any control plane. Overridable
+    /// via `PURSER_CONTROL_PLANE_ADDR`.
     pub control_plane_addr: Option<String>,
 
     /// Logical cluster this node belongs to.
@@ -40,9 +44,12 @@ pub struct AgentConfig {
     /// during `RegistrationService::Join`.
     pub node_id: Option<String>,
 
-    /// One-time join token used to enroll into the cluster.
-    ///
-    /// TODO(phase2): used by the enrollment flow (see `discovery.rs`).
+    /// One-time join token used to authenticate the node during
+    /// `RegistrationService::Join`. Sent verbatim to the control plane so it
+    /// can verify the node is authorized to enroll. After enrollment succeeds
+    /// the certificate issued by the control plane is stored in the secret
+    /// store and the token is no longer needed. Overridable via
+    /// `PURSER_JOIN_TOKEN`.
     pub join_token: Option<String>,
 
     /// Cadence at which `Health` streams `HealthReport`s.
@@ -66,6 +73,44 @@ pub struct AgentConfig {
     /// advertised host plus [`inference_port`](Self::inference_port). Overridable
     /// via `PURSER_INFERENCE_ADVERTISED_ADDR`.
     pub advertised_inference_addr: Option<String>,
+
+    // -----------------------------------------------------------------------
+    // SWIM gossip membership (T2-8: opt-in, default disabled)
+    // -----------------------------------------------------------------------
+
+    /// Enable the SWIM gossip membership layer.
+    ///
+    /// When `true`, a UDP gossip socket is opened and Foca drives peer-to-peer
+    /// membership convergence alongside the existing mDNS + seed path.
+    /// Default: `false`.  Override: `PURSER_SWIM_ENABLED=true`.
+    pub swim_enabled: bool,
+
+    /// UDP address the SWIM gossip protocol binds to.
+    ///
+    /// Default: `0.0.0.0:7946`.  Override: `PURSER_SWIM_BIND_ADDR`.
+    pub swim_bind_addr: SocketAddr,
+
+    /// Comma-separated SWIM seed addresses (`host:port`) for bootstrapping
+    /// the gossip ring.  Override: `PURSER_SWIM_SEED_ADDRS`.
+    pub swim_seed_addrs: Vec<String>,
+
+    /// Directory where [`EncryptedFileSecretStore`] stores per-secret `.enc`
+    /// files and the auto-generated `.secret_key`.
+    ///
+    /// Overridable via `PURSER_SECRET_STORE_DIR`.
+    /// Default: `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` if
+    /// `$HOME` is unset).
+    ///
+    /// The encryption key itself is read from `PURSER_SECRET_KEY` (hex or
+    /// base64, 32 bytes). If that env var is absent, the key is loaded from or
+    /// auto-generated into `{secret_store_dir}/.secret_key`.
+    pub secret_store_dir: PathBuf,
+
+    /// How many times [`HttpFetcher`](crate::modelcache::HttpFetcher) retries a
+    /// transient failure before giving up (0 = try once, no retries).
+    ///
+    /// Overridable via `PURSER_MODEL_FETCH_MAX_RETRIES`. Defaults to 3.
+    pub model_fetch_max_retries: u32,
 }
 
 impl Default for AgentConfig {
@@ -80,6 +125,11 @@ impl Default for AgentConfig {
             inference_port: DEFAULT_INFERENCE_PORT,
             advertised_agent_addr: None,
             advertised_inference_addr: None,
+            swim_enabled: false,
+            swim_bind_addr: SocketAddr::from(([0, 0, 0, 0], 7946)),
+            swim_seed_addrs: Vec::new(),
+            secret_store_dir: default_secret_store_dir(),
+            model_fetch_max_retries: 3,
         }
     }
 }
@@ -89,15 +139,22 @@ impl AgentConfig {
     /// for any variable that is unset.
     ///
     /// Recognized variables:
-    /// - `PURSER_AGENT_BIND`           — e.g. `0.0.0.0:50151`
-    /// - `PURSER_CONTROL_PLANE_ADDR`   — e.g. `https://cp.internal:50150`
+    /// - `PURSER_AGENT_BIND`                — e.g. `0.0.0.0:50151`
+    /// - `PURSER_CONTROL_PLANE_ADDR`        — e.g. `https://cp.internal:50150`
     /// - `PURSER_CLUSTER_ID`
     /// - `PURSER_NODE_ID`
     /// - `PURSER_JOIN_TOKEN`
     /// - `PURSER_HEALTH_INTERVAL_SECS`
-    /// - `PURSER_INFERENCE_PORT`         — e.g. `8000`
-    /// - `PURSER_AGENT_ADVERTISED_ADDR`  — e.g. `192.168.1.10:50151`
+    /// - `PURSER_INFERENCE_PORT`            — e.g. `8000`
+    /// - `PURSER_AGENT_ADVERTISED_ADDR`     — e.g. `192.168.1.10:50151`
     /// - `PURSER_INFERENCE_ADVERTISED_ADDR` — e.g. `192.168.1.10:8000`
+    /// - `PURSER_SWIM_ENABLED`           — `true` / `1` / `yes` to opt-in SWIM gossip
+    /// - `PURSER_SWIM_BIND_ADDR`         — UDP bind address for SWIM (e.g. `0.0.0.0:7946`)
+    /// - `PURSER_SWIM_SEED_ADDRS`        — comma-separated SWIM seeds (e.g. `10.0.0.1:7946,10.0.0.2:7946`)
+    /// - `PURSER_SECRET_STORE_DIR`          — directory for encrypted secret files
+    /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
+    ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
+    /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -126,6 +183,32 @@ impl AgentConfig {
         cfg.advertised_agent_addr = non_empty(std::env::var("PURSER_AGENT_ADVERTISED_ADDR").ok());
         cfg.advertised_inference_addr =
             non_empty(std::env::var("PURSER_INFERENCE_ADVERTISED_ADDR").ok());
+        if let Some(dir) = non_empty(std::env::var("PURSER_SECRET_STORE_DIR").ok()) {
+            cfg.secret_store_dir = PathBuf::from(dir);
+        }
+
+        if let Some(v) = non_empty(std::env::var("PURSER_SWIM_ENABLED").ok()) {
+            cfg.swim_enabled = matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        }
+        if let Ok(addr) = std::env::var("PURSER_SWIM_BIND_ADDR") {
+            cfg.swim_bind_addr = addr
+                .parse()
+                .with_context(|| format!("invalid PURSER_SWIM_BIND_ADDR: {addr:?}"))?;
+        }
+        if let Ok(seeds) = std::env::var("PURSER_SWIM_SEED_ADDRS") {
+            cfg.swim_seed_addrs = seeds
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Ok(retries) = std::env::var("PURSER_MODEL_FETCH_MAX_RETRIES") {
+            cfg.model_fetch_max_retries = retries
+                .parse()
+                .with_context(|| {
+                    format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}")
+                })?;
+        }
 
         Ok(cfg)
     }
@@ -226,6 +309,18 @@ fn primary_local_ipv4() -> IpAddr {
     LOOPBACK
 }
 
+/// Default directory for encrypted secret files.
+///
+/// Uses `$HOME/.purser/secrets` when `$HOME` is set, falling back to
+/// `/var/lib/purser/secrets` (suitable for system-service deployments).
+fn default_secret_store_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".purser").join("secrets")
+    } else {
+        PathBuf::from("/var/lib/purser/secrets")
+    }
+}
+
 /// Treat empty strings as absent — avoids `Some("")` surprises from the env.
 fn non_empty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
@@ -309,5 +404,61 @@ mod tests {
         let (agent, inference) = cfg.advertised_addrs();
         assert!(agent.ends_with(&format!(":{DEFAULT_AGENT_PORT}")));
         assert!(inference.ends_with(&format!(":{DEFAULT_INFERENCE_PORT}")));
+    }
+
+    // ------------------------------------------------------------------
+    // SWIM config
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn swim_defaults_are_disabled() {
+        let cfg = AgentConfig::default();
+        assert!(!cfg.swim_enabled);
+        assert_eq!(cfg.swim_bind_addr.port(), 7946);
+        assert!(cfg.swim_seed_addrs.is_empty());
+    }
+
+    #[test]
+    fn swim_bind_addr_env_is_parsed() {
+        let mut cfg = AgentConfig::default();
+        let addr: SocketAddr = "127.0.0.1:9876".parse().unwrap();
+        cfg.swim_bind_addr = addr;
+        assert_eq!(cfg.swim_bind_addr, addr);
+    }
+
+    #[test]
+    fn swim_enabled_flag_is_read() {
+        let cfg = AgentConfig::default();
+        assert!(!cfg.swim_enabled, "SWIM must be opt-in (default disabled)");
+    }
+
+    // ------------------------------------------------------------------
+    // Enrollment config (T2-8 — fields were already consumed, stale TODOs removed)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn from_env_reads_control_plane_addr_and_join_token() {
+        const CP_VAR: &str = "PURSER_CONTROL_PLANE_ADDR";
+        const TOK_VAR: &str = "PURSER_JOIN_TOKEN";
+
+        let prev_cp = std::env::var(CP_VAR).ok();
+        let prev_tok = std::env::var(TOK_VAR).ok();
+
+        std::env::set_var(CP_VAR, "http://cp.test:9443");
+        std::env::set_var(TOK_VAR, "tok-abc123");
+
+        let cfg = AgentConfig::from_env().unwrap();
+
+        match prev_cp {
+            Some(v) => std::env::set_var(CP_VAR, v),
+            None => std::env::remove_var(CP_VAR),
+        }
+        match prev_tok {
+            Some(v) => std::env::set_var(TOK_VAR, v),
+            None => std::env::remove_var(TOK_VAR),
+        }
+
+        assert_eq!(cfg.control_plane_addr.as_deref(), Some("http://cp.test:9443"));
+        assert_eq!(cfg.join_token.as_deref(), Some("tok-abc123"));
     }
 }

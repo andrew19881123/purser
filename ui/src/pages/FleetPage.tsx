@@ -15,7 +15,7 @@ import { useCapacity, useMetricsStream, useNodes, useNodeAction } from '../hooks
 import { useT, type TFunc } from '../i18n';
 import { gb, tokS } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ClusterCapacity, LinkQuality, NodeView } from '../api/types';
+import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView } from '../api/types';
 
 const LINK_TONE: Record<LinkQuality, Tone> = {
   excellent: 'success',
@@ -87,10 +87,21 @@ function hardwareSummary(n: NodeView): string {
   return `${gpu} · ${gb(n.profile.ramTotalGb)} RAM · ${n.profile.backends.join('/')}`;
 }
 
-function NodeRow({ node, t }: { node: NodeView; t: TFunc }) {
+function NodeRow({
+  node,
+  liveMetrics,
+  t,
+}: {
+  node: NodeView;
+  /** Live hardware metrics from the SSE stream; null if the node has not yet reported. */
+  liveMetrics: EngineMetrics | null;
+  t: TFunc;
+}) {
   const { drain, restart, remove } = useNodeAction();
   const id = node.profile.nodeId;
   const busy = drain.isPending || restart.isPending || remove.isPending;
+  // Prefer SSE live data; fall back to REST snapshot metrics.
+  const metrics = liveMetrics ?? node.metrics;
   return (
     <tr>
       <th scope="row" className="node-cell">
@@ -111,10 +122,10 @@ function NodeRow({ node, t }: { node: NodeView; t: TFunc }) {
       </td>
       <td className="hw-cell">{hardwareSummary(node)}</td>
       <td>
-        {node.metrics ? (
+        {metrics ? (
           <div className="load-cell">
-            <span>{tokS(node.metrics.decodeTokS)}</span>
-            <span className="muted">queue {node.metrics.queueDepth}</span>
+            <span>{tokS(metrics.decodeTokS)}</span>
+            <span className="muted">queue {metrics.queueDepth}</span>
           </div>
         ) : (
           <span className="muted">{t('common.na')}</span>
@@ -144,8 +155,25 @@ export function FleetPage() {
   const t = useT();
   const capacity = useCapacity();
   const nodes = useNodes();
-  // Live decode throughput via GET /api/v1/metrics (SSE); null until first frame.
+  // Live hardware metrics via GET /api/v1/metrics (SSE). null until the first
+  // frame arrives; each frame carries per-node engine metrics from heartbeats.
   const live = useMetricsStream();
+
+  // Build a fast lookup: nodeId → live EngineMetrics from the SSE stream.
+  // When a node has not yet reported, its entry is absent and NodeRow falls
+  // back to the REST snapshot metrics (or shows n/a).
+  const liveByNode: Record<string, EngineMetrics> = {};
+  if (live?.nodes) {
+    for (const sample of live.nodes) {
+      // Zero-metric nodes (not yet reported) produce all-zero metrics objects.
+      // Only expose them as live data when at least one metric is non-zero,
+      // so the fallback to REST data is used for truly silent nodes.
+      const m = sample.metrics;
+      if (m.decodeTokS > 0 || m.prefillTokS > 0 || m.ramUsedGb > 0 || m.vramUsedGb > 0) {
+        liveByNode[sample.nodeId] = m;
+      }
+    }
+  }
 
   return (
     <div className="page">
@@ -188,7 +216,12 @@ export function FleetPage() {
               </thead>
               <tbody>
                 {nodes.data.map((n) => (
-                  <NodeRow key={n.profile.nodeId} node={n} t={t} />
+                  <NodeRow
+                    key={n.profile.nodeId}
+                    node={n}
+                    liveMetrics={liveByNode[n.profile.nodeId] ?? null}
+                    t={t}
+                  />
                 ))}
               </tbody>
             </table>

@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -29,32 +31,40 @@ import (
 	"github.com/purser/purser/go/controlplane/reconciler"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/server"
+	"github.com/purser/purser/go/controlplane/telemetry"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	"google.golang.org/grpc"
 )
 
 // config holds runtime configuration, resolved from flags with env fallbacks.
 type config struct {
-	dbPath       string
-	addr         string
-	grpcAddr     string
-	pkiDir       string
-	gatewayAddr  string
-	gatewayToken string
-	clusterID    string
-	agentPort    int
+	dbPath        string
+	addr          string
+	grpcAddr      string
+	pkiDir        string
+	gatewayAddr   string
+	gatewayToken  string
+	clusterID     string
+	agentPort     int
+	internalToken string
+	// hfToken is the HuggingFace API token used by POST /api/v1/models/import
+	// when the caller does not supply an X-HF-Token header. Read from
+	// PURSER_HF_TOKEN; leave unset for public-model-only access.
+	hfToken string
 }
 
 func loadConfig() config {
 	c := config{
-		dbPath:       envOr("PURSER_DB", "purser-registry.db"),
-		addr:         envOr("PURSER_ADDR", ":8080"),
-		grpcAddr:     envOr("PURSER_GRPC_ADDR", ":9443"),
-		pkiDir:       envOr("PURSER_PKI_DIR", "pki-state"),
-		gatewayAddr:  envOr("PURSER_GATEWAY_ADDR", ""),
-		gatewayToken: envOr("PURSER_GATEWAY_TOKEN", ""),
-		clusterID:    envOr("PURSER_CLUSTER_ID", "default"),
-		agentPort:    envInt("PURSER_AGENT_PORT", 0),
+		dbPath:        envOr("PURSER_DB", "purser-registry.db"),
+		addr:          envOr("PURSER_ADDR", ":8080"),
+		grpcAddr:      envOr("PURSER_GRPC_ADDR", ":9443"),
+		pkiDir:        envOr("PURSER_PKI_DIR", "pki-state"),
+		gatewayAddr:   envOr("PURSER_GATEWAY_ADDR", ""),
+		gatewayToken:  envOr("PURSER_GATEWAY_TOKEN", ""),
+		clusterID:     envOr("PURSER_CLUSTER_ID", "default"),
+		agentPort:     envInt("PURSER_AGENT_PORT", 0),
+		internalToken: envOr("PURSER_INTERNAL_TOKEN", ""),
+		hfToken:       envOr("PURSER_HF_TOKEN", ""),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -64,6 +74,7 @@ func loadConfig() config {
 	flag.StringVar(&c.gatewayToken, "gateway-token", c.gatewayToken, "shared secret for Gateway route sync (env PURSER_GATEWAY_TOKEN)")
 	flag.StringVar(&c.clusterID, "cluster-id", c.clusterID, "cluster identifier echoed in join tokens (env PURSER_CLUSTER_ID)")
 	flag.IntVar(&c.agentPort, "agent-port", c.agentPort, "AgentService port the orchestrator dials on each node; 0 = default 50151 (env PURSER_AGENT_PORT)")
+	flag.StringVar(&c.internalToken, "internal-token", c.internalToken, "shared secret for gateway usage callbacks (env PURSER_INTERNAL_TOKEN)")
 	flag.Parse()
 	return c
 }
@@ -97,6 +108,14 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// OpenTelemetry — initialise before anything else so that instruments
+	// created by the server (and any other subsystem) use the real providers.
+	// When OTEL_EXPORTER_OTLP_ENDPOINT is unset this is a no-op (zero overhead).
+	otelShutdown, err := telemetry.Init(ctx)
+	if err != nil {
+		return err
+	}
+
 	reg, err := registry.Open(cfg.dbPath)
 	if err != nil {
 		return err
@@ -128,7 +147,9 @@ func run(logger *slog.Logger) error {
 	}
 
 	// Orchestrator commands agents over gRPC.
-	agentClient := orchestrator.NewGRPCAgentClient()
+	// Use the internal CA pool so agent server certificates are verified.
+	// Falls back to insecure if PKI is absent (dev mode).
+	agentClient := orchestrator.NewGRPCAgentClientWithCA(ca.CertPool(), logger)
 	orch := orchestrator.New(reg, orchestrator.Deps{
 		Agents:   agentClient,
 		Resolver: orchestrator.NewRegistryResolver(reg, cfg.agentPort, 0),
@@ -144,7 +165,7 @@ func run(logger *slog.Logger) error {
 	purserv1.RegisterRegistrationServiceServer(grpcSrv, regServer)
 
 	// Reconciler control loop.
-	rc := reconciler.New(reg, reconciler.NewOrchestratorActuator(orch, reg), reconciler.DefaultConfig())
+	rc := reconciler.New(reg, reconciler.NewOrchestratorActuator(orch, reg), reconciler.ConfigFromEnv())
 	rc.SetLogger(logger)
 	go func() {
 		if err := rc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -168,18 +189,51 @@ func run(logger *slog.Logger) error {
 			"features", lic.Features, "valid", lic.ValidAt(time.Now()), "expires", lic.Expires)
 	}
 
+	// OIDC authentication for the admin UI and management REST API (optional).
+	// Read PURSER_OIDC_ISSUER and PURSER_OIDC_CLIENT_ID from the environment.
+	// If either is empty, OIDC is disabled — the community default. When both
+	// are set the provider is discovered eagerly so a bad issuer URL fails here
+	// at startup with a clear message rather than at the first admin request.
+	var oidcCfg *server.OIDCConfig
+	var oidcVerifier server.TokenVerifier
+	if oidcIssuer := os.Getenv("PURSER_OIDC_ISSUER"); oidcIssuer != "" {
+		oidcClientID := os.Getenv("PURSER_OIDC_CLIENT_ID")
+		if oidcClientID == "" {
+			return fmt.Errorf("PURSER_OIDC_ISSUER is set but PURSER_OIDC_CLIENT_ID is empty")
+		}
+		provider, err := oidc.NewProvider(ctx, oidcIssuer)
+		if err != nil {
+			return fmt.Errorf("OIDC discovery failed for issuer %s: %w", oidcIssuer, err)
+		}
+		oidcCfg = &server.OIDCConfig{Issuer: oidcIssuer, ClientID: oidcClientID}
+		oidcVerifier = server.NewOIDCVerifierAdapter(
+			provider.Verifier(&oidc.Config{ClientID: oidcClientID}),
+		)
+		logger.Info("OIDC authentication enabled", "issuer", oidcIssuer, "client_id", oidcClientID)
+	} else {
+		logger.Info("OIDC authentication disabled (set PURSER_OIDC_ISSUER to enable)")
+	}
+
 	// Management HTTP API. The Planner turns fleet state into DeploymentPlans
 	// for plan-less deploys and the /models fit verdicts.
 	srv := server.New(reg, server.Config{
-		Addr:      cfg.addr,
-		Logger:    logger,
-		Deployer:  orch,
-		Metrics:   regServer.Metrics(),
-		Planner:   planning.New(reg),
-		Fleet:     mgr,
-		ClusterID: cfg.clusterID,
-		License:   lic,
+		Addr:          cfg.addr,
+		Logger:        logger,
+		Deployer:      orch,
+		Metrics:       regServer.Metrics(),
+		Planner:       planning.New(reg),
+		Fleet:         mgr,
+		ClusterID:     cfg.clusterID,
+		License:       lic,
+		OIDC:          oidcCfg,
+		OIDCVerifier:  oidcVerifier,
+		InternalToken: cfg.internalToken,
+		HFToken:       cfg.hfToken,
 	})
+
+	// Start the background OTEL infrastructure metrics collector (nodes ready/
+	// total, active deployments). It exits when ctx is cancelled.
+	srv.StartInfraMetrics(ctx)
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -209,6 +263,9 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		grpcSrv.GracefulStop()
 		_ = agentClient.Close()
+		// Flush and close OTEL exporters before exiting so the last spans and
+		// metrics are not lost.
+		_ = otelShutdown(shutdownCtx)
 		return srv.Shutdown(shutdownCtx)
 	}
 }

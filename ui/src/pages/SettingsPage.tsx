@@ -12,12 +12,24 @@ import {
   Modal,
   PageHeader,
   useFieldId,
+  type Tone,
 } from '../components/ui';
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from '../hooks/queries';
 import { useT, type TFunc } from '../i18n';
 import { relativeTime } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ApiKey, ApiKeyWithSecret } from '../api/types';
+import type { ApiKey, ApiKeyRole, ApiKeyWithSecret } from '../api/types';
+
+const ROLE_TONES: Record<ApiKeyRole, Tone> = {
+  admin: 'warning',
+  viewer: 'info',
+  inference: 'success',
+};
+
+function RoleBadge({ role, t }: { role: ApiKeyRole; t: TFunc }) {
+  const key = `settings.role.${role}` as const;
+  return <Badge tone={ROLE_TONES[role] ?? 'neutral'}>{t(key)}</Badge>;
+}
 
 function CreateKeyModal({
   onClose,
@@ -32,14 +44,16 @@ function CreateKeyModal({
   const [name, setName] = useState('');
   const [team, setTeam] = useState('');
   const [quota, setQuota] = useState('');
+  const [role, setRole] = useState<ApiKeyRole>('admin');
   const nameId = useFieldId('kname');
   const teamId = useFieldId('kteam');
   const quotaId = useFieldId('kquota');
+  const roleId = useFieldId('krole');
 
   const submit = () => {
     if (!name.trim() || !team.trim()) return;
     create.mutate(
-      { name: name.trim(), team: team.trim(), monthlyQuota: quota ? Number(quota) : null },
+      { name: name.trim(), team: team.trim(), monthlyQuota: quota ? Number(quota) : null, role },
       { onSuccess: (k) => onCreated(k) },
     );
   };
@@ -64,6 +78,22 @@ function CreateKeyModal({
       </Field>
       <Field label={t('settings.create.team')} htmlFor={teamId}>
         <input id={teamId} className="input" value={team} onChange={(e) => setTeam(e.target.value)} />
+      </Field>
+      <Field
+        label={t('settings.create.role')}
+        htmlFor={roleId}
+        hint={t(`settings.role.${role}.hint`)}
+      >
+        <select
+          id={roleId}
+          className="input"
+          value={role}
+          onChange={(e) => setRole(e.target.value as ApiKeyRole)}
+        >
+          <option value="admin">{t('settings.role.admin')}</option>
+          <option value="viewer">{t('settings.role.viewer')}</option>
+          <option value="inference">{t('settings.role.inference')}</option>
+        </select>
       </Field>
       <Field label={t('settings.create.quota')} htmlFor={quotaId} hint={t('settings.create.quotaHint')}>
         <input
@@ -103,12 +133,16 @@ function CreatedKeyModal({ keyData, onClose, t }: { keyData: ApiKeyWithSecret; o
 
 function KeyRow({ apiKey, t }: { apiKey: ApiKey; t: TFunc }) {
   const revoke = useRevokeApiKey();
+  const role: ApiKeyRole = apiKey.role ?? 'admin';
   return (
     <tr className={apiKey.revoked ? 'row--muted' : undefined}>
       <th scope="row">{apiKey.name}</th>
       <td>{apiKey.team}</td>
       <td>
         <code className="inline-code">{apiKey.prefix}…</code>
+      </td>
+      <td>
+        <RoleBadge role={role} t={t} />
       </td>
       <td className="usage-cell">
         {apiKey.monthlyQuota === null ? (
@@ -165,6 +199,7 @@ export function SettingsPage() {
                   <th scope="col">{t('settings.col.name')}</th>
                   <th scope="col">{t('settings.col.team')}</th>
                   <th scope="col">{t('settings.col.key')}</th>
+                  <th scope="col">{t('settings.col.role')}</th>
                   <th scope="col">{t('settings.col.usage')}</th>
                   <th scope="col">{t('settings.col.lastUsed')}</th>
                   <th scope="col">{t('settings.col.status')}</th>

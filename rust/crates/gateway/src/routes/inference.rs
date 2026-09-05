@@ -27,6 +27,8 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use tokio::sync::OwnedSemaphorePermit;
+use tracing::Instrument as _;
 
 use crate::auth::ApiKey;
 use crate::error::ApiError;
@@ -35,11 +37,69 @@ use crate::openai::{gen_id, unix_now, ModelList, ModelObject};
 use crate::state::{AppState, OWNED_BY};
 use crate::upstream::{count_sse_tokens, json_completion_tokens};
 
+// ---------------------------------------------------------------------------
+// Usage reporting helpers
+// ---------------------------------------------------------------------------
+
+/// Estimate input tokens from the `messages` array in the request body by
+/// counting whitespace-split words in each message's `content` field and
+/// dividing by 4 (≈ 4 chars/token). Falls back to a whole-body estimate on
+/// parse failure.
+fn estimate_input_tokens(body: &[u8]) -> u64 {
+    let fallback = approx_prompt_tokens(body) / 4;
+    let json: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return fallback,
+    };
+    let messages = match json.get("messages").and_then(|m| m.as_array()) {
+        Some(arr) => arr,
+        None => return fallback,
+    };
+    let mut word_count: u64 = 0;
+    for msg in messages {
+        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+            word_count += content.split_whitespace().count() as u64;
+        }
+    }
+    word_count / 4
+}
+
+/// Fire-and-forget: POST token usage to the Control Plane.
+/// Errors are logged at debug level and otherwise ignored so they never
+/// affect the inference response path.
+fn spawn_usage_report(
+    client: reqwest::Client,
+    cp_url: Arc<String>,
+    internal_token: Option<String>,
+    api_key_id: String,
+    model_id: String,
+    input_tokens: u64,
+    output_tokens: u64,
+) {
+    tokio::spawn(async move {
+        let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "api_key_id": api_key_id,
+            "model_id":   model_id,
+            "input_tokens":  input_tokens,
+            "output_tokens": output_tokens,
+        });
+        let mut builder = client.post(&url).json(&body);
+        if let Some(tok) = internal_token.as_deref() {
+            builder = builder.header("X-Purser-Internal-Token", tok);
+        }
+        if let Err(e) = builder.send().await {
+            tracing::debug!(error = %e, "usage report to control plane failed (fire-and-forget)");
+        }
+    });
+}
+
 /// Routes under `/v1`.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/completions", post(completions))
+        .route("/embeddings", post(embeddings))
         .route("/models", get(models))
 }
 
@@ -61,7 +121,17 @@ async fn chat_completions(
     api_key: ApiKey,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    proxy_inference(&state, &api_key, body, "/v1/chat/completions").await
+    // The `model.id` field is filled in inside proxy_inference once the body
+    // is parsed. When tracing-opentelemetry is active this span is exported to
+    // the configured OTEL collector as a root span for the inference call.
+    let span = tracing::info_span!(
+        "purser.gateway.inference",
+        "http.route" = "/v1/chat/completions",
+        "model.id" = tracing::field::Empty,
+    );
+    proxy_inference(&state, &api_key, body, "/v1/chat/completions")
+        .instrument(span)
+        .await
 }
 
 async fn completions(
@@ -69,7 +139,38 @@ async fn completions(
     api_key: ApiKey,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    proxy_inference(&state, &api_key, body, "/v1/completions").await
+    let span = tracing::info_span!(
+        "purser.gateway.inference",
+        "http.route" = "/v1/completions",
+        "model.id" = tracing::field::Empty,
+    );
+    proxy_inference(&state, &api_key, body, "/v1/completions")
+        .instrument(span)
+        .await
+}
+
+/// `POST /v1/embeddings` — OpenAI-compatible embedding inference.
+///
+/// Authenticated and quota-checked identically to the chat/completions path.
+/// Embeddings are always buffered (no SSE): the upstream's JSON response is
+/// read to completion and relayed to the client.
+///
+/// Expected request shape:
+/// ```json
+/// {"model": "my-embed-model", "input": "text" | ["text", ...], "encoding_format": "float"}
+/// ```
+///
+/// Expected response shape (mirroring the upstream):
+/// ```json
+/// {"object":"list","data":[{"object":"embedding","embedding":[...],"index":0}],
+///  "model":"my-embed-model","usage":{"prompt_tokens":5,"total_tokens":5}}
+/// ```
+async fn embeddings(
+    State(state): State<AppState>,
+    api_key: ApiKey,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    proxy_inference(&state, &api_key, body, "/v1/embeddings").await
 }
 
 async fn models(State(state): State<AppState>) -> Json<ModelList> {
@@ -110,14 +211,42 @@ async fn proxy_inference(
     let model = routed.model;
     let want_stream = routed.stream;
 
+    // Record the model id on the enclosing span so it is visible in OTEL
+    // traces. When no OTEL provider is configured this is a no-op.
+    tracing::Span::current().record("model.id", &model.as_str());
+
     // Resolve the host (404 if unknown, 503 if draining).
     let route = state.resolve_active(&model).await?;
+
+    // Per-model concurrency gate: reject immediately if the model's in-flight
+    // slot limit is reached (429 Too Many Requests + Retry-After: 5).
+    let queue_permit = state.queue.try_acquire(&model).map_err(|pos| {
+        tracing::warn!(
+            model = %model,
+            queue_position = pos,
+            "per-model queue full; shedding request with 429"
+        );
+        ApiError::RateLimited {
+            message: format!(
+                "Model '{model}' request queue is full; retry after a short delay."
+            ),
+            retry_after_secs: 5,
+            queue_position: Some(pos),
+        }
+    })?;
 
     // Admission: quota / rate-limit / backpressure (429 on rejection).
     let prompt_tokens = approx_prompt_tokens(&body);
     let guard = state
         .limiter
         .acquire(&api_key.id, &state.quota, prompt_tokens)?;
+
+    // Estimate input tokens for usage accounting (messages content ÷ 4).
+    let input_tokens_for_usage = estimate_input_tokens(&body);
+
+    // Capture usage-reporting context before moving `body` into the proxy.
+    let cp_url = state.control_plane_url.clone();
+    let cp_token = state.auth.internal_token.clone();
 
     let url = format!("{}{}", route.endpoint.trim_end_matches('/'), upstream_path);
     let start = Instant::now();
@@ -164,10 +293,14 @@ async fn proxy_inference(
             session_id,
             start,
             prompt_tokens,
+            input_tokens_for_usage,
+            cp_url,
+            cp_token,
             status,
             upstream_ct,
             resp,
             guard,
+            queue_permit,
         ))
     } else {
         buffered_response(
@@ -176,18 +309,22 @@ async fn proxy_inference(
             &model,
             start,
             prompt_tokens,
+            input_tokens_for_usage,
+            cp_url,
+            cp_token,
             status,
             upstream_ct,
             resp,
             guard,
+            queue_permit,
         )
         .await
     }
 }
 
 /// Pipe the host's SSE stream to the client with minimal buffering. The
-/// admission `guard` is moved into the stream so the concurrency slot is held
-/// until the last token is delivered.
+/// admission `guard` and the per-model `queue_permit` are moved into the
+/// stream so both concurrency slots are held until the last token is delivered.
 #[allow(clippy::too_many_arguments)]
 fn stream_response(
     state: &AppState,
@@ -196,21 +333,27 @@ fn stream_response(
     session_id: String,
     start: Instant,
     prompt_tokens: u64,
+    input_tokens_for_usage: u64,
+    cp_url: Option<Arc<String>>,
+    cp_token: Option<String>,
     status: reqwest::StatusCode,
     upstream_ct: Option<String>,
     resp: reqwest::Response,
     guard: crate::quota::RequestGuard,
+    queue_permit: OwnedSemaphorePermit,
 ) -> Response {
     let idle = state.http.idle;
     let limiter = Arc::clone(&state.limiter);
+    let http_client = state.http.client.clone();
     let key_id = api_key.id.clone();
     let tenant = api_key.tenant.clone();
     let model = model.to_owned();
     let upstream = resp.bytes_stream();
 
     let body_stream = async_stream::stream! {
-        // Held for the whole stream; dropped at the end → releases the slot.
+        // Both held for the whole stream; dropped at the end → releases slots.
         let _guard = guard;
+        let _queue_permit = queue_permit;
         tokio::pin!(upstream);
         let mut out_tokens: u64 = 0;
 
@@ -247,6 +390,18 @@ fn stream_response(
             prompt_tokens,
             out_tokens,
         );
+        // Fire-and-forget usage report to the Control Plane.
+        if let Some(url) = cp_url {
+            spawn_usage_report(
+                http_client,
+                url,
+                cp_token,
+                key_id.clone(),
+                model.clone(),
+                input_tokens_for_usage,
+                out_tokens,
+            );
+        }
     };
 
     let content_type = upstream_ct.unwrap_or_else(|| "text/event-stream".to_string());
@@ -266,10 +421,15 @@ async fn buffered_response(
     model: &str,
     start: Instant,
     prompt_tokens: u64,
+    input_tokens_for_usage: u64,
+    cp_url: Option<Arc<String>>,
+    cp_token: Option<String>,
     status: reqwest::StatusCode,
     upstream_ct: Option<String>,
     resp: reqwest::Response,
     guard: crate::quota::RequestGuard,
+    // Held for the duration of the buffered response; released on return.
+    _queue_permit: OwnedSemaphorePermit,
 ) -> Result<Response, ApiError> {
     let bytes = match tokio::time::timeout(state.http.idle, resp.bytes()).await {
         Err(_elapsed) => {
@@ -313,6 +473,18 @@ async fn buffered_response(
         prompt_tokens,
         out_tokens,
     );
+    // Fire-and-forget usage report to the Control Plane.
+    if let Some(url) = cp_url {
+        spawn_usage_report(
+            state.http.client.clone(),
+            url,
+            cp_token,
+            api_key.id.clone(),
+            model.to_owned(),
+            input_tokens_for_usage,
+            out_tokens,
+        );
+    }
     drop(guard);
 
     let content_type = upstream_ct.unwrap_or_else(|| "application/json".to_string());

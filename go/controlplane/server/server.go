@@ -10,26 +10,39 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
+	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	plannerplan "github.com/purser/purser/go/planner/plan"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+//go:embed openapi.json
+var openAPISpec []byte
 
 // Deployer is the orchestration surface the API needs. It is satisfied by
 // *orchestrator.Orchestrator but declared here structurally to avoid a hard
@@ -43,6 +56,14 @@ type Deployer interface {
 // satisfied by fleet.LiveMetrics.
 type MetricsSource interface {
 	Snapshot(ctx context.Context) (any, error)
+}
+
+// NodeMetricsGetter fetches the most recent live hardware-metrics sample for a
+// single node. It is satisfied by *fleet.LiveMetrics (via its Get method) and
+// by test doubles. When wired, handleMetricsSSE enumerates every registry node
+// and zero-fills entries for nodes that have not yet sent a heartbeat.
+type NodeMetricsGetter interface {
+	Get(nodeID string) (fleet.NodeMetrics, bool)
 }
 
 // FleetManager is the fleet-lifecycle surface the API needs: minting cluster
@@ -62,6 +83,66 @@ type FleetManager interface {
 	Decommission(ctx context.Context, nodeID string) error
 }
 
+// contextKey is a private key type for values stored in request contexts.
+// Using a package-local type avoids collisions with keys from other packages.
+type contextKey int
+
+const (
+	// ctxKeyOIDCSub is the context key for the OIDC subject claim.
+	ctxKeyOIDCSub contextKey = iota
+	// ctxKeyOIDCEmail is the context key for the OIDC email claim.
+	ctxKeyOIDCEmail
+)
+
+// OIDCConfig configures the optional OIDC authentication layer for the admin
+// UI and management REST API (/api/v1). When non-nil, every request must carry
+// a valid Bearer token issued by the configured provider. Machine-to-machine
+// requests from the gateway (X-Purser-Internal-Token) are exempted. If nil,
+// OIDC is disabled and all requests pass through — the community default.
+type OIDCConfig struct {
+	// Issuer is the OIDC provider base URL, e.g.
+	// https://login.microsoftonline.com/<tenant>/v2.0 for EntraID.
+	Issuer string
+	// ClientID is the expected audience claim in tokens issued by the provider.
+	ClientID string
+}
+
+// TokenVerifier is the single interface oidcMiddleware uses to verify raw ID
+// tokens. The production path wraps *oidc.IDTokenVerifier via
+// OIDCVerifierAdapter; test stubs can implement this interface without making
+// real HTTP calls to an IdP.
+type TokenVerifier interface {
+	VerifyToken(ctx context.Context, rawToken string) (sub, email string, err error)
+}
+
+// OIDCVerifierAdapter adapts *oidc.IDTokenVerifier (from coreos/go-oidc) to
+// the TokenVerifier interface. Build one with NewOIDCVerifierAdapter and pass
+// it via Config.OIDCVerifier so New() needs no OIDC discovery calls.
+type OIDCVerifierAdapter struct {
+	v *oidc.IDTokenVerifier
+}
+
+// NewOIDCVerifierAdapter wraps v in the TokenVerifier interface.
+func NewOIDCVerifierAdapter(v *oidc.IDTokenVerifier) TokenVerifier {
+	return &OIDCVerifierAdapter{v: v}
+}
+
+// VerifyToken verifies rawToken and extracts the sub and email claims.
+func (a *OIDCVerifierAdapter) VerifyToken(ctx context.Context, rawToken string) (string, string, error) {
+	tok, err := a.v.Verify(ctx, rawToken)
+	if err != nil {
+		return "", "", err
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+	}
+	if err := tok.Claims(&claims); err != nil {
+		return "", "", err
+	}
+	return claims.Sub, claims.Email, nil
+}
+
 // Config configures the HTTP server.
 type Config struct {
 	// Addr is the listen address, e.g. ":8080".
@@ -71,8 +152,14 @@ type Config struct {
 	// Deployer, if set, backs the deploy/teardown endpoints.
 	Deployer Deployer
 	// Metrics, if set, backs the live SSE metrics endpoint; otherwise a
-	// registry-derived summary is emitted.
+	// registry-derived summary is emitted. Superseded by NodeMetrics when both
+	// are set.
 	Metrics MetricsSource
+	// NodeMetrics, if set, backs the live SSE metrics endpoint with per-node
+	// hardware data from agent heartbeats. The server enumerates every registry
+	// node and zero-fills metrics for nodes that have not yet reported.
+	// Takes priority over Metrics when both are configured.
+	NodeMetrics NodeMetricsGetter
 	// MetricsInterval is the SSE emit cadence (default 2s).
 	MetricsInterval time.Duration
 	// Planner, if set, produces DeploymentPlans from the current fleet (backs
@@ -84,25 +171,77 @@ type Config struct {
 	// ClusterID is echoed in join-token responses so an enrolling agent knows
 	// which cluster it is joining. Defaults to "default".
 	ClusterID string
+	// PublicAddr is the control-plane address that enrolling nodes should dial
+	// (e.g. "http://10.0.0.1:8080"). It is emitted verbatim in the enrollment
+	// bundle so an operator can override it for external nodes. If unset, Addr
+	// is used as a best-effort fallback (which may be a bind address like
+	// ":8080" that is not reachable from external machines).
+	PublicAddr string
 	// License is the verified license resolved at startup (see
 	// license.FromEnv). It gates the enterprise endpoints. If nil, the server
 	// falls back to the community license (enterprise features off).
 	License *license.License
+	// OIDC configures the optional OIDC authentication layer for the admin UI
+	// and management REST API (/api/v1). When non-nil, every request must carry
+	// a valid Bearer token issued by the configured provider. Machine-to-machine
+	// requests from the gateway (X-Purser-Internal-Token) are exempted.
+	// If nil, OIDC is disabled (community default).
+	OIDC *OIDCConfig
+	// OIDCVerifier, when non-nil, overrides the token verifier that would
+	// normally be created via OIDC discovery. Use this in tests to inject a stub
+	// that exercises the middleware path without calling a live IdP. When set,
+	// OIDC authentication is active even if OIDC is nil.
+	OIDCVerifier TokenVerifier
+	// InternalToken is the shared secret compared against the
+	// X-Purser-Internal-Token request header. Requests carrying this value
+	// bypass OIDC verification (and RBAC) so the gateway can perform route-sync
+	// without a human token.
+	InternalToken string
+	// HFToken is the HuggingFace API token used by POST /api/v1/models/import
+	// when the caller does not supply an X-HF-Token header. Read from
+	// PURSER_HF_TOKEN at startup. Leave empty for public-model-only access.
+	HFToken string
+	// HFBaseURL overrides the HuggingFace API base URL used by the import
+	// handler. Leave empty to use the default (https://huggingface.co). Useful
+	// in tests that point the server at an httptest mock.
+	HFBaseURL string
+	// VertexAI, if set, is used for VertexAI model import requests instead of
+	// constructing a client from environment variables at request time.
+	// Primarily useful for testing with a pre-configured mock client.
+	VertexAI *importer.VertexAIClient
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
-	reg       registry.Registry
-	log       *slog.Logger
-	mux       *http.ServeMux
-	server    *http.Server
-	deployer  Deployer
-	metrics   MetricsSource
-	metricTO  time.Duration
-	planner   *planning.Planner
-	fleet     FleetManager
-	clusterID string
-	license   *license.License
+	reg           registry.Registry
+	log           *slog.Logger
+	mux           *http.ServeMux
+	server        *http.Server
+	deployer      Deployer
+	metrics       MetricsSource
+	nodeMetrics   NodeMetricsGetter
+	metricTO      time.Duration
+	planner       *planning.Planner
+	fleet         FleetManager
+	clusterID     string
+	publicAddr    string
+	license       *license.License
+	oidcVerifier  TokenVerifier // nil = OIDC disabled
+	internalToken string        // gateway exemption secret
+	hfToken       string
+	hfBaseURL     string
+	vertexai      *importer.VertexAIClient
+
+	// handler is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC
+	// (inner) middleware. Returned by Handler() and used as http.Server.Handler
+	// so all test paths go through the same middleware chain.
+	handler http.Handler
+
+	// OTEL infrastructure gauge instruments. All three are no-ops unless a real
+	// MeterProvider was installed by telemetry.Init before New() is called.
+	gaugeDeploymentsActive metric.Int64Gauge
+	gaugeNodesReady        metric.Int64Gauge
+	gaugeNodesTotal        metric.Int64Gauge
 }
 
 // New builds a Server backed by reg.
@@ -119,33 +258,85 @@ func New(reg registry.Registry, cfg Config) *Server {
 	if clusterID == "" {
 		clusterID = "default"
 	}
+	publicAddr := cfg.PublicAddr
+	if publicAddr == "" {
+		publicAddr = cfg.Addr
+	}
 	lic := cfg.License
 	if lic == nil {
 		lic = license.Community()
 	}
 	s := &Server{
-		reg:       reg,
-		log:       logger,
-		mux:       http.NewServeMux(),
-		deployer:  cfg.Deployer,
-		metrics:   cfg.Metrics,
-		metricTO:  interval,
-		planner:   cfg.Planner,
-		fleet:     cfg.Fleet,
-		clusterID: clusterID,
-		license:   lic,
+		reg:           reg,
+		log:           logger,
+		mux:           http.NewServeMux(),
+		deployer:      cfg.Deployer,
+		metrics:       cfg.Metrics,
+		nodeMetrics:   cfg.NodeMetrics,
+		metricTO:      interval,
+		planner:       cfg.Planner,
+		fleet:         cfg.Fleet,
+		clusterID:     clusterID,
+		publicAddr:    publicAddr,
+		license:       lic,
+		internalToken: cfg.InternalToken,
+		hfToken:       cfg.HFToken,
+		hfBaseURL:     cfg.HFBaseURL,
+		vertexai:      cfg.VertexAI,
 	}
+
+	// OIDC verifier: prefer an injected verifier (for tests or pre-built
+	// production callers) over on-the-fly discovery.
+	if cfg.OIDCVerifier != nil {
+		s.oidcVerifier = cfg.OIDCVerifier
+	} else if cfg.OIDC != nil {
+		// Eager discovery: if the provider is unreachable at startup, the
+		// misconfiguration is caught here — not at the first admin request.
+		// In production, main.go pre-creates the provider and passes it via
+		// OIDCVerifier, so this branch is a defensive fallback.
+		provider, err := oidc.NewProvider(context.Background(), cfg.OIDC.Issuer)
+		if err != nil {
+			panic("purser: OIDC discovery failed for issuer " + cfg.OIDC.Issuer + ": " + err.Error())
+		}
+		s.oidcVerifier = NewOIDCVerifierAdapter(
+			provider.Verifier(&oidc.Config{ClientID: cfg.OIDC.ClientID}),
+		)
+		logger.Info("OIDC authentication enabled", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID)
+	}
+
 	s.routes()
+
+	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
+	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
+	// so this is always safe to call even without a collector.
+	m := otel.Meter("purser.control-plane")
+	s.gaugeDeploymentsActive, _ = m.Int64Gauge("purser.deployments.active",
+		metric.WithDescription("Number of deployments in ACTIVE state"),
+		metric.WithUnit("{deployment}"))
+	s.gaugeNodesReady, _ = m.Int64Gauge("purser.nodes.ready",
+		metric.WithDescription("Number of nodes in READY or RUNNING state"),
+		metric.WithUnit("{node}"))
+	s.gaugeNodesTotal, _ = m.Int64Gauge("purser.nodes.total",
+		metric.WithDescription("Total number of registered nodes"),
+		metric.WithUnit("{node}"))
+
+	// Wrap the mux: OTEL (outermost, for distributed tracing) →
+	// OIDC (human-user authentication) → RBAC (API key role enforcement) →
+	// mux. When no TracerProvider/OIDCVerifier is configured those layers are
+	// no-ops.
+	s.handler = otelMiddleware(s.oidcMiddleware(s.rbacMiddleware(s.mux)))
 	s.server = &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           s.mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
 }
 
 // Handler returns the composed http.Handler (useful for tests via httptest).
-func (s *Server) Handler() http.Handler { return s.mux }
+// It is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC (inner)
+// middleware. All three are transparent no-ops when not configured.
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // ListenAndServe starts serving and blocks until the server stops.
 func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
@@ -153,17 +344,188 @@ func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
 
+// oidcMiddleware returns an http.Handler that enforces OIDC authentication
+// before delegating to next. It is a pass-through when s.oidcVerifier is nil
+// (OIDC not configured). When active:
+//
+//  1. Requests carrying the correct X-Purser-Internal-Token header are
+//     exempted so the gateway can perform route-sync without a human token.
+//  2. All other requests must include a valid Bearer token in the Authorization
+//     header; absent, malformed, or invalid tokens yield 401 Unauthorized with
+//     a JSON body {"error":"unauthorized","message":"valid OIDC token required"}.
+//  3. On a valid token the verified sub and email claims are injected into the
+//     request context (keyed by ctxKeyOIDCSub / ctxKeyOIDCEmail) so handlers
+//     can log the authenticated actor.
+func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. OIDC disabled — pass through unconditionally.
+		if s.oidcVerifier == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 2. Gateway internal-token exemption: the gateway sends route-sync
+		// requests with X-Purser-Internal-Token; those must not require a
+		// human OIDC token.
+		if s.internalToken != "" && r.Header.Get("X-Purser-Internal-Token") == s.internalToken {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 3. Extract Bearer token from the Authorization header.
+		rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || strings.TrimSpace(rawToken) == "" {
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error":   "unauthorized",
+				"message": "valid OIDC token required",
+			})
+			return
+		}
+		// 4. Verify the token via the configured IdP.
+		sub, email, err := s.oidcVerifier.VerifyToken(r.Context(), rawToken)
+		if err != nil {
+			s.log.Debug("OIDC token verification failed", "err", err)
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error":   "unauthorized",
+				"message": "valid OIDC token required",
+			})
+			return
+		}
+		// 5. Inject verified claims into the request context for downstream
+		// handlers to log as the authenticated actor.
+		ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+		ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// rbacPublicPaths are the paths that bypass RBAC regardless of the key
+// presented. These are always accessible (e.g. health check, API schema).
+var rbacPublicPaths = map[string]bool{
+	"/api/v1/cluster/health": true,
+	"/api/v1/openapi.json":   true,
+}
+
+// rbacMiddleware enforces role-based access control on every request based on
+// the API key's Role field. It runs after key lookup so the gate is cheap for
+// anonymous requests (pass-through) and only becomes O(keys) when a Bearer
+// token is present.
+//
+// Rules (in order):
+//  1. Public endpoints (GET /api/v1/cluster/health, /api/v1/openapi.json) → pass through.
+//  2. Authorization: Bearer matches s.internalToken → pass through (gateway route-sync).
+//  3. No Bearer token → pass through (handler enforces auth if required).
+//  4. Bearer token found but no matching key → pass through.
+//  5. Role "admin" → pass through.
+//  6. Role "viewer" → GET allowed; non-GET → 403.
+//  7. Role "inference" → any /api/v1/* path → 403 (inference keys are for the
+//     gateway only, not the CP management surface).
+func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Public GET endpoints always pass through.
+		if r.Method == http.MethodGet && rbacPublicPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. Extract Bearer token.
+		token := bearerToken(r)
+
+		// 2a. Internal token passes through unconditionally.
+		if s.internalToken != "" && token == s.internalToken {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. No token → pass through (anonymous; handler decides if auth is needed).
+		if token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 4. Look up the key by hash; pass through on any registry error or miss.
+		if s.reg == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		keys, err := s.reg.ListAPIKeys(r.Context())
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sum := sha256.Sum256([]byte(token))
+		hashHex := hex.EncodeToString(sum[:])
+		var matched *registry.APIKey
+		for _, k := range keys {
+			if k.KeyHash == hashHex {
+				matched = k
+				break
+			}
+		}
+		if matched == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 5–7. Enforce role.
+		switch matched.Role {
+		case "admin":
+			next.ServeHTTP(w, r)
+		case "viewer":
+			if r.Method != http.MethodGet {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has viewer role (read-only)",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		case "inference":
+			if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has inference role and cannot manage the cluster",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		default:
+			// Unknown role: conservative viewer behavior.
+			if r.Method != http.MethodGet {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has viewer role (read-only)",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+// Returns an empty string if the header is absent or malformed.
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)
 	s.mux.HandleFunc("POST /api/v1/nodes/{id}/drain", s.handleDrainNode)
+	s.mux.HandleFunc("POST /api/v1/nodes/{id}/restart", s.handleRestartNode)
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
+	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
+	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
+	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
 	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
 	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
@@ -172,6 +534,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
+	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
+
+	// Usage accounting endpoints.
+	s.mux.HandleFunc("POST /api/v1/usage", s.handleRecordUsage)
+	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/usage", s.handleGetKeyUsage)
+	s.mux.HandleFunc("GET /api/v1/usage/summary", s.handleUsageSummary)
 
 	// Enterprise (open-core) endpoints. Public code, gated at runtime by a
 	// valid, offline-verified license key (see enterprise/license).
@@ -182,6 +550,15 @@ func (s *Server) routes() {
 // featureAudit is the entitlement required by the tamper-evident audit log
 // (see LICENSING.md, "Compliance").
 const featureAudit = "audit"
+
+// handleOpenAPISpec serves the embedded OpenAPI 3.0 specification as JSON.
+// The spec is embedded at compile time from openapi.json (generated from
+// openapi.yaml) and served verbatim — no runtime conversion needed.
+func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(openAPISpec)
+}
 
 // licenseAllows reports whether the active license currently entitles feature:
 // it must be temporally valid now AND include the feature. This is the single
@@ -429,6 +806,71 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRestartNode tears down all active deployments on the node and lets the
+// reconciler re-provision them on remaining available nodes. The node itself
+// is not rebooted.
+//
+// Responses:
+//   - 404 if the node does not exist;
+//   - 409 if the node has no active deployments to restart (nothing to do);
+//   - 202 Accepted on success — restart is async; actual re-provisioning
+//     happens in the background as the reconciler notices the STOPPED
+//     deployments and re-schedules them on remaining READY nodes.
+func (s *Server) handleRestartNode(w http.ResponseWriter, r *http.Request) {
+	if s.deployer == nil {
+		s.writeError(w, http.StatusNotImplemented, "no_deployer", "orchestrator not configured")
+		return
+	}
+	id := r.PathValue("id")
+
+	// 404 up front so a missing node is never misreported as "nothing to restart".
+	if _, err := s.reg.GetNode(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "node not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "get_node_failed", err.Error())
+		return
+	}
+
+	deps, err := s.reg.ListDeployments(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
+		return
+	}
+	var targets []string
+	for _, d := range deps {
+		if !deploymentTerminal(d.State) && deploymentOccupiesNode(d, id) {
+			targets = append(targets, d.ID)
+		}
+	}
+
+	// 409 if there are no active deployments to restart.
+	if len(targets) == 0 {
+		s.writeError(w, http.StatusConflict, "nothing_to_restart",
+			"node has no active deployments to restart")
+		return
+	}
+
+	// Tear down each deployment; the reconciler will notice the STOPPED state
+	// and re-provision on remaining READY nodes.
+	for _, depID := range targets {
+		if err := s.deployer.Teardown(r.Context(), depID); err != nil {
+			s.log.Warn("restart: teardown failed",
+				"node", id, "deployment", depID, "err", err)
+		}
+	}
+
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "api.node.restart", Target: id,
+	})
+	s.writeJSON(w, http.StatusAccepted, map[string]any{
+		"node_id":     id,
+		"deployments": targets,
+		"message":     "deployments torn down; re-provisioning proceeds in the background",
+	})
+}
+
 // modelWithFit augments a catalog Model with its deployability verdict against
 // the current fleet. The embedded *registry.Model promotes its JSON fields, so
 // the wire shape is the model plus a "fit" object.
@@ -514,12 +956,17 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "encode_spec_failed", err.Error())
 		return
 	}
+	// Type defaults to "llm". The ModelSpec proto does not carry a model-type
+	// field yet, so the field is set here as a constant default. Future callers
+	// that need to register embedding models can supply a pre-built
+	// registry.Model directly via the store, or extend the proto.
 	m := &registry.Model{
 		ID:           id,
 		Family:       spec.GetFamily(),
 		Architecture: spec.GetArchitecture(),
 		ParamsTotalB: spec.GetParamsTotalB(),
 		Engine:       spec.GetEngine(),
+		Type:         "llm",
 		Spec:         blob,
 	}
 	if err := s.reg.CreateModel(r.Context(), m); err != nil {
@@ -534,6 +981,267 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "model.created", Target: id})
 	s.writeJSON(w, http.StatusCreated, map[string]any{"model_id": id})
+}
+
+// importRequest is the body of POST /api/v1/models/import.
+//
+// HuggingFace (source="huggingface"): set repo, revision, filename_pattern.
+// Object storage (source="s3"/"gcs"/"azure"): set uri, name (optional), family.
+// SageMaker (source="sagemaker"): set model_group (optional override), version.
+// VertexAI (source="vertexai"): set model, vertex_version (empty means latest).
+type importRequest struct {
+	Source string `json:"source"`
+	// HuggingFace fields
+	Repo            string `json:"repo"`
+	Revision        string `json:"revision"`
+	FilenamePattern string `json:"filename_pattern"`
+	// Object-storage fields (s3://, gs://, az://)
+	URI    string  `json:"uri"`
+	Name   string  `json:"name"`
+	Family string  `json:"family"`
+	SizeGB float64 `json:"size_gb"`
+	// SageMaker fields
+	// ModelGroup overrides PURSER_SAGEMAKER_MODEL_GROUP for "sagemaker" imports.
+	ModelGroup string `json:"model_group,omitempty"`
+	// Version selects a specific approved package version; 0 means latest.
+	Version int `json:"version,omitempty"`
+	// VertexAI fields
+	// Model is the GCP Vertex AI model resource name
+	// ("projects/p/locations/l/models/m") or a bare model ID
+	// (requires PURSER_VERTEX_PROJECT to be set).
+	Model string `json:"model,omitempty"`
+	// VertexVersion selects a specific Vertex AI model version. Empty means latest.
+	VertexVersion string `json:"vertex_version,omitempty"`
+	// Azure ML fields
+	// Workspace is an optional per-request override for the Azure ML workspace
+	// name. When empty, the server falls back to PURSER_AZURE_ML_WORKSPACE.
+	Workspace string `json:"workspace,omitempty"`
+	// AzureVersion selects a specific Azure ML model version. Empty means latest.
+	AzureVersion string `json:"azure_version,omitempty"`
+}
+
+// hfSourceBlob is the JSON shape stored in Model.Source for HuggingFace
+// imports. It is kept small on purpose — it is the import provenance, not the
+// full model spec.
+type hfSourceBlob struct {
+	Type           string `json:"type"`
+	Repo           string `json:"repo"`
+	Revision       string `json:"revision"`
+	Filename       string `json:"filename"`
+	SizeBytesTotal int64  `json:"size_bytes_total"`
+}
+
+// handleImportModel registers a model imported from an external source.
+// It dispatches by the "source" field in the request body:
+//
+//   - "huggingface" — auto-populates spec from HuggingFace Hub metadata.
+//   - "s3", "gcs", "azure" — resolves the object-storage URI to a download URL.
+//   - "sagemaker" — lists approved packages from an AWS SageMaker model group.
+//   - "vertexai" — imports from GCP Vertex AI Model Registry.
+//   - "azureml" — imports from an Azure ML workspace.
+//
+// POST /api/v1/models/import
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	var body importRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	switch body.Source {
+	case "huggingface":
+		s.handleImportHuggingFace(w, r, body)
+	case "s3", "gcs", "azure":
+		s.handleImportObjectStorage(w, r, body)
+	case "sagemaker":
+		s.handleImportSageMaker(w, r, body)
+	case "vertexai":
+		s.handleImportVertexAI(w, r, body)
+	case "azureml":
+		s.handleImportAzureML(w, r, body)
+	default:
+		s.writeError(w, http.StatusBadRequest, "unknown_source",
+			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure, sagemaker, vertexai, azureml")
+	}
+}
+
+// handleImportHuggingFace implements the "huggingface" branch of handleImportModel.
+//
+// The HuggingFace API token is resolved in precedence order:
+//  1. X-HF-Token request header (caller-supplied, e.g. CI workflows);
+//  2. PURSER_HF_TOKEN server env var (operator-configured default).
+//
+// Error mapping:
+//   - HF API 404 → 404 not_found
+//   - HF API 401/403 → 401 hf_auth_required
+//   - No matching GGUF files → 400 no_matching_files
+//   - Network/decode failure → 502 Bad Gateway
+//   - Model already exists → 409 model_exists
+func (s *Server) handleImportHuggingFace(w http.ResponseWriter, r *http.Request, body importRequest) {
+	if body.Repo == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "repo is required")
+		return
+	}
+	if body.Revision == "" {
+		body.Revision = "main"
+	}
+
+	// Resolve HF token: header takes precedence over server env var.
+	token := r.Header.Get("X-HF-Token")
+	if token == "" {
+		token = s.hfToken
+	}
+
+	hfc := importer.NewHFClient(token)
+	if s.hfBaseURL != "" {
+		hfc.BaseURL = s.hfBaseURL
+	}
+
+	meta, err := hfc.FetchMetadata(r.Context(), body.Repo, body.Revision, body.FilenamePattern)
+	if err != nil {
+		if importer.IsNotFound(err) {
+			s.writeError(w, http.StatusNotFound, "not_found",
+				"HuggingFace repo not found: "+body.Repo)
+			return
+		}
+		if importer.IsAuthRequired(err) {
+			s.writeError(w, http.StatusUnauthorized, "hf_auth_required",
+				"private/gated model requires PURSER_HF_TOKEN: "+body.Repo)
+			return
+		}
+		s.writeError(w, http.StatusBadGateway, "hf_fetch_failed",
+			"HuggingFace API error: "+err.Error())
+		return
+	}
+
+	if len(meta.GGUFFiles) == 0 {
+		pattern := body.FilenamePattern
+		if pattern == "" {
+			pattern = "*.gguf"
+		}
+		s.writeError(w, http.StatusBadRequest, "no_matching_files",
+			"no "+pattern+" files found in repo "+body.Repo)
+		return
+	}
+
+	// Best match: first GGUF file in the list. Compute total size over all
+	// matching files (useful when multiple quantisations are downloaded).
+	bestFile := meta.GGUFFiles[0].Name
+	var sizeBytesTotal int64
+	for _, f := range meta.GGUFFiles {
+		sizeBytesTotal += f.Size
+	}
+
+	// Model ID = last path component of the repo name (e.g. "Llama-3.1-8B-Instruct").
+	modelID := path.Base(meta.ModelID)
+
+	// Check for duplicates (clean 409 before the store's PK constraint).
+	if _, err := s.reg.GetModel(r.Context(), modelID); err == nil {
+		s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+		return
+	} else if !errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	sourceBlob := hfSourceBlob{
+		Type:           "huggingface",
+		Repo:           body.Repo,
+		Revision:       body.Revision,
+		Filename:       bestFile,
+		SizeBytesTotal: sizeBytesTotal,
+	}
+	sourceJSON, err := json.Marshal(sourceBlob)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     modelID,
+		Family: meta.Family,
+		Source: sourceJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:  "api",
+		Action: "model.imported",
+		Target: modelID,
+	})
+	s.writeJSON(w, http.StatusCreated, m)
+}
+
+// handleImportObjectStorage implements the "s3"/"gcs"/"azure" branch of
+// handleImportModel. It resolves the object-storage URI to an HTTPS download
+// URL (pre-signed when credentials are present, public otherwise) and stores
+// the result in Model.Source so the agent can fetch the weights at deploy time.
+func (s *Server) handleImportObjectStorage(w http.ResponseWriter, r *http.Request, body importRequest) {
+	if body.URI == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "uri is required")
+		return
+	}
+
+	objSrc, err := importer.ParseObjectURI(body.URI)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_uri", err.Error())
+		return
+	}
+
+	// Derive the model ID from the request name; fall back to the key's
+	// last path segment (best-effort, not authoritative metadata).
+	id := body.Name
+	if id == "" {
+		if objSrc.Key != "" {
+			parts := strings.Split(objSrc.Key, "/")
+			id = parts[len(parts)-1]
+		}
+		if id == "" {
+			id = objSrc.Bucket + "-" + objSrc.Type
+		}
+	}
+
+	// Reject duplicates before attempting the insert.
+	if _, err := s.reg.GetModel(r.Context(), id); err == nil {
+		s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+id)
+		return
+	} else if !errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	sourceBlob, err := json.Marshal(objSrc)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     id,
+		Family: body.Family,
+		Source: sourceBlob,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+id)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "model.imported", Target: id,
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id":     id,
+		"source_type":  objSrc.Type,
+		"download_url": objSrc.DownloadURL,
+	})
 }
 
 // deploymentTerminal reports whether a deployment in the given state has
@@ -645,6 +1353,101 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "model.deleted", Target: id})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ModelHealth is the response body of GET /api/v1/models/{id}/health.
+type ModelHealth struct {
+	ModelID         string `json:"model_id"`
+	Status          string `json:"status"` // "healthy" | "degraded" | "unavailable"
+	DeploymentID    string `json:"deployment_id"`
+	DeploymentState string `json:"deployment_state"`
+	NodeCount       int    `json:"node_count"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+}
+
+// handleModelHealth reports the operational health of a deployed model.
+// Does not perform a live inference probe.
+//
+// Rules:
+//   - 404 if the model does not exist in the catalog.
+//   - "healthy"   when the most-recent deployment is ACTIVE.
+//   - "degraded"  when the deployment is PROVISIONING or STOPPING (transient).
+//   - "unavailable" when FAILED, STOPPED, or no deployment exists.
+func (s *Server) handleModelHealth(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	// 404 if the model is not in the catalog.
+	if _, err := s.reg.GetModel(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "model not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	deps, err := s.reg.ListDeployments(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
+		return
+	}
+
+	// Pick the most-recent deployment for this model (by CreatedAt).
+	var latest *registry.Deployment
+	for _, d := range deps {
+		d := d
+		if d.ModelID != id {
+			continue
+		}
+		if latest == nil || d.CreatedAt.After(latest.CreatedAt) {
+			latest = d
+		}
+	}
+
+	health := ModelHealth{ModelID: id}
+	if latest == nil {
+		health.Status = "unavailable"
+		health.ErrorMessage = "no deployment found for this model"
+		s.writeJSON(w, http.StatusOK, health)
+		return
+	}
+
+	health.DeploymentID = latest.ID
+	// Strip the "DEPLOYMENT_STATE_" proto prefix for a clean wire representation.
+	health.DeploymentState = strings.TrimPrefix(latest.State, "DEPLOYMENT_STATE_")
+	health.NodeCount = countDeploymentNodes(latest)
+
+	switch latest.State {
+	case purserv1.DeploymentState_DEPLOYMENT_STATE_ACTIVE.String():
+		health.Status = "healthy"
+	case purserv1.DeploymentState_DEPLOYMENT_STATE_PROVISIONING.String(),
+		purserv1.DeploymentState_DEPLOYMENT_STATE_STOPPING.String():
+		health.Status = "degraded"
+	default: // FAILED, STOPPED, PLANNED, or any unrecognised state
+		health.Status = "unavailable"
+		health.ErrorMessage = "deployment is in state " + health.DeploymentState
+	}
+
+	s.writeJSON(w, http.StatusOK, health)
+}
+
+// countDeploymentNodes decodes the deployment's placement detail and counts
+// the total number of nodes it references (1 host + N engines). Returns 0 when
+// no placement detail is stored.
+func countDeploymentNodes(d *registry.Deployment) int {
+	if len(d.Detail) == 0 {
+		return 0
+	}
+	var refs deploymentNodeRefs
+	if err := json.Unmarshal(d.Detail, &refs); err != nil {
+		return 0
+	}
+	n := 0
+	if refs.HostNodeID != "" {
+		n++
+	}
+	n += len(refs.Engines)
+	return n
 }
 
 // deployRequest is the body of POST /models/{id}/deploy. Provide either an
@@ -953,6 +1756,9 @@ type createAPIKeyRequest struct {
 	Name   string `json:"name"`
 	Tenant string `json:"tenant"`
 	Quota  int64  `json:"quota"`
+	// Role is the RBAC role for the key: "admin" (default), "viewer", or
+	// "inference". An empty role is treated as "admin" for backward compat.
+	Role string `json:"role,omitempty"`
 }
 
 // handleCreateAPIKey mints a new gateway API key. The plaintext key is returned
@@ -965,6 +1771,20 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Resolve and validate the role. Default "admin" for backward compat.
+	role := body.Role
+	if role == "" {
+		role = "admin"
+	}
+	switch role {
+	case "admin", "viewer", "inference":
+		// valid
+	default:
+		s.writeError(w, http.StatusBadRequest, "invalid_role", `role must be one of: admin, viewer, inference`)
+		return
+	}
+
 	secret := make([]byte, 24)
 	if _, err := rand.Read(secret); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "keygen_failed", err.Error())
@@ -978,6 +1798,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Name:    body.Name,
 		KeyHash: hex.EncodeToString(sum[:]),
 		Tenant:  body.Tenant,
+		Role:    role,
 		Quota:   body.Quota,
 		Enabled: true,
 	}
@@ -991,6 +1812,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"id":     id,
 		"name":   body.Name,
 		"tenant": body.Tenant,
+		"role":   role,
 		"key":    plaintext,
 	})
 }
@@ -1067,6 +1889,61 @@ func (s *Server) handleJoinToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleEnrollmentBundle generates a pre-compiled .env file containing the
+// three variables an agent needs to auto-enroll. The bundle is suitable for
+// direct placement at /etc/purser/agent.env on target nodes — operators do not
+// need to copy individual values.
+//
+// Query parameters:
+//
+//	ttl_seconds — token lifetime; <= 0 falls back to the fleet default (1h).
+//
+// Response: text/plain with a comment header (generation time, expiry) and the
+// three env vars:
+//
+//	PURSER_CONTROL_PLANE_ADDR — s.publicAddr (overridable via PURSER_PUBLIC_ADDR)
+//	PURSER_CLUSTER_ID         — s.clusterID
+//	PURSER_JOIN_TOKEN         — freshly minted single-use token
+func (s *Server) handleEnrollmentBundle(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		s.writeError(w, http.StatusNotImplemented, "no_fleet", "fleet manager not configured")
+		return
+	}
+	var ttl time.Duration // 0 => fleet default (1h)
+	if qs := r.URL.Query().Get("ttl_seconds"); qs != "" {
+		if secs, err := strconv.ParseInt(qs, 10, 64); err == nil && secs > 0 {
+			ttl = time.Duration(secs) * time.Second
+		}
+	}
+	tok, err := s.fleet.GenerateJoinToken(r.Context(), ttl)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "join_token_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "enrollment_bundle.created", Target: s.clusterID})
+
+	now := time.Now().UTC()
+	expires := tok.ExpiresAt.UTC()
+	bundle := fmt.Sprintf(
+		"# Purser Agent Enrollment Bundle\n"+
+			"# Generated: %s\n"+
+			"# Expires:   %s\n"+
+			"# Copy this file to /etc/purser/agent.env on each node you want to enroll.\n"+
+			"\n"+
+			"PURSER_CONTROL_PLANE_ADDR=%s\n"+
+			"PURSER_CLUSTER_ID=%s\n"+
+			"PURSER_JOIN_TOKEN=%s\n",
+		now.Format(time.RFC3339),
+		expires.Format(time.RFC3339),
+		s.publicAddr,
+		s.clusterID,
+		tok.Token,
+	)
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = fmt.Fprint(w, bundle)
+}
+
 // handleMetricsSSE streams live cluster metrics as Server-Sent Events. It emits
 // an initial snapshot immediately, then one every MetricsInterval, until the
 // client disconnects.
@@ -1120,12 +1997,22 @@ func (s *Server) handleMetricsSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// metricsSnapshot returns the live metrics from the configured MetricsSource, or
-// a registry-derived node-state summary if none is configured.
+// metricsSnapshot builds the SSE payload for one tick.
+//
+// Priority:
+//  1. NodeMetricsGetter (real hardware data) — enumerates every registry node
+//     and merges cached heartbeat metrics; nodes that have not yet reported
+//     receive zero-filled metrics (honest, no hidden gaps).
+//  2. MetricsSource (legacy interface) — delegates to Snapshot().
+//  3. Fallback — plain registry state summary (no hardware data).
 func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
+	if s.nodeMetrics != nil {
+		return s.metricsSnapshotFromCache(ctx)
+	}
 	if s.metrics != nil {
 		return s.metrics.Snapshot(ctx)
 	}
+	// Fallback: plain node-state summary — no hardware metrics.
 	nodes, err := s.reg.ListNodes(ctx)
 	if err != nil {
 		return nil, err
@@ -1139,6 +2026,430 @@ func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
 		"by_state":    byState,
 		"at":          time.Now().UTC(),
 	}, nil
+}
+
+// metricsWire is the per-node hardware-metrics payload inside each SSE frame.
+type metricsWire struct {
+	PrefillTokS         float64 `json:"prefill_tok_s"`
+	DecodeTokS          float64 `json:"decode_tok_s"`
+	RAMUsedGB           float64 `json:"ram_used_gb"`
+	VRAMUsedGB          float64 `json:"vram_used_gb"`
+	QueueDepth          uint32  `json:"queue_depth"`
+	AcceptedTokensRatio float64 `json:"accepted_tokens_ratio"`
+}
+
+// nodeWire is one node entry inside each SSE frame.
+type nodeWire struct {
+	NodeID  string      `json:"node_id"`
+	State   string      `json:"state"`
+	Metrics metricsWire `json:"metrics"`
+}
+
+// metricsSnapshotFromCache builds the real-data SSE payload by joining the
+// full registry node list against cached heartbeat metrics. Nodes that have
+// not yet reported receive zero-filled metrics so the UI always sees every
+// known node.
+func (s *Server) metricsSnapshotFromCache(ctx context.Context) (any, error) {
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]nodeWire, 0, len(nodes))
+	var aggDecode float64
+	for _, n := range nodes {
+		nw := nodeWire{NodeID: n.ID, State: n.State}
+		if m, ok := s.nodeMetrics.Get(n.ID); ok {
+			nw.Metrics = metricsWire{
+				PrefillTokS:         m.PrefillTps,
+				DecodeTokS:          m.DecodeTps,
+				RAMUsedGB:           m.RAMUsedGB,
+				VRAMUsedGB:          m.VRAMUsedGB,
+				QueueDepth:          m.QueueDepth,
+				AcceptedTokensRatio: m.AcceptedTokensRatio,
+			}
+			aggDecode += m.DecodeTps
+		}
+		out = append(out, nw)
+	}
+	return map[string]any{
+		"at":                     time.Now().UTC().Format(time.RFC3339),
+		"aggregate_decode_tok_s": aggDecode,
+		"nodes":                  out,
+	}, nil
+}
+
+// --- Usage accounting handlers ---------------------------------------------
+
+// usageRequest is the body of POST /api/v1/usage.
+type usageRequest struct {
+	APIKeyID     string `json:"api_key_id"`
+	ModelID      string `json:"model_id"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+}
+
+// handleRecordUsage is the internal gateway callback for usage accounting.
+// When InternalToken is set, the caller must present the same value in
+// X-Purser-Internal-Token; if not set, the endpoint is open (dev/single-node).
+func (s *Server) handleRecordUsage(w http.ResponseWriter, r *http.Request) {
+	if s.internalToken != "" {
+		if tok := r.Header.Get("X-Purser-Internal-Token"); tok != s.internalToken {
+			s.writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing internal token")
+			return
+		}
+	}
+	var body usageRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if body.APIKeyID == "" || body.ModelID == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "api_key_id and model_id are required")
+		return
+	}
+	if err := s.reg.RecordUsage(r.Context(), body.APIKeyID, body.ModelID, body.InputTokens, body.OutputTokens); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "record_usage_failed", err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleGetKeyUsage returns the aggregate token usage for a single API key.
+// Returns 404 if the key does not exist.
+func (s *Server) handleGetKeyUsage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.reg.GetAPIKey(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "api key not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "get_apikey_failed", err.Error())
+		return
+	}
+	summary, err := s.reg.GetKeyUsage(r.Context(), id)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "get_key_usage_failed", err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, summary)
+}
+
+// handleUsageSummary returns per-tenant token usage, optionally filtered by a
+// ?since=<RFC3339> query parameter. Tenants with no usage in the window are
+// omitted. An absent since means "all time".
+func (s *Server) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
+	var since time.Time
+	if q := r.URL.Query().Get("since"); q != "" {
+		t, err := time.Parse(time.RFC3339, q)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "bad_request", "invalid since: must be RFC3339, got "+q)
+			return
+		}
+		since = t
+	}
+	tenants, err := s.reg.GetUsageSummary(r.Context(), since)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "get_usage_summary_failed", err.Error())
+		return
+	}
+	if tenants == nil {
+		tenants = []registry.TenantUsage{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+}
+
+// handleImportSageMaker implements the "sagemaker" import path:
+//  1. Build a SageMakerClient from env + request overrides.
+//  2. List approved packages in the model group.
+//  3. Select the latest (version==0) or the requested version.
+//  4. Create a registry.Model with source metadata in Spec.
+//  5. Return 201 with the created model and its source JSON.
+func (s *Server) handleImportSageMaker(w http.ResponseWriter, r *http.Request, body importRequest) {
+	client := importer.NewSageMakerClient()
+	if body.ModelGroup != "" {
+		client.ModelGroup = body.ModelGroup
+	}
+	if client.ModelGroup == "" {
+		s.writeError(w, http.StatusBadRequest, "missing_model_group",
+			"model_group is required (set in request body or PURSER_SAGEMAKER_MODEL_GROUP env)")
+		return
+	}
+
+	packages, err := client.ListApprovedModelPackages(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "sagemaker_error", err.Error())
+		return
+	}
+	if len(packages) == 0 {
+		s.writeError(w, http.StatusNotFound, "no_approved_packages",
+			"no approved model packages found in group "+client.ModelGroup)
+		return
+	}
+
+	// packages is sorted newest-first; version==0 means "latest".
+	var pkg importer.ModelPackage
+	if body.Version == 0 {
+		pkg = packages[0]
+	} else {
+		found := false
+		for _, p := range packages {
+			if p.ModelPackageVersion == body.Version {
+				pkg = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version "+strconv.Itoa(body.Version)+" not found in approved packages")
+			return
+		}
+	}
+
+	// Model ID: {GroupName}-v{N}
+	modelID := pkg.ModelPackageGroupName + "-v" + strconv.Itoa(pkg.ModelPackageVersion)
+
+	// Source metadata stored as Spec (opaque JSON blob).
+	type sourceDoc struct {
+		Type    string `json:"type"`
+		ARN     string `json:"arn"`
+		S3URI   string `json:"s3_uri"`
+		Version int    `json:"version"`
+	}
+	src := sourceDoc{
+		Type:    "sagemaker",
+		ARN:     pkg.ModelPackageArn,
+		S3URI:   pkg.ModelDataURL,
+		Version: pkg.ModelPackageVersion,
+	}
+	specJSON, err := json.Marshal(src)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     modelID,
+		Family: importer.GuessFamilyFromName(pkg.ModelPackageGroupName, pkg.ModelPackageDescription),
+		Spec:   specJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:  "api",
+		Action: "model.imported",
+		Target: modelID,
+	})
+
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   json.RawMessage(specJSON),
+	})
+}
+
+// handleImportVertexAI imports a model from the GCP Vertex AI Model Registry.
+//
+// Flow:
+//  1. Resolve the VertexAIClient (injected via Config.VertexAI for tests, or
+//     constructed from env vars: PURSER_VERTEX_PROJECT, PURSER_VERTEX_LOCATION,
+//     GOOGLE_APPLICATION_CREDENTIALS).
+//  2. Validate that a GCP project is known (either from the client config or
+//     embedded in the model's full resource name).
+//  3. Call ListModelVersions → pick the requested version or the latest.
+//  4. Extract the GCS artifact URI from the chosen version (or via GetArtifactURI
+//     if the list endpoint did not include it).
+//  5. Persist a registry.Model with source metadata in the Spec JSON blob.
+//  6. Return 201 with {model_id, source}.
+func (s *Server) handleImportVertexAI(w http.ResponseWriter, r *http.Request, body importRequest) {
+	// Resolve the client: prefer the injected one (tests / static config) over
+	// constructing one from env at request time.
+	client := s.vertexai
+	if client == nil {
+		client = importer.NewVertexAIClient()
+	}
+
+	// Validate project: required when the model name is not a full resource path.
+	isFullPath := strings.HasPrefix(body.Model, "projects/")
+	if client.Project == "" && !isFullPath {
+		s.writeError(w, http.StatusBadRequest, "missing_project",
+			"PURSER_VERTEX_PROJECT must be set when model is not a full resource name")
+		return
+	}
+
+	// List versions to find the target.
+	versions, err := client.ListModelVersions(r.Context(), body.Model)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_versions_failed", err.Error())
+		return
+	}
+	if len(versions) == 0 {
+		s.writeError(w, http.StatusNotFound, "no_versions", "model has no registered versions in Vertex AI")
+		return
+	}
+
+	// Pick the specified version, or the latest (versions[0] is newest first).
+	var chosen importer.ModelVersion
+	if body.VertexVersion != "" {
+		for _, v := range versions {
+			if v.VersionID == body.VertexVersion {
+				chosen = v
+				break
+			}
+		}
+		if chosen.VersionID == "" {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version not found in Vertex AI: "+body.VertexVersion)
+			return
+		}
+	} else {
+		chosen = versions[0]
+	}
+
+	// Resolve the GCS artifact URI. ListModelVersions populates ArtifactURI
+	// when the API returns it inline; fall back to GetArtifactURI otherwise.
+	gcsURI := chosen.ArtifactURI
+	if gcsURI == "" {
+		gcsURI, err = client.GetArtifactURI(r.Context(), body.Model, chosen.VersionID)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "get_artifact_uri_failed", err.Error())
+			return
+		}
+	}
+
+	// Build source metadata.
+	source := map[string]string{
+		"type":    "vertexai",
+		"model":   body.Model,
+		"version": chosen.VersionID,
+		"gcs_uri": gcsURI,
+	}
+	sourceJSON, _ := json.Marshal(source)
+
+	// Derive a stable model ID from the last path segment and the version.
+	modelID := body.Model
+	if idx := strings.LastIndex(modelID, "/"); idx >= 0 {
+		modelID = modelID[idx+1:]
+	}
+	modelID = modelID + "@" + chosen.VersionID
+
+	// Spec carries the source metadata. For VertexAI imports no ModelSpec proto
+	// is available, so the Spec blob is the source object itself wrapped to
+	// keep the JSON well-formed and extensible.
+	specJSON, _ := json.Marshal(map[string]any{"source": source})
+
+	m := &registry.Model{
+		ID:   modelID,
+		Spec: json.RawMessage(specJSON),
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already imported: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:   "api",
+		Action:  "model.imported",
+		Target:  modelID,
+		Details: json.RawMessage(sourceJSON),
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   source,
+	})
+}
+
+// handleImportAzureML imports a model from an Azure ML workspace.
+//
+// It authenticates via OAuth2 client credentials, lists the requested model's
+// versions, selects the latest Production version (or latest overall), and
+// creates a catalog entry with the source metadata stored in Spec.
+func (s *Server) handleImportAzureML(w http.ResponseWriter, r *http.Request, body importRequest) {
+	if body.Model == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "model name is required")
+		return
+	}
+
+	client, err := importer.NewAzureMLClient(body.Workspace)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	versions, err := client.ListModelVersions(r.Context(), body.Model)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, "azureml_error",
+			"list model versions: "+err.Error())
+		return
+	}
+
+	var selected importer.AzureMLModelVersion
+	if body.AzureVersion != "" {
+		found := false
+		for _, v := range versions {
+			if v.Version == body.AzureVersion {
+				selected = v
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version not found in workspace: "+body.AzureVersion)
+			return
+		}
+	} else {
+		v, ok := importer.LatestVersion(versions)
+		if !ok {
+			s.writeError(w, http.StatusNotFound, "no_versions",
+				"no versions found for model: "+body.Model)
+			return
+		}
+		selected = v
+	}
+
+	src := map[string]any{
+		"type":         "azureml",
+		"workspace":    client.Workspace,
+		"model":        body.Model,
+		"version":      selected.Version,
+		"artifact_uri": selected.ArtifactURI,
+	}
+	srcJSON, err := json.Marshal(src)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	modelID := body.Model
+	m := &registry.Model{
+		ID:   modelID,
+		Spec: srcJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists",
+				"model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "model.imported", Target: modelID,
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   src,
+	})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {
@@ -1157,4 +2468,122 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ---------------------------------------------------------------------------
+// OTEL HTTP middleware
+// ---------------------------------------------------------------------------
+
+// statusWriter wraps http.ResponseWriter to capture the status code written
+// by the downstream handler, so the middleware can record it as a span attribute.
+// It forwards http.Flusher if the underlying writer supports it (required by
+// the SSE metrics endpoint).
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	sw.status = code
+	sw.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures a 200 when the handler calls Write without WriteHeader first.
+func (sw *statusWriter) Write(b []byte) (int, error) {
+	if sw.status == 0 {
+		sw.status = http.StatusOK
+	}
+	return sw.ResponseWriter.Write(b)
+}
+
+// Flush implements http.Flusher by delegating to the underlying ResponseWriter
+// when it supports flushing. The SSE endpoint casts the writer to http.Flusher;
+// without this delegation that cast would fail on a statusWriter.
+func (sw *statusWriter) Flush() {
+	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// otelMiddleware wraps next with an OTEL trace span for every HTTP request.
+// It records http.method, http.path, and http.status_code as span attributes.
+// When no real TracerProvider is configured (the default) the global no-op
+// tracer is used, so the middleware is completely transparent with zero overhead.
+func otelMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracer := otel.Tracer("purser.control-plane")
+		ctx, span := tracer.Start(r.Context(), r.Method+" "+r.URL.Path,
+			trace.WithAttributes(
+				attribute.String("http.method", r.Method),
+				attribute.String("http.path", r.URL.Path),
+			),
+			trace.WithSpanKind(trace.SpanKindServer),
+		)
+		defer span.End()
+
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r.WithContext(ctx))
+
+		status := sw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		span.SetAttributes(attribute.Int("http.status_code", status))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Infrastructure metrics collector
+// ---------------------------------------------------------------------------
+
+// StartInfraMetrics runs a background goroutine that samples infrastructure
+// gauges (deployments.active, nodes.ready, nodes.total) every 30 seconds and
+// pushes them to the configured MeterProvider (no-op when OTEL is not
+// configured). The goroutine exits when ctx is cancelled.
+func (s *Server) StartInfraMetrics(ctx context.Context) {
+	go func() {
+		s.collectInfraMetrics(ctx) // initial sample immediately
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.collectInfraMetrics(ctx)
+			}
+		}
+	}()
+}
+
+// collectInfraMetrics queries the registry for deployment and node counts and
+// records them as gauge readings. Errors are logged and silently skipped so a
+// transient registry hiccup never brings down the metrics loop.
+func (s *Server) collectInfraMetrics(ctx context.Context) {
+	deps, err := s.reg.ListDeployments(ctx)
+	if err != nil {
+		s.log.Warn("infra metrics: list deployments failed", "err", err)
+	} else {
+		var active int64
+		for _, d := range deps {
+			if d.State == purserv1.DeploymentState_DEPLOYMENT_STATE_ACTIVE.String() {
+				active++
+			}
+		}
+		s.gaugeDeploymentsActive.Record(ctx, active)
+	}
+
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		s.log.Warn("infra metrics: list nodes failed", "err", err)
+		return
+	}
+	var ready int64
+	for _, n := range nodes {
+		if n.State == "NODE_STATE_READY" || n.State == "NODE_STATE_RUNNING" {
+			ready++
+		}
+	}
+	s.gaugeNodesReady.Record(ctx, ready)
+	s.gaugeNodesTotal.Record(ctx, int64(len(nodes)))
 }

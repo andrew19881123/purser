@@ -30,3 +30,4 @@ pub mod secrets;
 pub mod service;
 pub mod state;
 pub mod supervisor;
+pub mod swim;

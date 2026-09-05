@@ -49,28 +49,36 @@ import (
 // from at startup (see [FromEnv]).
 const EnvVar = "PURSER_LICENSE_KEY"
 
-// DevPublicKeyBase64 is the standard-base64 ed25519 public key that Verify
-// trusts by default.
-//
-// SECURITY: this is a placeholder DEVELOPMENT key. It was generated with
-// `purser-license keygen` and its PRIVATE half was intentionally discarded, so
-// no key validates against it in a stock build — enterprise features stay off
-// until a maintainer provisions their own trust root. To go to production:
-//
-//  1. run `purser-license keygen` (writes a gitignored private key file and
-//     prints the public key);
-//  2. replace the value below with the printed public key;
-//  3. store the private key in a secret manager — NEVER commit it.
+// DevPublicKeyBase64 is the standard-base64 ed25519 public key used for
+// development and testing. Its private half was intentionally discarded, so no
+// key validates against it in a stock build.
 const DevPublicKeyBase64 = "u0M8yOk/o4XkSNTnHY5+ZcmGrv/f8+cVh61uuO33p68="
 
-// VerificationKey is the ed25519 public key [Verify] checks signatures against.
-// It is initialized to the key decoded from [DevPublicKeyBase64].
+// ProductionPublicKeyBase64 is the standard-base64 ed25519 public key embedded
+// in production builds.
 //
-// It is an exported package variable purely so tests can inject an ephemeral
-// key: generate a keypair in-memory, sign a license with [Sign], swap this
-// variable, verify, then restore it — all without any private key touching the
-// repository. Production code should leave it at its embedded default.
-var VerificationKey = mustDecodeKey(DevPublicKeyBase64)
+// SECURITY: this is a placeholder DEVELOPMENT key — enterprise features stay
+// off until a maintainer provisions a real trust root. To go to production:
+//
+//  1. run `purser-license keygen --output-key` (prints step-by-step instructions
+//     and writes the private key to the .gitignored purser-license-signing.key);
+//  2. replace the value of this constant with the printed public key;
+//  3. store the private key in a secret manager — NEVER commit it.
+const ProductionPublicKeyBase64 = "u0M8yOk/o4XkSNTnHY5+ZcmGrv/f8+cVh61uuO33p68="
+
+// VerificationKey is the ed25519 public key [Verify] checks signatures against.
+// It is initialized from [ProductionPublicKeyBase64].
+//
+// It is an exported package variable so tests can inject an ephemeral key:
+// generate a keypair in-memory, sign a license with [Sign], swap this variable,
+// verify, then restore it — all without any private key touching the repository.
+// Production code should leave it at its embedded default.
+var VerificationKey = mustDecodeKey(ProductionPublicKeyBase64)
+
+// DevVerificationKey is the verification key used when "purser-license verify
+// --dev" is passed. It is exported so tests can swap it to an ephemeral key
+// without modifying the unrelated [VerificationKey].
+var DevVerificationKey = mustDecodeKey(DevPublicKeyBase64)
 
 func mustDecodeKey(b64 string) ed25519.PublicKey {
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))

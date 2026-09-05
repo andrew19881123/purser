@@ -12,11 +12,14 @@ import type {
   ClusterCapacity,
   Deployment,
   DeploymentPlan,
+  ImportSource,
   JoinInfo,
+  JoinTokenResult,
   MetricsSnapshot,
   MetricsStreamHandlers,
   ModelSpec,
   NodeView,
+  PlanPreviewResult,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
 import { clamp } from '../lib/format';
@@ -32,6 +35,7 @@ import {
   computeCapacity,
   planToDeployment,
 } from './planner';
+import { cannedModelForSource, mockPreviewPlan } from './studio';
 
 // --- mutable store ----------------------------------------------------------
 
@@ -41,6 +45,13 @@ let joinInfo: JoinInfo = structuredClone(mockJoinInfo);
 const deployments = new Map<string, Deployment>();
 /** Plans indexed by planId so GET /api/v1/plans/{id} can be served. */
 const plans = new Map<string, DeploymentPlan>();
+/** Models imported through the Model Studio (added at runtime). */
+let importedModels: ModelSpec[] = [];
+
+/** Returns seed catalog + any runtime-imported models. */
+function allModels(): ModelSpec[] {
+  return [...mockModels, ...importedModels];
+}
 
 /** Record a plan so it is retrievable by id (mirror of GET /plans/{id}). */
 function rememberPlan(plan: DeploymentPlan): DeploymentPlan {
@@ -50,7 +61,7 @@ function rememberPlan(plan: DeploymentPlan): DeploymentPlan {
 
 // Seed one already-active deployment so the fleet has something running.
 (() => {
-  const model = mockModels.find((m) => m.modelId === 'qwen3-moe-235b')!;
+  const model = allModels().find((m) => m.modelId === 'qwen3-moe-235b')!;
   const plan = rememberPlan(buildPlan(model, nodes, { forceNodeCount: 2, preference: 'balanced' }));
   const dep = planToDeployment(plan);
   dep.id = 'dep-qwen3-moe';
@@ -149,23 +160,38 @@ export const mockBackend: PurserApi = {
   },
 
   getCatalog(): Promise<CatalogEntry[]> {
-    return delay(buildCatalog(mockModels, nodes));
+    return delay(buildCatalog(allModels(), nodes));
   },
 
   getModel(modelId): Promise<ModelSpec> {
-    const m = mockModels.find((x) => x.modelId === modelId);
+    const m = allModels().find((x) => x.modelId === modelId);
     if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
     return delay(structuredClone(m));
   },
 
+  importModel(source: ImportSource): Promise<ModelSpec> {
+    const spec = cannedModelForSource(source);
+    // Avoid duplicates — return the existing entry if already imported.
+    if (!importedModels.some((m) => m.modelId === spec.modelId)) {
+      importedModels.push(structuredClone(spec));
+    }
+    return delay(structuredClone(spec), 700);
+  },
+
+  previewModelPlan(modelId: string): Promise<PlanPreviewResult> {
+    const m = allModels().find((x) => x.modelId === modelId);
+    if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
+    return delay(mockPreviewPlan(m, nodes), 600);
+  },
+
   planDeployment(modelId, overrides): Promise<DeploymentPlan> {
-    const m = mockModels.find((x) => x.modelId === modelId);
+    const m = allModels().find((x) => x.modelId === modelId);
     if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
     return delay(rememberPlan(buildPlan(m, nodes, overrides)), 500);
   },
 
   createDeployment(modelId, overrides): Promise<Deployment> {
-    const m = mockModels.find((x) => x.modelId === modelId);
+    const m = allModels().find((x) => x.modelId === modelId);
     if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
     const plan = rememberPlan(buildPlan(m, nodes, overrides));
     const dep = planToDeployment(plan);
@@ -224,6 +250,20 @@ export const mockBackend: PurserApi = {
     return delay(structuredClone(joinInfo), 350);
   },
 
+  createJoinToken(ttlSeconds: number): Promise<JoinTokenResult> {
+    const rand = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+      .map((b) => 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz0123456789'[b % 58])
+      .join('');
+    return delay(
+      {
+        token: `prsr_join_${rand}`,
+        clusterId: 'cluster-mock-001',
+        expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+      },
+      350,
+    );
+  },
+
   listApiKeys(): Promise<ApiKey[]> {
     return delay(structuredClone(apiKeys));
   },
@@ -238,6 +278,7 @@ export const mockBackend: PurserApi = {
       name: input.name,
       team: input.team,
       prefix,
+      role: input.role ?? 'admin',
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       monthlyQuota: input.monthlyQuota,

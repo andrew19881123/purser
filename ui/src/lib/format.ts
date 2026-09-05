@@ -21,6 +21,20 @@ export function percent(value0to1: number, digits = 0): string {
   return `${(value0to1 * 100).toFixed(digits)}%`;
 }
 
+/** "in 3s", "in 5m", "in 2h", "in 3d" — compact time-until for future timestamps. */
+export function timeUntil(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso).getTime();
+  const secs = Math.max(0, Math.round((then - now.getTime()) / 1000));
+  if (secs < 5) return 'now';
+  if (secs < 60) return `in ${secs}s`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `in ${hours}h`;
+  const days = Math.round(hours / 24);
+  return `in ${days}d`;
+}
+
 /** "3.4 s ago", "2 min ago", "1 h ago" — compact relative time. */
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const then = new Date(iso).getTime();

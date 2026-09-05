@@ -1,0 +1,1696 @@
+openapi: "3.0.3"
+info:
+  title: Purser Control Plane API
+  version: "0.2"
+  description: |
+    Management API for the Purser distributed LLM inference orchestrator.
+
+    Base path: /api/v1
+
+    Authentication: Optional OIDC Bearer token. When PURSER_OIDC_ISSUER is set,
+    every request must carry a valid Bearer token in the Authorization header.
+    Without that environment variable the server accepts unauthenticated requests.
+
+    Enterprise endpoints (under /api/v1/enterprise/) require a valid
+    PURSER_LICENSE_KEY whose offline-verified payload includes the requested
+    feature. Without a valid entitlement they return 402 Payment Required.
+    The license is verified entirely offline — no phone-home.
+
+servers:
+  - url: /api/v1
+    description: Purser control-plane API (relative to the server root)
+
+security:
+  - BearerAuth: []
+  - {}
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        OIDC-derived JWT. Required only when PURSER_OIDC_ISSUER is configured.
+        Omit on unauthenticated deployments.
+
+  schemas:
+    # ------------------------------------------------------------------ nodes
+    Node:
+      type: object
+      description: A single enrolled machine in the fleet.
+      properties:
+        id:
+          type: string
+          example: "node-abc123"
+        hostname:
+          type: string
+          example: "gpu-worker-01"
+        os:
+          type: string
+          example: "linux"
+        arch:
+          type: string
+          example: "amd64"
+        ram_gb:
+          type: number
+          format: double
+          example: 128.0
+        vram_gb:
+          type: number
+          format: double
+          example: 80.0
+        state:
+          type: string
+          description: >
+            Lifecycle state. One of: NODE_STATE_ENROLLED, NODE_STATE_READY,
+            NODE_STATE_RUNNING, NODE_STATE_DRAINING, NODE_STATE_DECOMMISSIONED.
+          example: "NODE_STATE_READY"
+        advertised_agent_addr:
+          type: string
+          description: >
+            host:port of this node's AgentService as advertised at enrollment.
+            Empty when not advertised; callers fall back to hostname + well-known port.
+          example: "192.168.1.10:8443"
+        advertised_inference_addr:
+          type: string
+          description: >
+            host:port of the OpenAI-compatible inference API on this node.
+            Empty when not advertised.
+          example: "192.168.1.10:11434"
+        last_seen:
+          type: string
+          format: date-time
+          description: Timestamp of the most recent heartbeat.
+        hardware_profile:
+          type: object
+          description: Full purserv1.HardwareProfile encoded as JSON. Schema is opaque.
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - hostname
+        - state
+
+    DrainResponse:
+      type: object
+      description: Response body from POST /nodes/{id}/drain.
+      properties:
+        node_id:
+          type: string
+          example: "node-abc123"
+        state:
+          type: string
+          example: "NODE_STATE_DRAINING"
+        message:
+          type: string
+          example: "node cordoned (unschedulable); existing deployments are not migrated or rebalanced"
+      required:
+        - node_id
+        - state
+        - message
+
+    # ----------------------------------------------------------------- models
+    Model:
+      type: object
+      description: A model catalog entry.
+      properties:
+        id:
+          type: string
+          example: "llama-3-8b"
+        family:
+          type: string
+          example: "llama"
+        architecture:
+          type: string
+          example: "llama"
+        params_total_b:
+          type: number
+          format: double
+          description: Total parameter count in billions.
+          example: 8.0
+        engine:
+          type: string
+          example: "vllm"
+        spec:
+          type: object
+          description: Full purserv1.ModelSpec encoded as protojson. Fields are camelCase.
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - family
+
+    Fit:
+      type: object
+      description: >
+        Deployability verdict for a model against the current fleet.
+        Present only when the server has a Planner configured.
+      properties:
+        model_id:
+          type: string
+          example: "llama-3-8b"
+        deployable:
+          type: boolean
+          example: true
+        node_count:
+          type: integer
+          description: Number of nodes needed for the plan.
+          example: 1
+        quantization:
+          type: string
+          description: Chosen quantization level.
+          example: "q4_k_m"
+        estimated:
+          $ref: "#/components/schemas/EstimateRange"
+        deficit_gb:
+          type: number
+          format: double
+          description: GB of VRAM/RAM missing when not deployable.
+          example: 24.5
+        reason:
+          type: string
+          description: Human-readable explanation when not deployable.
+          example: "insufficient VRAM across all ready nodes"
+        suggestions:
+          type: array
+          items:
+            type: string
+          description: Actionable suggestions when not deployable.
+          example: ["add a node with at least 48 GB VRAM"]
+
+    EstimateRange:
+      type: object
+      description: Estimated throughput range for a deployable model.
+      properties:
+        decode_min_tok_s:
+          type: number
+          format: double
+          example: 30.0
+        decode_max_tok_s:
+          type: number
+          format: double
+          example: 80.0
+        prefill_min_tok_s:
+          type: number
+          format: double
+          example: 200.0
+        prefill_max_tok_s:
+          type: number
+          format: double
+          example: 600.0
+        headroom_gb:
+          type: number
+          format: double
+          description: Remaining VRAM/RAM headroom after the model is loaded.
+          example: 12.5
+
+    ModelWithFit:
+      allOf:
+        - $ref: "#/components/schemas/Model"
+        - type: object
+          properties:
+            fit:
+              $ref: "#/components/schemas/Fit"
+
+    CreateModelRequest:
+      type: object
+      description: >
+        A protojson-encoded purserv1.ModelSpec. All field names are lowerCamelCase
+        as per the protojson convention. The model_id field (serialised as
+        "modelId") is required.
+      properties:
+        modelId:
+          type: string
+          example: "llama-3-8b"
+        family:
+          type: string
+          example: "llama"
+        architecture:
+          type: string
+          example: "llama"
+        paramsTotalB:
+          type: number
+          format: double
+          example: 8.0
+        engine:
+          type: string
+          example: "vllm"
+      required:
+        - modelId
+      additionalProperties: true
+
+    # --------------------------------------------------------------- plans
+    Plan:
+      type: object
+      description: A DeploymentPlan produced by the planner and stored in the plans table.
+      properties:
+        id:
+          type: string
+          example: "plan-abc123-f1e2"
+        model_id:
+          type: string
+          example: "llama-3-8b"
+        quantization:
+          type: string
+          example: "q4_k_m"
+        cost:
+          type: number
+          format: double
+          description: Planner cost score (lower is better).
+          example: 1.25
+        plan:
+          type: object
+          description: >
+            Full purserv1.DeploymentPlan encoded as protojson (lowerCamelCase fields).
+            Contains assignments, pipeline_order, explanation, and other planner output.
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - model_id
+
+    PlanPreviewFeasible:
+      allOf:
+        - $ref: "#/components/schemas/Plan"
+        - type: object
+          properties:
+            feasible:
+              type: boolean
+              example: true
+          required:
+            - feasible
+      description: >
+        Preview response when the model fits the current fleet.
+        The plan is ephemeral and NOT persisted to the plans table —
+        the id will resolve to 404 when fetched via GET /plans/{id}.
+
+    PlanPreviewInfeasible:
+      type: object
+      description: Preview response when the model does not fit the current fleet.
+      properties:
+        feasible:
+          type: boolean
+          example: false
+        reason:
+          type: string
+          description: Human-readable explanation of why the model does not fit.
+          example: "insufficient VRAM across all ready nodes"
+      required:
+        - feasible
+        - reason
+
+    # ---------------------------------------------------------- deployments
+    Deployment:
+      type: object
+      description: An instantiation of a plan for a model (possibly active).
+      properties:
+        id:
+          type: string
+          example: "dep-abc123"
+        model_id:
+          type: string
+          example: "llama-3-8b"
+        plan_id:
+          type: string
+          example: "plan-abc123"
+        state:
+          type: string
+          description: >
+            One of: DEPLOYMENT_STATE_PLANNED, DEPLOYMENT_STATE_PROVISIONING,
+            DEPLOYMENT_STATE_ACTIVE, DEPLOYMENT_STATE_REBALANCING,
+            DEPLOYMENT_STATE_STOPPING, DEPLOYMENT_STATE_STOPPED,
+            DEPLOYMENT_STATE_FAILED.
+          example: "DEPLOYMENT_STATE_ACTIVE"
+        detail:
+          type: object
+          description: Orchestrator placement detail (host_node_id, engines[]).
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - model_id
+        - state
+
+    DeployRequest:
+      type: object
+      description: >
+        Optional body for POST /models/{id}/deploy. Supply one of: an inline
+        protojson DeploymentPlan in "plan", a stored plan ID in "plan_id", or
+        omit the body entirely to let the server generate a plan from the current
+        fleet (requires a Planner to be configured).
+      properties:
+        plan_id:
+          type: string
+          description: ID of a stored plan (from GET /plans/{id}) to execute.
+          example: "plan-abc123"
+        plan:
+          type: object
+          description: >
+            Inline protojson-encoded purserv1.DeploymentPlan.
+            Fields are lowerCamelCase. Takes priority over plan_id.
+          additionalProperties: true
+
+    DeployResponse:
+      type: object
+      description: Response body from POST /models/{id}/deploy on success.
+      properties:
+        deployment_id:
+          type: string
+          example: "dep-abc123"
+        model_id:
+          type: string
+          example: "llama-3-8b"
+        plan_id:
+          type: string
+          example: "plan-abc123-f1e2"
+      required:
+        - deployment_id
+        - model_id
+
+    # ------------------------------------------------------------ api keys
+    APIKey:
+      type: object
+      description: >
+        A gateway API credential. The plaintext key and its SHA-256 hash are
+        never returned from the list endpoint — only metadata. The plaintext key
+        is returned exactly once from the create endpoint.
+      properties:
+        id:
+          type: string
+          example: "key-a1b2c3d4"
+        name:
+          type: string
+          example: "ci-pipeline"
+        tenant:
+          type: string
+          example: "team-a"
+        quota:
+          type: integer
+          format: int64
+          description: Request quota limit (0 = unlimited).
+          example: 1000
+        enabled:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+
+    CreateAPIKeyRequest:
+      type: object
+      description: Request body for POST /apikeys.
+      properties:
+        name:
+          type: string
+          example: "ci-pipeline"
+        tenant:
+          type: string
+          example: "team-a"
+        quota:
+          type: integer
+          format: int64
+          description: Request quota limit (0 = unlimited).
+          example: 1000
+
+    CreateAPIKeyResponse:
+      type: object
+      description: >
+        Response from POST /apikeys. The "key" field contains the plaintext
+        secret (psk_ prefix). It is returned exactly once and never stored —
+        copy it immediately.
+      properties:
+        id:
+          type: string
+          example: "key-a1b2c3d4"
+        name:
+          type: string
+          example: "ci-pipeline"
+        tenant:
+          type: string
+          example: "team-a"
+        key:
+          type: string
+          description: Plaintext gateway key. Returned once; never stored or re-retrievable.
+          example: "psk_AAABBBCCCDDDEEEFFFGGG"
+      required:
+        - id
+        - key
+
+    # --------------------------------------------------------- join token
+    JoinTokenRequest:
+      type: object
+      description: Optional body for POST /join-token.
+      properties:
+        ttl_seconds:
+          type: integer
+          format: int64
+          description: Token lifetime in seconds. Omit or set <= 0 to use the fleet default (1h).
+          example: 120
+
+    JoinTokenResponse:
+      type: object
+      description: A single-use, expiring cluster join token.
+      properties:
+        token:
+          type: string
+          description: Opaque join token. Pass to the agent via PURSER_JOIN_TOKEN.
+          example: "eyJhbGciOiJIUzI1NiJ9..."
+        expires_at:
+          type: string
+          format: date-time
+          description: RFC 3339 UTC expiry time.
+          example: "2026-09-05T17:00:00Z"
+        cluster_id:
+          type: string
+          description: ID of the cluster the token grants access to.
+          example: "default"
+      required:
+        - token
+        - expires_at
+        - cluster_id
+
+    # ------------------------------------------------------- cluster health
+    ClusterHealth:
+      type: object
+      description: Coarse cluster health summary derived from the registry.
+      properties:
+        status:
+          type: string
+          description: >
+            One of: "ok" (at least one ready node), "empty" (no nodes enrolled),
+            "degraded" (nodes exist but none are ready), "unavailable" (registry
+            unreachable — only returned with HTTP 503).
+          example: "ok"
+        total_nodes:
+          type: integer
+          example: 4
+        ready_nodes:
+          type: integer
+          description: Nodes in NODE_STATE_READY or NODE_STATE_RUNNING.
+          example: 3
+        checked_at:
+          type: string
+          format: date-time
+      required:
+        - status
+        - total_nodes
+        - ready_nodes
+        - checked_at
+
+    # -------------------------------------------------- enterprise / audit
+    EnterpriseStatusCommunity:
+      type: object
+      description: Enterprise status response for the community edition.
+      properties:
+        edition:
+          type: string
+          example: "community"
+        licensee:
+          type: string
+          example: "community"
+        features:
+          type: array
+          items:
+            type: string
+          example: []
+      required:
+        - edition
+        - licensee
+        - features
+
+    EnterpriseStatusLicensed:
+      type: object
+      description: Enterprise status response for a valid licensed installation.
+      properties:
+        edition:
+          type: string
+          example: "enterprise"
+        licensee:
+          type: string
+          example: "Acme Corp"
+        features:
+          type: array
+          items:
+            type: string
+          example: ["audit", "rbac"]
+        expires:
+          type: string
+          format: date-time
+          description: License expiry timestamp.
+      required:
+        - edition
+        - licensee
+        - features
+
+    AuditEntry:
+      type: object
+      description: >
+        One entry in the tamper-evident hash chain. Seq, PrevHash and Hash are
+        the chain fields; TimeUnixNano is the wall-clock record time as Unix
+        nanoseconds (integer, not a date-time string, to avoid formatting
+        ambiguity in the canonical hash computation).
+      properties:
+        seq:
+          type: integer
+          format: uint64
+          description: 1-based, gap-free position in the chain.
+          example: 1
+        time_unix_nano:
+          type: integer
+          format: int64
+          description: Wall-clock time the entry was recorded, as Unix nanoseconds.
+          example: 1725545400000000000
+        actor:
+          type: string
+          description: Who performed the action (e.g. an API-key ID or "api").
+          example: "api"
+        action:
+          type: string
+          description: Verb that was performed.
+          example: "apikey.created"
+        target:
+          type: string
+          description: ID or name of the resource affected.
+          example: "key-a1b2c3d4"
+        details:
+          type: object
+          additionalProperties:
+            type: string
+          description: Optional structured context. May be omitted or null.
+        prev_hash:
+          type: string
+          description: Hex SHA-256 hash of the previous entry (or all-zeros for genesis).
+          example: "0000000000000000000000000000000000000000000000000000000000000000"
+        hash:
+          type: string
+          description: Hex SHA-256 chain digest of this entry.
+          example: "a3f2e1b4..."
+      required:
+        - seq
+        - time_unix_nano
+        - actor
+        - action
+        - target
+        - prev_hash
+        - hash
+
+    ChainVerification:
+      type: object
+      description: Result of the end-to-end hash-chain verification over the returned window.
+      properties:
+        verified:
+          type: boolean
+          description: True when every entry's hash and chain link is intact.
+          example: true
+        length:
+          type: integer
+          description: Number of entries included in the verification.
+          example: 3
+        break:
+          type: object
+          description: Present only when verified is false. Identifies the first broken link.
+          properties:
+            index:
+              type: integer
+              description: 0-based index of the offending entry in the "entries" array.
+              example: 1
+            seq:
+              type: integer
+              format: uint64
+              description: Seq value the offending entry carries.
+              example: 2
+            kind:
+              type: string
+              description: 'Failure kind. One of: "seq" (reordered/deleted), "link" (broken PrevHash), "hash" (content tampered).'
+              example: "hash"
+            msg:
+              type: string
+              description: Human-readable explanation.
+              example: "stored hash does not match recomputed hash"
+          required:
+            - kind
+            - msg
+      required:
+        - verified
+        - length
+
+    AuditLogResponse:
+      type: object
+      description: Response from GET /enterprise/audit-log.
+      properties:
+        feature:
+          type: string
+          example: "audit"
+        licensee:
+          type: string
+          example: "Acme Corp"
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEntry"
+          description: Audit entries in ascending seq order.
+        chain:
+          $ref: "#/components/schemas/ChainVerification"
+      required:
+        - feature
+        - licensee
+        - entries
+        - chain
+
+    # --------------------------------------------------------- error shapes
+    Error:
+      type: object
+      description: >
+        Standard error envelope. All non-success responses (except the enterprise
+        license gate) use this shape.
+      properties:
+        error:
+          type: string
+          description: Machine-readable error kind (e.g. "not_found", "bad_request").
+          example: "not_found"
+        message:
+          type: string
+          description: Human-readable description.
+          example: "node not found"
+      required:
+        - error
+        - message
+
+    ConflictNodeInUse:
+      type: object
+      description: 409 Conflict when a node still hosts active deployments.
+      properties:
+        error:
+          type: string
+          example: "node_in_use"
+        message:
+          type: string
+          example: "node still hosts one or more active deployments; tear them down or migrate them first"
+        deployments:
+          type: array
+          items:
+            type: string
+          description: IDs of the blocking deployments.
+          example: ["dep-abc123"]
+      required:
+        - error
+        - message
+        - deployments
+
+    ConflictModelInUse:
+      type: object
+      description: 409 Conflict when a model is referenced by active deployments.
+      properties:
+        error:
+          type: string
+          example: "model_in_use"
+        message:
+          type: string
+          example: "model is referenced by one or more active deployments; tear them down first"
+        deployments:
+          type: array
+          items:
+            type: string
+          description: IDs of the blocking deployments.
+          example: ["dep-abc123"]
+      required:
+        - error
+        - message
+        - deployments
+
+    ModelDoesNotFit:
+      type: object
+      description: 422 Unprocessable Entity when the model cannot be placed on the current fleet.
+      properties:
+        error:
+          type: string
+          example: "model_does_not_fit"
+        message:
+          type: string
+          example: "insufficient VRAM across all ready nodes (missing 24.5 GB)"
+        reason:
+          type: string
+          example: "insufficient VRAM across all ready nodes"
+        deficit_gb:
+          type: number
+          format: double
+          example: 24.5
+        suggestions:
+          type: array
+          items:
+            type: string
+          example: ["add a node with at least 48 GB VRAM"]
+      required:
+        - error
+        - message
+
+    LicenseRequired:
+      type: object
+      description: >
+        402 Payment Required — returned by enterprise endpoints when no valid
+        license with the required feature is present. Note: the shape differs
+        from the standard Error envelope — the "error" field is a nested object.
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "enterprise license required"
+            feature:
+              type: string
+              description: The entitlement that was missing.
+              example: "audit"
+            type:
+              type: string
+              example: "license_required"
+          required:
+            - message
+            - feature
+            - type
+      required:
+        - error
+
+    DeployError:
+      type: object
+      description: 500 error from the deploy endpoint, which may include a partial deployment_id.
+      properties:
+        error:
+          type: string
+          example: "deploy_failed"
+        message:
+          type: string
+          example: "orchestrator returned an error"
+        deployment_id:
+          type: string
+          description: Present when the orchestrator partially created the deployment before failing.
+          example: "dep-abc123"
+      required:
+        - error
+        - message
+
+paths:
+  # ------------------------------------------------------------------ nodes
+  /nodes:
+    get:
+      operationId: listNodes
+      summary: List all enrolled nodes
+      description: >
+        Returns every node known to the registry, regardless of lifecycle state.
+        The "nodes" array is always present (never null) — it is empty when no
+        nodes are enrolled.
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Node list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Node"
+                required:
+                  - nodes
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /nodes/{id}:
+    get:
+      operationId: getNode
+      summary: Get a node by ID
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Node ID.
+      responses:
+        "200":
+          description: The node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "404":
+          description: Node not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      operationId: deleteNode
+      summary: Decommission a node
+      description: >
+        Transitions the node to DECOMMISSIONED and revokes its certificates.
+        This is a lifecycle transition, not a row deletion — the node remains
+        visible in GET /nodes with state NODE_STATE_DECOMMISSIONED.
+
+        The delete is guarded:
+        1. An unknown ID returns 404.
+        2. If any non-terminal deployment still occupies the node (host or
+           engine), the request is refused with 409 node_in_use; tear those
+           deployments down first.
+        3. On success, 204 No Content is returned.
+
+        Returns 501 when no fleet manager is configured.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Node ID.
+      responses:
+        "204":
+          description: Node decommissioned successfully. No content.
+        "404":
+          description: Node not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Node is still occupied by active deployments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictNodeInUse"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Fleet manager not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /nodes/{id}/drain:
+    post:
+      operationId: drainNode
+      summary: Cordon a node (mark it DRAINING)
+      description: >
+        Marks the node DRAINING so the planner stops scheduling new deployments
+        onto it. Audits the fleet.node.draining event.
+
+        IMPORTANT: This cordons the node only. It does NOT live-migrate,
+        rebalance, or fail over existing deployments on the node. Existing
+        workloads continue running until explicitly torn down.
+
+        Returns 501 when no fleet manager is configured.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Node ID.
+      requestBody:
+        required: false
+        description: No body required.
+      responses:
+        "200":
+          description: Node cordoned. Returns the new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DrainResponse"
+        "404":
+          description: Node not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Fleet manager not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ----------------------------------------------------------------- models
+  /models:
+    get:
+      operationId: listModels
+      summary: List the model catalog
+      description: >
+        Returns all models in the catalog. When a Planner is configured, each
+        model is annotated with a "fit" verdict (deployable/infeasible) computed
+        against the current fleet, so the UI can render a badge without a second
+        round-trip. When no Planner is configured, "fit" is absent.
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Model list (with optional fit annotation).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ModelWithFit"
+                required:
+                  - models
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      operationId: createModel
+      summary: Register a model in the catalog
+      description: >
+        Accepts a protojson-encoded purserv1.ModelSpec. The model_id field
+        (serialised as "modelId") is required. Promoted columns (family,
+        architecture, params_total_b, engine) are extracted from the spec.
+        The spec is re-marshalled via protojson before storage so it round-trips
+        losslessly. Duplicate model_id returns 409.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateModelRequest"
+            example:
+              modelId: "llama-3-8b"
+              family: "llama"
+              architecture: "llama"
+              paramsTotalB: 8
+              engine: "vllm"
+      responses:
+        "201":
+          description: Model created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model_id:
+                    type: string
+                    example: "llama-3-8b"
+                required:
+                  - model_id
+        "400":
+          description: Empty body, invalid protojson, or missing model_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A model with this ID already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /models/{id}:
+    delete:
+      operationId: deleteModel
+      summary: Remove a model from the catalog
+      description: >
+        Guarded delete — never a cascade:
+        1. An unknown ID returns 404.
+        2. If any non-terminal deployment still references the model, the request
+           is refused with 409 model_in_use listing the blocking deployment IDs.
+           Tear those deployments down explicitly first.
+        3. On success, 204 No Content is returned.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model ID.
+      responses:
+        "204":
+          description: Model deleted successfully. No content.
+        "404":
+          description: Model not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Model is pinned by active deployments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictModelInUse"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /models/{id}/plan:
+    post:
+      operationId: previewPlan
+      summary: Dry-run plan preview (read-only, no side effects)
+      description: >
+        Computes the planner's layer-split plan for the model against the CURRENT
+        fleet and returns it WITHOUT persisting anything and WITHOUT deploying.
+        The plan is ephemeral — its ID resolves to 404 via GET /plans/{id}.
+        No audit event is emitted.
+
+        The feasibility verdict shapes the body, not the HTTP status code:
+        - 200 + feasible:true — the model fits; the plan is inline.
+        - 200 + feasible:false + reason — the model does not fit; this is a
+          normal outcome, not a failure (never a 4xx).
+
+        Returns 404 for an unknown model, 501 when no Planner is configured.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model ID.
+      requestBody:
+        required: false
+        description: No body required.
+      responses:
+        "200":
+          description: >
+            Preview result. Either feasible (with inline plan) or infeasible
+            (with reason). Discriminated by the "feasible" field.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/PlanPreviewFeasible"
+                  - $ref: "#/components/schemas/PlanPreviewInfeasible"
+                discriminator:
+                  propertyName: feasible
+        "404":
+          description: Model not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Planner not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /models/{id}/deploy:
+    post:
+      operationId: deployModel
+      summary: Deploy a model
+      description: >
+        Resolves a DeploymentPlan and hands it to the orchestrator.
+
+        Plan resolution order:
+        1. Inline "plan" (protojson DeploymentPlan) in the body — caller-supplied.
+        2. Stored plan referenced by "plan_id".
+        3. Omit body entirely — the server generates a plan from the current fleet
+           (requires a Planner; the generated plan is persisted to the plans table).
+
+        Returns 422 when auto-planning is used but the model does not fit the fleet.
+        Returns 501 when no orchestrator (Deployer) is configured.
+        Returns 400 when no plan and no plan_id are provided and no Planner is configured.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model ID.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+      responses:
+        "202":
+          description: Deployment accepted. The deployment is being provisioned asynchronously.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployResponse"
+        "400":
+          description: Invalid body or no plan available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Model or referenced plan not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Model does not fit the current fleet (auto-plan path only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelDoesNotFit"
+        "500":
+          description: Orchestrator error (may include a partial deployment_id).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployError"
+        "501":
+          description: Orchestrator not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # --------------------------------------------------------------- plans
+  /plans/{id}:
+    get:
+      operationId: getPlan
+      summary: Get a stored deployment plan by ID
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Plan ID.
+      responses:
+        "200":
+          description: The stored plan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plan"
+        "404":
+          description: Plan not found. Note that plans produced by the preview endpoint
+            are ephemeral and will not be found here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------- deployments
+  /deployments:
+    get:
+      operationId: listDeployments
+      summary: List all deployments
+      description: >
+        Returns every deployment known to the registry, including terminal ones
+        (STOPPED, FAILED). The "deployments" array is always present (never null).
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Deployment list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Deployment"
+                required:
+                  - deployments
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /deployments/{id}:
+    delete:
+      operationId: deleteDeployment
+      summary: Tear down a deployment
+      description: >
+        Initiates teardown of the deployment via the orchestrator. The deployment
+        transitions to STOPPING asynchronously; poll GET /deployments to observe
+        the final STOPPED state.
+
+        Returns 501 when no orchestrator (Deployer) is configured.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Deployment ID.
+      responses:
+        "200":
+          description: Teardown accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment_id:
+                    type: string
+                    example: "dep-abc123"
+                  state:
+                    type: string
+                    example: "stopping"
+                required:
+                  - deployment_id
+                  - state
+        "404":
+          description: Deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Orchestrator not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ----------------------------------------------------------- cluster health
+  /cluster/health:
+    get:
+      operationId: clusterHealth
+      summary: Cluster health summary
+      description: >
+        Derives a coarse health verdict from the registry: DB reachability plus
+        node counts. Does not perform active probing of nodes.
+
+        Status values: "ok" (≥1 ready node), "empty" (no nodes), "degraded"
+        (nodes exist but none are ready), "unavailable" (registry unreachable —
+        HTTP 503).
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Health summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterHealth"
+        "500":
+          description: Internal error (registry reachable but listing failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Registry unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterHealth"
+
+  # ------------------------------------------------------------ api keys
+  /apikeys:
+    get:
+      operationId: listAPIKeys
+      summary: List gateway API keys (metadata only)
+      description: >
+        Returns metadata for all API keys. The plaintext key and its SHA-256
+        hash are never returned — they are excluded by the json:"-" tag on
+        KeyHash. The "apikeys" array is always present (never null).
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: API key list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apikeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/APIKey"
+                required:
+                  - apikeys
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      operationId: createAPIKey
+      summary: Mint a new gateway API key
+      description: >
+        Generates a cryptographically random key with a "psk_" prefix. The
+        plaintext key is returned exactly once in the response — only its
+        SHA-256 hash is persisted. Copy the key immediately; it cannot be
+        retrieved again.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAPIKeyRequest"
+            example:
+              name: "ci-pipeline"
+              tenant: "team-a"
+              quota: 1000
+      responses:
+        "201":
+          description: Key created. Contains the plaintext key (one-time only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAPIKeyResponse"
+        "400":
+          description: Invalid JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Key generation or storage failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /apikeys/{id}:
+    delete:
+      operationId: deleteAPIKey
+      summary: Revoke an API key
+      description: >
+        Permanently removes the key from the store. Returns 404 if the key
+        does not exist. Emits an apikey.deleted audit event on success.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: API key ID.
+      responses:
+        "204":
+          description: Key revoked. No content.
+        "404":
+          description: Key not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # --------------------------------------------------------- join token
+  /join-token:
+    post:
+      operationId: createJoinToken
+      summary: Mint a cluster join token
+      description: >
+        Generates a single-use, expiring join token. The token is returned once
+        and never persisted. Pass it to an enrolling agent via the
+        PURSER_JOIN_TOKEN environment variable; the agent will call the
+        RegistrationService gRPC Join RPC to enroll.
+
+        Returns 501 when no fleet manager is configured.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinTokenRequest"
+            example:
+              ttl_seconds: 120
+      responses:
+        "201":
+          description: Join token created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinTokenResponse"
+        "400":
+          description: Invalid JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Token generation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Fleet manager not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # -------------------------------------------------------------- metrics
+  /metrics:
+    get:
+      operationId: metricsSSE
+      summary: Live cluster metrics (Server-Sent Events)
+      description: >
+        Streams live cluster metrics as Server-Sent Events. Emits an initial
+        snapshot immediately, then one event every MetricsInterval (default 2s),
+        until the client disconnects.
+
+        Each event is a "data: {JSON}" SSE line followed by a blank line.
+        When a MetricsSource is configured, its Snapshot() output is emitted.
+        Otherwise the server derives a node-state summary from the registry:
+        {"total_nodes": N, "by_state": {"NODE_STATE_READY": K, ...}, "at": "..."}.
+
+        Keep the connection alive by reading the stream; close it to stop receiving events.
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: SSE stream of JSON metric snapshots.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >
+                  Each SSE event line has the form: data: {JSON}\n\n
+                  The JSON payload is either a MetricsSource snapshot or the
+                  registry-derived summary (see description).
+
+  # ------------------------------------------------- enterprise endpoints
+  /enterprise/status:
+    get:
+      operationId: enterpriseStatus
+      summary: Report the active Purser edition
+      description: >
+        Reports whether the running instance is the community edition or a
+        licensed enterprise installation. The verdict comes entirely from the
+        offline-verified license key loaded at startup — no network call is made.
+
+        Always returns 200; the response body discriminates community vs.
+        enterprise via the "edition" field.
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Edition report. "edition" is "community" or "enterprise".
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/EnterpriseStatusCommunity"
+                  - $ref: "#/components/schemas/EnterpriseStatusLicensed"
+                discriminator:
+                  propertyName: edition
+
+  /enterprise/audit-log:
+    get:
+      operationId: enterpriseAuditLog
+      summary: Tamper-evident audit log (enterprise only)
+      description: >
+        Returns the most recent audit-log entries with an end-to-end hash-chain
+        verification result. Requires a valid license with the "audit" feature;
+        returns 402 without one.
+
+        The returned entries are in ascending seq order. The "chain" object
+        reports whether the hash chain is intact over the returned window.
+        A broken chain (verified:false) is reported as a normal 200 response
+        with a "break" object identifying the first inconsistency — it is never
+        a 500.
+
+        Rows written before the hash chain existed (seq == 0) are skipped; they
+        cannot spuriously fail verification.
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+          description: >
+            Maximum number of most-recent entries to return. Defaults to 100.
+            Verification is sound over the returned window when it covers the
+            chain from genesis (the default for logs within the limit).
+      responses:
+        "200":
+          description: Audit log with chain verification result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogResponse"
+        "402":
+          description: Valid enterprise license with "audit" feature required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicenseRequired"
+        "500":
+          description: Failed to read audit log.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ----------------------------------------------------- spec self-service
+  /openapi.json:
+    get:
+      operationId: getOpenAPISpec
+      summary: Machine-readable OpenAPI 3.0 spec
+      description: >
+        Returns this OpenAPI 3.0 specification as JSON. Suitable for import
+        into Postman, Insomnia, or any OpenAPI-compatible tool.
+      security:
+        - {}
+      responses:
+        "200":
+          description: OpenAPI 3.0 specification.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Valid OpenAPI 3.0 document.
+                additionalProperties: true

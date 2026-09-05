@@ -73,6 +73,33 @@ async fn spawn_mock_host() -> String {
     format!("http://{addr}")
 }
 
+/// A mock embedding server that returns a canned 128-dim float32 embedding.
+async fn spawn_mock_embed_host() -> String {
+    let router = Router::new()
+        .route("/v1/embeddings", post(mock_embeddings));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn mock_embeddings(_body: Bytes) -> Response {
+    let embedding: Vec<f32> = (0..128).map(|i| (i as f32) / 128.0).collect();
+    let body = json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": embedding, "index": 0}],
+        "model": "mock-embed",
+        "usage": {"prompt_tokens": 5, "total_tokens": 5}
+    });
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn mock_inference(body: Bytes) -> Response {
     let v: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
     let marker = v["messages"][0]["content"]
@@ -213,12 +240,13 @@ async fn strict_auth_rejects_unknown_key_but_accepts_known() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // Known key gets *past* auth: unknown model now yields 404, not 401.
+    // Known key gets *past* auth: unknown model now yields 503 (model not
+    // available), not 401 (auth failure).
     let response = app(state)
         .oneshot(post_json("/v1/chat/completions", Some("sk-live"), &payload))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +410,9 @@ async fn non_streaming_proxies_json_from_host() {
 }
 
 #[tokio::test]
-async fn unknown_model_is_404_with_available_list() {
+async fn unknown_model_is_503_service_unavailable() {
+    // When no route exists for a model the gateway returns 503 (not 404) so
+    // LiteLLM and other retrying clients know to back off, not give up.
     let (state, _host) = state_with_mock_host().await;
     let payload = json!({"model":"does-not-exist","messages":[{"role":"user","content":"hi"}]});
     let response = app(state)
@@ -393,13 +423,15 @@ async fn unknown_model_is_404_with_available_list() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers().get(header::RETRY_AFTER).unwrap(),
+        "30",
+        "503 must carry Retry-After: 30"
+    );
     let body = body_json(response).await;
-    assert_eq!(body["error"]["code"], "model_not_found");
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains(MOCK_MODEL));
+    assert_eq!(body["error"]["type"], "service_unavailable");
+    assert_eq!(body["error"]["message"], "model not available");
 }
 
 #[tokio::test]
@@ -416,6 +448,11 @@ async fn host_down_is_503() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // Retry-After: 30 is now present on all 503s.
+    assert_eq!(
+        response.headers().get(header::RETRY_AFTER).unwrap(),
+        "30"
+    );
     assert_eq!(
         body_json(response).await["error"]["code"],
         "node_unavailable"
@@ -433,6 +470,7 @@ async fn token_rate_limit_returns_429_with_retry_after() {
         max_concurrent: 100,
         max_inflight: 100,
         retry_after_secs: 7,
+        max_queue_depth: 20,
     });
     let payload = json!({
         "model": MOCK_MODEL,
@@ -470,6 +508,7 @@ fn backpressure_ceiling_sheds_load_deterministically() {
         max_concurrent: 100,
         max_inflight: 1,
         retry_after_secs: 3,
+        max_queue_depth: 20,
     };
 
     let g1 = limiter.acquire("key-a", &quota, 1).expect("first admitted");
@@ -493,6 +532,42 @@ fn backpressure_ceiling_sheds_load_deterministically() {
     assert_eq!(limiter.global_inflight(), 1);
 }
 
+#[tokio::test]
+async fn queue_full_returns_429_with_retry_after_and_position() {
+    // max_queue_depth = 0 → Semaphore has 0 permits; every request for a
+    // known model is shed immediately with 429 + Retry-After: 5 +
+    // X-Queue-Position.
+    let state = AppState::with_mock().with_quota(QuotaConfig {
+        max_queue_depth: 0,
+        ..QuotaConfig::default()
+    });
+    // Insert a real route (the semaphore check runs after route resolution).
+    state
+        .insert_route(MOCK_MODEL, ModelRoute::active("http://127.0.0.1:9", "dep-q", "Q4_K_M"))
+        .await;
+    let payload = json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
+    let response = app(state)
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            Some("client-key"),
+            &payload,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.headers().get(header::RETRY_AFTER).unwrap(),
+        "5",
+        "queue-full 429 must advertise Retry-After: 5"
+    );
+    assert!(
+        response.headers().contains_key("x-queue-position"),
+        "queue-full 429 must include X-Queue-Position header"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+}
+
 #[test]
 fn per_key_concurrency_is_isolated_between_tenants() {
     // max_concurrent = 1 per key; a second concurrent request for the SAME key
@@ -504,6 +579,7 @@ fn per_key_concurrency_is_isolated_between_tenants() {
         max_concurrent: 1,
         max_inflight: 0, // unlimited global, isolate the per-key check
         retry_after_secs: 1,
+        max_queue_depth: 20,
     };
 
     let _a1 = limiter.acquire("key-a", &quota, 1).expect("A#1 admitted");
@@ -577,6 +653,61 @@ async fn concurrent_tenants_never_see_each_others_output() {
     assert!(
         !text_b.contains("SECRET-ALPHA"),
         "ISOLATION VIOLATION: tenant B saw tenant A's content: {text_b}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// embeddings
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn embeddings_valid_model_returns_200_with_expected_shape() {
+    let host = spawn_mock_embed_host().await;
+    let state = AppState::with_mock();
+    state
+        .insert_route(MOCK_MODEL, ModelRoute::active(&host, "dep-embed", "fp32"))
+        .await;
+
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "input": "hello embeddings",
+        "encoding_format": "float"
+    });
+    let response = app(state)
+        .oneshot(post_json("/v1/embeddings", Some("client-key"), &payload))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["object"], "list", "outer object must be 'list'");
+    assert_eq!(
+        body["data"][0]["object"], "embedding",
+        "data[0].object must be 'embedding'"
+    );
+    let embedding = body["data"][0]["embedding"].as_array().expect("embedding array");
+    assert_eq!(embedding.len(), 128, "expected 128-dim vector from mock host");
+    assert!(
+        body["usage"]["prompt_tokens"].as_u64().is_some(),
+        "usage.prompt_tokens must be present"
+    );
+}
+
+#[tokio::test]
+async fn embeddings_host_down_is_503() {
+    // AppState::with_mock() registers MOCK_MODEL pointing at a closed port.
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "input": "test"
+    });
+    let response = app(AppState::with_mock())
+        .oneshot(post_json("/v1/embeddings", Some("client-key"), &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "node_unavailable"
     );
 }
 

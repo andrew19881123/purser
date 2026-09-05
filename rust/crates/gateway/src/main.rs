@@ -18,7 +18,10 @@ use purser_gateway::{app, AppState, Config};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber_init();
+    // Initialise structured logging and, when OTEL_EXPORTER_OTLP_ENDPOINT is
+    // set, the OTLP trace pipeline. The guard must be kept alive until we exit
+    // so pending spans are flushed on shutdown.
+    let _otel_guard = purser_gateway::telemetry::init();
 
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -51,7 +54,14 @@ async fn main() -> ExitCode {
     }
 
     // The routing table is populated by the Control Plane at runtime.
-    let state = AppState::from_parts(ModelRegistry::new(), auth, quota, http);
+    let mut state = AppState::from_parts(ModelRegistry::new(), auth, quota, http);
+    if let Ok(cp_url) = std::env::var(purser_gateway::config::ENV_CONTROL_PLANE_URL) {
+        let cp_url = cp_url.trim().to_string();
+        if !cp_url.is_empty() {
+            tracing::info!(url = %cp_url, "usage reporting enabled: will POST to control plane");
+            state = state.with_control_plane_url(cp_url);
+        }
+    }
     let router = app(state);
 
     let addr = config.socket_addr();
@@ -76,19 +86,3 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Initialise structured JSON logging with correlation fields (`session_id`,
-/// `api_key_id`, `tenant`, `model`). Log level is controlled by `RUST_LOG`
-/// (default `info`). No request content is ever logged. Safe to call once;
-/// ignores the error if a global subscriber is already installed.
-fn tracing_subscriber_init() {
-    use tracing_subscriber::{fmt, EnvFilter};
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let _ = fmt()
-        .json()
-        .with_env_filter(filter)
-        .with_current_span(true)
-        .with_span_list(false)
-        .try_init();
-}

@@ -224,6 +224,10 @@ spread across machines.
       messages=[{"role": "user", "content": "Hello"}], stream=True)
   ```
 
+> **Gateway API keys**: If `PURSER_GATEWAY_API_KEYS` is not set, the gateway
+> runs in **open dev mode** and accepts any non-empty bearer token. Always set
+> this env var in production deployments.
+
 Binaries and default ports:
 
 | Component     | Binary            | Language | Key ports (default)                     |

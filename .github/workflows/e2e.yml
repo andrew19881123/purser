@@ -1,0 +1,85 @@
+name: E2E
+
+on:
+  push:
+    branches: ['release/**']
+  workflow_dispatch:
+
+# Informational — does not block merge to main.
+# Failures are visible in the Actions tab but this workflow is not a required
+# check on main, so they do not prevent PR merges.
+
+jobs:
+  e2e-single-node:
+    name: e2e single-node (enroll→deploy→chat)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # e2e_full.sh hardcodes ROOT=/home/andrea/ideas/purser.  Create a
+      # symlink so the script resolves all binary paths without modification.
+      - name: Create ROOT symlink for e2e scripts
+        run: |
+          sudo mkdir -p /home/andrea/ideas
+          sudo ln -s "$GITHUB_WORKSPACE" /home/andrea/ideas/purser
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/controlplane/go.mod
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Build the Go control-plane binary.  The script expects it at
+      # $ROOT/bin/control-plane (= $GITHUB_WORKSPACE/bin/control-plane via the
+      # symlink above).
+      - name: Build control-plane (Go)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p bin
+          cd go/controlplane && go build -o ../../bin/control-plane .
+
+      # Build only the two Rust binaries the e2e script needs.  Point
+      # CARGO_TARGET_DIR at /tmp to avoid writing gigabytes into the workspace.
+      - name: Build purser-agent and purser-gateway (Rust)
+        env:
+          CARGO_TARGET_DIR: /tmp/e2e-cargo-target
+        working-directory: rust
+        run: cargo build -p purser-agent -p purser-gateway --locked
+
+      # The script expects the Rust debug binaries at
+      # $ROOT/rust/target/debug/{purser-gateway,purser-agent}.  Copy them from
+      # the out-of-tree CARGO_TARGET_DIR so the paths resolve via the symlink.
+      - name: Stage Rust binaries
+        run: |
+          mkdir -p rust/target/debug
+          cp /tmp/e2e-cargo-target/debug/purser-gateway rust/target/debug/
+          cp /tmp/e2e-cargo-target/debug/purser-agent  rust/target/debug/
+
+      - name: Run E2E — single-node enroll→deploy→chat
+        id: e2e
+        continue-on-error: true
+        run: timeout 300 bash tools/e2e_full.sh
+
+      # Capture a port snapshot so we can diagnose bind failures.
+      - name: Collect port diagnostics on failure
+        if: steps.e2e.outcome == 'failure'
+        run: |
+          mkdir -p /tmp/purser-e2e
+          ss -tlnp > /tmp/purser-e2e/port-diag.txt 2>/dev/null || true
+
+      - name: Upload E2E logs
+        if: steps.e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-single-node-logs
+          path: /tmp/purser-e2e/
+
+      # Re-fail the job after the upload so the CI check is red on failure.
+      - name: Propagate E2E exit code
+        if: steps.e2e.outcome == 'failure'
+        run: exit 1
