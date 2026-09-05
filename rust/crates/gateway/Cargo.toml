@@ -12,7 +12,6 @@ bytes = "1.12.1"
 futures-util = "0.3.34"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
-purser-proto = { path = "../purser-proto" }
 reqwest = { version = "0.13.4", default-features = false, features = ["stream", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

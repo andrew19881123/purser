@@ -27,7 +27,6 @@
 use axum::extract::{Path, State};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
-use purser_proto::v1::NodeState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -39,31 +38,20 @@ use crate::state::{AppState, ModelRoute, RouteState};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
-        .route("/nodes", get(nodes))
         .route("/routes", put(put_route))
         .route("/routes/{model_id}", delete(delete_route))
 }
 
 /// `GET /api/v1` — plane descriptor.
+///
+/// Node/deployment listings are **not** served here: that data lives in the
+/// Control Plane, which exposes its own `/api/v1/nodes`. The gateway's
+/// management plane is limited to route-sync.
 async fn index() -> Json<Value> {
     Json(json!({
         "plane": "management",
         "status": "ready",
-        "endpoints": ["PUT /api/v1/routes", "DELETE /api/v1/routes/{model_id}", "GET /api/v1/nodes"],
-    }))
-}
-
-/// `GET /api/v1/nodes` — placeholder node listing, wired to the generated
-/// `purser.v1` contract. Full node/deployment management is out of scope for
-/// the gateway (it lives in the Control Plane).
-async fn nodes() -> Json<Value> {
-    Json(json!({
-        "object": "list",
-        "data": [],
-        "node_states": {
-            "unspecified": NodeState::Unspecified as i32,
-            "ready": NodeState::Ready as i32,
-        },
+        "endpoints": ["PUT /api/v1/routes", "DELETE /api/v1/routes/{model_id}"],
     }))
 }
 

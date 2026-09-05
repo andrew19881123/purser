@@ -4,8 +4,9 @@
 //! other:
 //!
 //! * **Inference plane** under `/v1/…` — OpenAI-compatible, what clients hit.
-//! * **Management plane** under `/api/v1/…` — Control-Plane operations (nodes,
-//!   deployments, metrics). Only a placeholder in this phase.
+//! * **Management plane** under `/api/v1/…` — route-sync driven by the Control
+//!   Plane (`PUT`/`DELETE /api/v1/routes`). Node/deployment listings live in
+//!   the Control Plane, not here.
 //!
 //! Liveness/readiness probes live at the root (`/healthz`, `/readyz`).
 

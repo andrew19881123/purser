@@ -4,8 +4,9 @@
 //! [`purser_gateway::config`]), loads the auth policy, quota thresholds and
 //! upstream timeouts, installs the Prometheus recorder, and serves the
 //! OpenAI-compatible API. The routing table starts **empty**: the Control Plane
-//! populates it at runtime via `PUT /api/v1/routes`. TLS is structurally
-//! supported but not yet terminated here.
+//! populates it at runtime via `PUT /api/v1/routes`. The gateway serves
+//! plaintext HTTP; TLS is terminated upstream at the ingress / load balancer,
+//! consistent with Purser's trusted-LAN model.
 
 use std::process::ExitCode;
 
@@ -24,12 +25,9 @@ async fn main() -> ExitCode {
         Err(err) => {
             eprintln!(
                 "purser-gateway: configuration error: {err}\n\
-                 set {host} (e.g. 0.0.0.0) and {port} (e.g. 8080); \
-                 optionally {cert} + {key} for TLS.",
+                 set {host} (e.g. 0.0.0.0) and {port} (e.g. 8080).",
                 host = purser_gateway::config::ENV_HOST,
                 port = purser_gateway::config::ENV_PORT,
-                cert = purser_gateway::config::ENV_TLS_CERT,
-                key = purser_gateway::config::ENV_TLS_KEY,
             );
             return ExitCode::from(2);
         }
@@ -66,8 +64,8 @@ async fn main() -> ExitCode {
     };
 
     println!(
-        "purser-gateway listening on {addr} (tls-configured: {})",
-        config.tls_enabled()
+        "purser-gateway serving plaintext HTTP on {addr}; \
+         terminate TLS at your ingress / load balancer"
     );
 
     if let Err(err) = axum::serve(listener, router).await {

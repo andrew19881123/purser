@@ -14,7 +14,7 @@
 //! plane (`PUT/DELETE /api/v1/routes`).
 //!
 //! ## Layout
-//! - [`config`] — explicit bind config, TLS-ready.
+//! - [`config`] — explicit bind config (plaintext; TLS terminated upstream).
 //! - [`state`] — shared `model -> route` table plus auth/quota/http/metrics.
 //! - [`openai`] — OpenAI-compatible wire types.
 //! - [`error`] — reusable OpenAI-style error mapping.
