@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> These changes are in the repository but not yet tagged or fully re-released.
+## [0.1.1] - 2026-09-05
+
+> Patch release. All three GHCR images and the Helm chart are updated to `0.1.1`.
 > The GHCR `purser-ui:0.1.0` image still serves the old mock-by-default build
 > until the image is rebuilt and republished. Given the security-correctness fix
 > to the gateway, the next tag is expected to be `0.1.1`.

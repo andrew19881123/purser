@@ -17,13 +17,13 @@ image:
   controlPlane:
     repository: ghcr.io/andrew19881123/purser-control-plane
     # Defaults to .Chart.AppVersion when left empty.
-    tag: "0.1.0"
+    tag: "0.1.1"
   gateway:
     repository: ghcr.io/andrew19881123/purser-gateway
-    tag: "0.1.0"
+    tag: "0.1.1"
   ui:
     repository: ghcr.io/andrew19881123/purser-ui
-    tag: "0.1.0"
+    tag: "0.1.1"
 
 # Secrets for pulling from a private registry, e.g. [{ name: regcred }].
 imagePullSecrets: []
