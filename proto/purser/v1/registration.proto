@@ -46,11 +46,23 @@ message JoinReply {
   bytes ca_cert = 3;
 }
 
+// Real-time resource telemetry from a running agent node, reported on every
+// heartbeat. All percentage fields are in the range 0–100.
+message NodeMetrics {
+  float cpu_utilization_pct       = 1;  // 0–100
+  float gpu_utilization_pct       = 2;  // 0–100; 0 if no GPU present
+  float memory_used_gb            = 3;
+  float mem_bandwidth_util_pct    = 4;  // 0–100; fraction of peak measured bandwidth in use
+  float tokens_per_second         = 5;  // current tok/s estimate; 0 if not serving
+  bool  inference_port_alive      = 6;  // true if the inference HTTP port is responding
+}
+
 message Heartbeat {
   string node_id = 1;
   NodeState state = 2;
   EngineMetrics metrics = 3;
   google.protobuf.Timestamp ts = 4;
+  optional NodeMetrics node_metrics = 5;
 }
 
 message Ack {}
