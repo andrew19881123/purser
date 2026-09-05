@@ -2,6 +2,26 @@
 
 The Purser Agent is a native host package that runs as a systemd service. It needs direct access to the node's GPUs/accelerators and supervises an inference engine worker — it does **not** run inside Kubernetes.
 
+## One-liner install (hosted repository)
+
+The fastest way to install `purser-agent` on a fleet node. A single command configures the [Cloudsmith](https://cloudsmith.io)-hosted apt or yum repository and installs the latest release:
+
+=== "Debian / Ubuntu"
+
+    ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/andrew19881123/purser/setup.deb.sh' | sudo bash
+    sudo apt install purser-agent
+    ```
+
+=== "RHEL / Rocky / AlmaLinux"
+
+    ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/andrew19881123/purser/setup.rpm.sh' | sudo bash
+    sudo yum install purser-agent
+    ```
+
+After installing, continue with [Configure](#configure) to set up the agent environment file.
+
 ## Install from package
 
 Download the package for your distribution from the [v0.1.0 release](https://github.com/andrew19881123/purser/releases/tag/v0.1.0):
@@ -129,12 +149,12 @@ journalctl -u purser-agent --since "1 hour ago"
 
 ## Fleet-scale deployment
 
-### Internal apt / yum repository
+### apt / yum repository
 
-Mirror the `.deb` / `.rpm` packages into an internal repository and push the config with your configuration management tool:
+The hosted Cloudsmith repository is the recommended distribution channel. Configure it on all nodes with the one-liner from [One-liner install](#one-liner-install-hosted-repository), or mirror the packages into an internal repository with your own tooling:
 
 ```bash
-# Example: reprepro for apt
+# Example: reprepro for an internal apt mirror
 reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.1.0_amd64.deb
 ```
 
