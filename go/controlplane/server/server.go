@@ -26,6 +26,7 @@ import (
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
+	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	plannerplan "github.com/purser/purser/go/planner/plan"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -160,6 +161,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
+	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
@@ -1139,6 +1141,136 @@ func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
 		"by_state":    byState,
 		"at":          time.Now().UTC(),
 	}, nil
+}
+
+// importRequest is the body of POST /api/v1/models/import.
+type importRequest struct {
+	// Source identifies the external registry. Currently "sagemaker" is supported.
+	Source string `json:"source"`
+	// ModelGroup overrides PURSER_SAGEMAKER_MODEL_GROUP for "sagemaker" imports.
+	ModelGroup string `json:"model_group,omitempty"`
+	// Version selects a specific approved package version; 0 means latest.
+	Version int `json:"version,omitempty"`
+}
+
+// handleImportModel imports a model from an external registry into the catalog.
+// The source type is selected by the "source" field of the request body.
+// Currently supported: "sagemaker".
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "read body: "+err.Error())
+		return
+	}
+	var body importRequest
+	if err := json.Unmarshal(raw, &body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+
+	switch body.Source {
+	case "sagemaker":
+		s.handleImportSageMaker(w, r, body)
+	case "":
+		s.writeError(w, http.StatusBadRequest, "bad_request", `"source" is required`)
+	default:
+		s.writeError(w, http.StatusBadRequest, "unknown_source", "unknown import source: "+body.Source)
+	}
+}
+
+// handleImportSageMaker implements the "sagemaker" import path:
+//  1. Build a SageMakerClient from env + request overrides.
+//  2. List approved packages in the model group.
+//  3. Select the latest (version==0) or the requested version.
+//  4. Create a registry.Model with source metadata in Spec.
+//  5. Return 201 with the created model and its source JSON.
+func (s *Server) handleImportSageMaker(w http.ResponseWriter, r *http.Request, body importRequest) {
+	client := importer.NewSageMakerClient()
+	if body.ModelGroup != "" {
+		client.ModelGroup = body.ModelGroup
+	}
+	if client.ModelGroup == "" {
+		s.writeError(w, http.StatusBadRequest, "missing_model_group",
+			"model_group is required (set in request body or PURSER_SAGEMAKER_MODEL_GROUP env)")
+		return
+	}
+
+	packages, err := client.ListApprovedModelPackages(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "sagemaker_error", err.Error())
+		return
+	}
+	if len(packages) == 0 {
+		s.writeError(w, http.StatusNotFound, "no_approved_packages",
+			"no approved model packages found in group "+client.ModelGroup)
+		return
+	}
+
+	// packages is sorted newest-first; version==0 means "latest".
+	var pkg importer.ModelPackage
+	if body.Version == 0 {
+		pkg = packages[0]
+	} else {
+		found := false
+		for _, p := range packages {
+			if p.ModelPackageVersion == body.Version {
+				pkg = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version "+strconv.Itoa(body.Version)+" not found in approved packages")
+			return
+		}
+	}
+
+	// Model ID: {GroupName}-v{N}
+	modelID := pkg.ModelPackageGroupName + "-v" + strconv.Itoa(pkg.ModelPackageVersion)
+
+	// Source metadata stored as Spec (opaque JSON blob).
+	type sourceDoc struct {
+		Type    string `json:"type"`
+		ARN     string `json:"arn"`
+		S3URI   string `json:"s3_uri"`
+		Version int    `json:"version"`
+	}
+	src := sourceDoc{
+		Type:    "sagemaker",
+		ARN:     pkg.ModelPackageArn,
+		S3URI:   pkg.ModelDataURL,
+		Version: pkg.ModelPackageVersion,
+	}
+	specJSON, err := json.Marshal(src)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     modelID,
+		Family: importer.GuessFamilyFromName(pkg.ModelPackageGroupName, pkg.ModelPackageDescription),
+		Spec:   specJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:  "api",
+		Action: "model.imported",
+		Target: modelID,
+	})
+
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   json.RawMessage(specJSON),
+	})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {
