@@ -27,6 +27,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use tracing::Instrument as _;
 
 use crate::auth::ApiKey;
 use crate::error::ApiError;
@@ -61,7 +62,17 @@ async fn chat_completions(
     api_key: ApiKey,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    proxy_inference(&state, &api_key, body, "/v1/chat/completions").await
+    // The `model.id` field is filled in inside proxy_inference once the body
+    // is parsed. When tracing-opentelemetry is active this span is exported to
+    // the configured OTEL collector as a root span for the inference call.
+    let span = tracing::info_span!(
+        "purser.gateway.inference",
+        "http.route" = "/v1/chat/completions",
+        "model.id" = tracing::field::Empty,
+    );
+    proxy_inference(&state, &api_key, body, "/v1/chat/completions")
+        .instrument(span)
+        .await
 }
 
 async fn completions(
@@ -69,7 +80,14 @@ async fn completions(
     api_key: ApiKey,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    proxy_inference(&state, &api_key, body, "/v1/completions").await
+    let span = tracing::info_span!(
+        "purser.gateway.inference",
+        "http.route" = "/v1/completions",
+        "model.id" = tracing::field::Empty,
+    );
+    proxy_inference(&state, &api_key, body, "/v1/completions")
+        .instrument(span)
+        .await
 }
 
 async fn models(State(state): State<AppState>) -> Json<ModelList> {
@@ -109,6 +127,10 @@ async fn proxy_inference(
         })?;
     let model = routed.model;
     let want_stream = routed.stream;
+
+    // Record the model id on the enclosing span so it is visible in OTEL
+    // traces. When no OTEL provider is configured this is a no-op.
+    tracing::Span::current().record("model.id", &model.as_str());
 
     // Resolve the host (404 if unknown, 503 if draining).
     let route = state.resolve_active(&model).await?;

@@ -21,6 +21,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
@@ -103,6 +108,17 @@ type Server struct {
 	fleet     FleetManager
 	clusterID string
 	license   *license.License
+
+	// handler is the mux wrapped with the OTEL HTTP middleware. Returned by
+	// Handler() and used as http.Server.Handler so all test paths go through
+	// the same middleware chain.
+	handler http.Handler
+
+	// OTEL infrastructure gauge instruments. All three are no-ops unless a real
+	// MeterProvider was installed by telemetry.Init before New() is called.
+	gaugeDeploymentsActive metric.Int64Gauge
+	gaugeNodesReady        metric.Int64Gauge
+	gaugeNodesTotal        metric.Int64Gauge
 }
 
 // New builds a Server backed by reg.
@@ -136,16 +152,36 @@ func New(reg registry.Registry, cfg Config) *Server {
 		license:   lic,
 	}
 	s.routes()
+
+	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
+	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
+	// so this is always safe to call even without a collector.
+	m := otel.Meter("purser.control-plane")
+	s.gaugeDeploymentsActive, _ = m.Int64Gauge("purser.deployments.active",
+		metric.WithDescription("Number of deployments in ACTIVE state"),
+		metric.WithUnit("{deployment}"))
+	s.gaugeNodesReady, _ = m.Int64Gauge("purser.nodes.ready",
+		metric.WithDescription("Number of nodes in READY or RUNNING state"),
+		metric.WithUnit("{node}"))
+	s.gaugeNodesTotal, _ = m.Int64Gauge("purser.nodes.total",
+		metric.WithDescription("Total number of registered nodes"),
+		metric.WithUnit("{node}"))
+
+	// Wrap the mux with the OTEL HTTP middleware so every route gets a trace
+	// span. The middleware is always installed; when no TracerProvider is
+	// configured it uses the global no-op tracer (zero overhead).
+	s.handler = otelMiddleware(s.mux)
 	s.server = &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           s.mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
 }
 
 // Handler returns the composed http.Handler (useful for tests via httptest).
-func (s *Server) Handler() http.Handler { return s.mux }
+// It is the mux wrapped with the OTEL HTTP middleware.
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // ListenAndServe starts serving and blocks until the server stops.
 func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
@@ -1157,4 +1193,122 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ---------------------------------------------------------------------------
+// OTEL HTTP middleware
+// ---------------------------------------------------------------------------
+
+// statusWriter wraps http.ResponseWriter to capture the status code written
+// by the downstream handler, so the middleware can record it as a span attribute.
+// It forwards http.Flusher if the underlying writer supports it (required by
+// the SSE metrics endpoint).
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	sw.status = code
+	sw.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures a 200 when the handler calls Write without WriteHeader first.
+func (sw *statusWriter) Write(b []byte) (int, error) {
+	if sw.status == 0 {
+		sw.status = http.StatusOK
+	}
+	return sw.ResponseWriter.Write(b)
+}
+
+// Flush implements http.Flusher by delegating to the underlying ResponseWriter
+// when it supports flushing. The SSE endpoint casts the writer to http.Flusher;
+// without this delegation that cast would fail on a statusWriter.
+func (sw *statusWriter) Flush() {
+	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// otelMiddleware wraps next with an OTEL trace span for every HTTP request.
+// It records http.method, http.path, and http.status_code as span attributes.
+// When no real TracerProvider is configured (the default) the global no-op
+// tracer is used, so the middleware is completely transparent with zero overhead.
+func otelMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracer := otel.Tracer("purser.control-plane")
+		ctx, span := tracer.Start(r.Context(), r.Method+" "+r.URL.Path,
+			trace.WithAttributes(
+				attribute.String("http.method", r.Method),
+				attribute.String("http.path", r.URL.Path),
+			),
+			trace.WithSpanKind(trace.SpanKindServer),
+		)
+		defer span.End()
+
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r.WithContext(ctx))
+
+		status := sw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		span.SetAttributes(attribute.Int("http.status_code", status))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Infrastructure metrics collector
+// ---------------------------------------------------------------------------
+
+// StartInfraMetrics runs a background goroutine that samples infrastructure
+// gauges (deployments.active, nodes.ready, nodes.total) every 30 seconds and
+// pushes them to the configured MeterProvider (no-op when OTEL is not
+// configured). The goroutine exits when ctx is cancelled.
+func (s *Server) StartInfraMetrics(ctx context.Context) {
+	go func() {
+		s.collectInfraMetrics(ctx) // initial sample immediately
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.collectInfraMetrics(ctx)
+			}
+		}
+	}()
+}
+
+// collectInfraMetrics queries the registry for deployment and node counts and
+// records them as gauge readings. Errors are logged and silently skipped so a
+// transient registry hiccup never brings down the metrics loop.
+func (s *Server) collectInfraMetrics(ctx context.Context) {
+	deps, err := s.reg.ListDeployments(ctx)
+	if err != nil {
+		s.log.Warn("infra metrics: list deployments failed", "err", err)
+	} else {
+		var active int64
+		for _, d := range deps {
+			if d.State == purserv1.DeploymentState_DEPLOYMENT_STATE_ACTIVE.String() {
+				active++
+			}
+		}
+		s.gaugeDeploymentsActive.Record(ctx, active)
+	}
+
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		s.log.Warn("infra metrics: list nodes failed", "err", err)
+		return
+	}
+	var ready int64
+	for _, n := range nodes {
+		if n.State == "NODE_STATE_READY" || n.State == "NODE_STATE_RUNNING" {
+			ready++
+		}
+	}
+	s.gaugeNodesReady.Record(ctx, ready)
+	s.gaugeNodesTotal.Record(ctx, int64(len(nodes)))
 }
