@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -118,6 +119,47 @@ func DefaultConfig() Config {
 		ActionCooldown:   2 * time.Minute,
 		Levels:           DefaultLevels(),
 	}
+}
+
+// ConfigFromEnv returns a Config seeded from DefaultConfig() with overrides
+// from the following environment variables:
+//
+//   - PURSER_RECONCILER_INTERVAL           – Interval between reconcile passes
+//   - PURSER_RECONCILER_NODE_OFFLINE_AFTER – NodeTimeout threshold
+//   - PURSER_RECONCILER_HYSTERESIS         – Hysteresis dwell time
+//   - PURSER_RECONCILER_ACTION_COOLDOWN    – ActionCooldown between re-actions
+//
+// All values are parsed by time.ParseDuration. Unset or unparseable variables
+// fall back to the DefaultConfig() value.
+func ConfigFromEnv() Config {
+	cfg := DefaultConfig()
+	if d := envDuration("PURSER_RECONCILER_INTERVAL"); d > 0 {
+		cfg.Interval = d
+	}
+	if d := envDuration("PURSER_RECONCILER_NODE_OFFLINE_AFTER"); d > 0 {
+		cfg.NodeTimeout = d
+	}
+	if d := envDuration("PURSER_RECONCILER_HYSTERESIS"); d > 0 {
+		cfg.Hysteresis = d
+	}
+	if d := envDuration("PURSER_RECONCILER_ACTION_COOLDOWN"); d > 0 {
+		cfg.ActionCooldown = d
+	}
+	return cfg
+}
+
+// envDuration parses a time.Duration from the named environment variable.
+// It returns 0 if the variable is unset or cannot be parsed.
+func envDuration(key string) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 func (c Config) level(t EventType) AutomationLevel {

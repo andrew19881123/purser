@@ -2,11 +2,15 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -29,12 +33,9 @@ type AgentClient interface {
 
 // GRPCAgentClient is the production AgentClient. It dials agents lazily and
 // caches connections per address.
-//
-// TODO(security): the default dial options use insecure transport. Once the PKI
-// bootstrap is wired end-to-end, supply mTLS credentials built from the agent
-// client certificate and the CA pool.
 type GRPCAgentClient struct {
-	dialOpts []grpc.DialOption
+	dialOpts       []grpc.DialOption
+	transportCreds credentials.TransportCredentials // nil → insecure (dev mode)
 
 	mu    sync.Mutex
 	conns map[string]*grpc.ClientConn
@@ -43,12 +44,36 @@ type GRPCAgentClient struct {
 var _ AgentClient = (*GRPCAgentClient)(nil)
 
 // NewGRPCAgentClient builds a gRPC-backed AgentClient. If no dial options are
-// supplied, an insecure transport is used (MVP / non-mTLS bootstrap).
+// supplied, an insecure transport is used (dev mode / non-PKI bootstrap).
 func NewGRPCAgentClient(opts ...grpc.DialOption) *GRPCAgentClient {
 	if len(opts) == 0 {
 		opts = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	}
 	return &GRPCAgentClient{dialOpts: opts, conns: map[string]*grpc.ClientConn{}}
+}
+
+// NewGRPCAgentClientWithCA builds a gRPC-backed AgentClient that verifies
+// agent server certificates against the given CA pool (server-side TLS).
+// The control plane does not present a client certificate — agents verify the
+// control plane's identity via the shared CA pool they received at enrolment.
+//
+// If pool is nil the client falls back to insecure transport and logs a warning
+// so the control plane still starts in dev/test environments where PKI is
+// absent.
+func NewGRPCAgentClientWithCA(pool *x509.CertPool, log *slog.Logger, extra ...grpc.DialOption) *GRPCAgentClient {
+	if pool == nil {
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("orchestrator: no CA pool supplied — using insecure transport (dev mode only)")
+		return NewGRPCAgentClient(extra...)
+	}
+	tlsCfg := &tls.Config{RootCAs: pool}
+	tc := credentials.NewTLS(tlsCfg)
+	opts := make([]grpc.DialOption, 0, 1+len(extra))
+	opts = append(opts, grpc.WithTransportCredentials(tc))
+	opts = append(opts, extra...)
+	return &GRPCAgentClient{dialOpts: opts, transportCreds: tc, conns: map[string]*grpc.ClientConn{}}
 }
 
 func (c *GRPCAgentClient) conn(addr string) (*grpc.ClientConn, error) {
