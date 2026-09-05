@@ -26,6 +26,7 @@ import (
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
+	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	plannerplan "github.com/purser/purser/go/planner/plan"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -160,6 +161,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
+	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
@@ -1139,6 +1141,124 @@ func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
 		"by_state":    byState,
 		"at":          time.Now().UTC(),
 	}, nil
+}
+
+// importModelRequest is the body of POST /api/v1/models/import.
+type importModelRequest struct {
+	// Source identifies the external registry type. Currently only "azureml" is
+	// supported.
+	Source string `json:"source"`
+	// Workspace is an optional per-request override for the ML workspace name.
+	// When empty the server falls back to PURSER_AZURE_ML_WORKSPACE.
+	Workspace string `json:"workspace,omitempty"`
+	// Model is the model name in the external registry (required).
+	Model string `json:"model"`
+	// Version is the specific version to import. When empty the server selects
+	// the latest Production version, or the latest overall if none is staged as
+	// Production.
+	Version string `json:"version,omitempty"`
+}
+
+// handleImportModel dispatches a model-import request to the appropriate
+// source-specific handler. Currently supported sources: "azureml".
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	var body importModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	switch body.Source {
+	case "azureml":
+		s.handleImportAzureML(w, r, body)
+	default:
+		s.writeError(w, http.StatusBadRequest, "unknown_source",
+			"unknown import source: "+body.Source+"; supported: azureml")
+	}
+}
+
+// handleImportAzureML imports a model from an Azure ML workspace.
+//
+// It authenticates via OAuth2 client credentials, lists the requested model's
+// versions, selects the latest Production version (or latest overall), and
+// creates a catalog entry with the source metadata stored in Spec.
+func (s *Server) handleImportAzureML(w http.ResponseWriter, r *http.Request, req importModelRequest) {
+	if req.Model == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "model name is required")
+		return
+	}
+
+	client, err := importer.NewAzureMLClient(req.Workspace)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	versions, err := client.ListModelVersions(r.Context(), req.Model)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, "azureml_error",
+			"list model versions: "+err.Error())
+		return
+	}
+
+	var selected importer.AzureMLModelVersion
+	if req.Version != "" {
+		found := false
+		for _, v := range versions {
+			if v.Version == req.Version {
+				selected = v
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version not found in workspace: "+req.Version)
+			return
+		}
+	} else {
+		v, ok := importer.LatestVersion(versions)
+		if !ok {
+			s.writeError(w, http.StatusNotFound, "no_versions",
+				"no versions found for model: "+req.Model)
+			return
+		}
+		selected = v
+	}
+
+	src := map[string]any{
+		"type":         "azureml",
+		"workspace":    client.Workspace,
+		"model":        req.Model,
+		"version":      selected.Version,
+		"artifact_uri": selected.ArtifactURI,
+	}
+	srcJSON, err := json.Marshal(src)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	modelID := req.Model
+	m := &registry.Model{
+		ID:   modelID,
+		Spec: srcJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists",
+				"model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "model.imported", Target: modelID,
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   src,
+	})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {
