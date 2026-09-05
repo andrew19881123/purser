@@ -113,6 +113,23 @@ ui:
   extraEnv: []
   resources: {}
 
+# -- Optional Kubernetes Ingress.
+# When enabled, all three components are routed from a SINGLE hostname:
+#   /api  (Prefix) → control-plane  (management REST API)
+#   /v1   (Prefix) → gateway        (OpenAI-compatible inference)
+#   /     (Prefix) → ui             (Operator UI)
+# This lets the UI's same-origin defaults (/api/v1 and /v1) work without
+# setting absolute URLs. Set ingress.host (required when enabled).
+#
+# Most LAN users set controlPlane.service.type=LoadBalancer instead; see
+# deploy/README.md §3 for a comparison of both networking models.
+ingress:
+  enabled: false          # opt-in; most LAN users set controlPlane.service.type=LoadBalancer instead
+  className: ""           # e.g. "nginx" — empty = use cluster default
+  annotations: {}         # e.g. nginx.ingress.kubernetes.io/rewrite-target: /
+  host: ""                # required when enabled; e.g. purser.example.com
+  tls: []                 # standard Ingress TLS list
+
 # Enterprise license (offline-verified against the embedded public key; no
 # phone-home). Optional. When set, it is stored in a Secret and exposed to the
 # Control Plane as PURSER_LICENSE_KEY. Empty => community edition.

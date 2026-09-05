@@ -62,6 +62,34 @@ Components:
    # (<control-plane-host>:{{ .Values.controlPlane.grpcPort }}) and pass the token.
    # See packaging/ and deploy/README.md for the host-package enrollment flow.
 
+{{- if .Values.ingress.enabled }}
+
+4) Ingress — all three components on a single hostname
+   DNS / /etc/hosts must resolve {{ .Values.ingress.host }} to your Ingress
+   controller's external IP. Then:
+     {{- if .Values.ingress.tls }}
+     https://{{ .Values.ingress.host }}/        → Operator UI
+     https://{{ .Values.ingress.host }}/api/v1  → Control Plane REST API
+     https://{{ .Values.ingress.host }}/v1/...  → API Gateway (OpenAI-compatible)
+     {{- else }}
+     http://{{ .Values.ingress.host }}/        → Operator UI
+     http://{{ .Values.ingress.host }}/api/v1  → Control Plane REST API
+     http://{{ .Values.ingress.host }}/v1/...  → API Gateway (OpenAI-compatible)
+     {{- end }}
+   The UI's same-origin defaults (/api/v1 and /v1) route correctly — no
+   apiBaseUrl / gatewayBaseUrl overrides are needed.
+   Paths are ordered /api → /v1 → / (most-specific first) for compatibility
+   with first-match Ingress controllers (e.g. ingress-nginx).
+{{- else }}
+
+4) Networking tip (no Ingress)
+   Ingress is disabled (ingress.enabled=false). To expose the Control Plane to
+   a LAN Agent fleet, upgrade with:
+     helm upgrade {{ .Release.Name }} <chart> \
+       --set controlPlane.service.type=LoadBalancer
+   See deploy/README.md §3 for the full networking options.
+{{- end }}
+
 The engine<->engine data plane stays on the trusted subnet and does NOT need to
 transit Kubernetes.
 

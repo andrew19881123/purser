@@ -269,6 +269,69 @@ optionally, the Gateway and UI need external exposure.
 
 ---
 
+## 3b. Networking models — Ingress vs. LoadBalancer
+
+Purser supports two ways to expose its components. Choose the one that fits
+your environment.
+
+### Model 1 — No Ingress (default, recommended for LAN fleets)
+
+Each component is its own Service. Expose the Control Plane so that
+**out-of-cluster Agents** can register (gRPC :9443) and you can manage the
+cluster (REST :8080):
+
+```bash
+helm install purser deploy/helm/purser \
+  --set controlPlane.service.type=LoadBalancer
+```
+
+- Agents on the LAN reach the Control Plane's external IP directly.
+- The UI and Gateway can be reached via `kubectl port-forward`, `NodePort`, or a
+  separate `LoadBalancer` — whatever suits your setup.
+- The UI's `apiBaseUrl` / `gatewayBaseUrl` must be **absolute URLs** pointing at
+  the exposed Control Plane and Gateway addresses when they are not on the same
+  origin as the browser.
+
+### Model 2 — Ingress (optional, single-hostname mode)
+
+All three components are served from **one hostname** via a Kubernetes Ingress:
+
+| Path prefix | Backend           | Port |
+|-------------|-------------------|------|
+| `/api`      | control-plane     | 8080 |
+| `/v1`       | gateway           | 8080 |
+| `/`         | ui (nginx)        | 80   |
+
+```bash
+helm install purser deploy/helm/purser \
+  --set ingress.enabled=true \
+  --set ingress.host=purser.example.com \
+  --set ingress.className=nginx          # optional, leave empty for cluster default
+```
+
+With the Ingress in place, the UI's same-origin defaults (`/api/v1` and `/v1`)
+route correctly without any `apiBaseUrl` / `gatewayBaseUrl` overrides. Point
+DNS (or `/etc/hosts`) for `purser.example.com` at your Ingress controller's
+external IP and open `http://purser.example.com` in a browser.
+
+**TLS example** (cert-manager / manual secret):
+
+```bash
+helm install purser deploy/helm/purser \
+  --set ingress.enabled=true \
+  --set ingress.host=purser.example.com \
+  --set ingress.className=nginx \
+  --set "ingress.annotations.cert-manager\.io/cluster-issuer=letsencrypt-prod" \
+  --set ingress.tls[0].secretName=purser-tls \
+  --set ingress.tls[0].hosts[0]=purser.example.com
+```
+
+> **Note:** Agents always contact the Control Plane directly (gRPC/mTLS on
+> port 9443). Routing gRPC through an HTTP/1.1 Ingress is not supported; keep
+> the Control Plane Service accessible on its own IP for Agent enrollment.
+
+---
+
 ## 4. Uninstall
 
 ```bash

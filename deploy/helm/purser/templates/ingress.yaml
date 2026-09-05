@@ -1,0 +1,75 @@
+{{/*
+  Kubernetes Ingress for Purser — optional, disabled by default (ingress.enabled=false).
+
+  When enabled (ingress.enabled=true), routes all traffic from a single hostname
+  to the three Purser components:
+
+    /api  (Prefix) → <release>-control-plane  (management REST API)
+    /v1   (Prefix) → <release>-gateway        (OpenAI-compatible inference)
+    /     (Prefix) → <release>-ui             (Operator UI)
+
+  More-specific paths (/api, /v1) are listed before the catch-all (/) so that
+  first-match Ingress controllers (e.g. nginx-ingress) route API traffic to the
+  correct backends before falling through to the UI.
+
+  The legacy kubernetes.io/ingress.class annotation is emitted alongside
+  spec.ingressClassName when ingress.className is non-empty, providing a
+  fallback for clusters that pre-date the ingressClassName field (< 1.18).
+
+  ingress.host is required when ingress.enabled=true.
+
+  Most LAN users prefer controlPlane.service.type=LoadBalancer instead of an
+  Ingress; see deploy/README.md §3 for a comparison of both networking models.
+*/}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "purser.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "ingress") | nindent 4 }}
+  {{- if or .Values.ingress.className .Values.ingress.annotations }}
+  annotations:
+    {{- if .Values.ingress.className }}
+    {{- /* Legacy annotation — fallback for Ingress controllers / clusters < 1.18. */}}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host is required when ingress.enabled=true" .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- /* /api before /v1 before / — first-match controllers (nginx) need specific before general. */}}
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "purser.controlPlane.fullname" . }}
+                port:
+                  number: {{ .Values.controlPlane.httpPort }}
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "purser.gateway.fullname" . }}
+                port:
+                  number: {{ .Values.gateway.port }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "purser.ui.fullname" . }}
+                port:
+                  number: {{ .Values.ui.port }}
+{{- end }}
