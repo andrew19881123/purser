@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
@@ -62,6 +63,66 @@ type FleetManager interface {
 	Decommission(ctx context.Context, nodeID string) error
 }
 
+// contextKey is a private key type for values stored in request contexts.
+// Using a package-local type avoids collisions with keys from other packages.
+type contextKey int
+
+const (
+	// ctxKeyOIDCSub is the context key for the OIDC subject claim.
+	ctxKeyOIDCSub contextKey = iota
+	// ctxKeyOIDCEmail is the context key for the OIDC email claim.
+	ctxKeyOIDCEmail
+)
+
+// OIDCConfig configures the optional OIDC authentication layer for the admin
+// UI and management REST API (/api/v1). When non-nil, every request must carry
+// a valid Bearer token issued by the configured provider. Machine-to-machine
+// requests from the gateway (X-Purser-Internal-Token) are exempted. If nil,
+// OIDC is disabled and all requests pass through — the community default.
+type OIDCConfig struct {
+	// Issuer is the OIDC provider base URL, e.g.
+	// https://login.microsoftonline.com/<tenant>/v2.0 for EntraID.
+	Issuer string
+	// ClientID is the expected audience claim in tokens issued by the provider.
+	ClientID string
+}
+
+// TokenVerifier is the single interface oidcMiddleware uses to verify raw ID
+// tokens. The production path wraps *oidc.IDTokenVerifier via
+// OIDCVerifierAdapter; test stubs can implement this interface without making
+// real HTTP calls to an IdP.
+type TokenVerifier interface {
+	VerifyToken(ctx context.Context, rawToken string) (sub, email string, err error)
+}
+
+// OIDCVerifierAdapter adapts *oidc.IDTokenVerifier (from coreos/go-oidc) to
+// the TokenVerifier interface. Build one with NewOIDCVerifierAdapter and pass
+// it via Config.OIDCVerifier so New() needs no OIDC discovery calls.
+type OIDCVerifierAdapter struct {
+	v *oidc.IDTokenVerifier
+}
+
+// NewOIDCVerifierAdapter wraps v in the TokenVerifier interface.
+func NewOIDCVerifierAdapter(v *oidc.IDTokenVerifier) TokenVerifier {
+	return &OIDCVerifierAdapter{v: v}
+}
+
+// VerifyToken verifies rawToken and extracts the sub and email claims.
+func (a *OIDCVerifierAdapter) VerifyToken(ctx context.Context, rawToken string) (string, string, error) {
+	tok, err := a.v.Verify(ctx, rawToken)
+	if err != nil {
+		return "", "", err
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+	}
+	if err := tok.Claims(&claims); err != nil {
+		return "", "", err
+	}
+	return claims.Sub, claims.Email, nil
+}
+
 // Config configures the HTTP server.
 type Config struct {
 	// Addr is the listen address, e.g. ":8080".
@@ -88,21 +149,40 @@ type Config struct {
 	// license.FromEnv). It gates the enterprise endpoints. If nil, the server
 	// falls back to the community license (enterprise features off).
 	License *license.License
+	// OIDC configures the optional OIDC authentication layer for the admin UI
+	// and management REST API (/api/v1). When non-nil, every request must carry
+	// a valid Bearer token issued by the configured provider. Machine-to-machine
+	// requests from the gateway (X-Purser-Internal-Token) are exempted.
+	// If nil, OIDC is disabled (community default).
+	OIDC *OIDCConfig
+	// OIDCVerifier, when non-nil, overrides the token verifier that would
+	// normally be created via OIDC discovery. Use this in tests to inject a stub
+	// that exercises the middleware path without calling a live IdP. When set,
+	// OIDC authentication is active even if OIDC is nil.
+	OIDCVerifier TokenVerifier
+	// InternalToken is the shared secret compared against the
+	// X-Purser-Internal-Token request header. Requests carrying this value
+	// bypass OIDC verification so the gateway can perform route-sync without a
+	// human token.
+	InternalToken string
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
-	reg       registry.Registry
-	log       *slog.Logger
-	mux       *http.ServeMux
-	server    *http.Server
-	deployer  Deployer
-	metrics   MetricsSource
-	metricTO  time.Duration
-	planner   *planning.Planner
-	fleet     FleetManager
-	clusterID string
-	license   *license.License
+	reg           registry.Registry
+	log           *slog.Logger
+	mux           *http.ServeMux
+	handler       http.Handler // oidcMiddleware(mux); returned by Handler()
+	server        *http.Server
+	deployer      Deployer
+	metrics       MetricsSource
+	metricTO      time.Duration
+	planner       *planning.Planner
+	fleet         FleetManager
+	clusterID     string
+	license       *license.License
+	oidcVerifier  TokenVerifier // nil = OIDC disabled
+	internalToken string        // gateway exemption secret
 }
 
 // New builds a Server backed by reg.
@@ -124,34 +204,111 @@ func New(reg registry.Registry, cfg Config) *Server {
 		lic = license.Community()
 	}
 	s := &Server{
-		reg:       reg,
-		log:       logger,
-		mux:       http.NewServeMux(),
-		deployer:  cfg.Deployer,
-		metrics:   cfg.Metrics,
-		metricTO:  interval,
-		planner:   cfg.Planner,
-		fleet:     cfg.Fleet,
-		clusterID: clusterID,
-		license:   lic,
+		reg:           reg,
+		log:           logger,
+		mux:           http.NewServeMux(),
+		deployer:      cfg.Deployer,
+		metrics:       cfg.Metrics,
+		metricTO:      interval,
+		planner:       cfg.Planner,
+		fleet:         cfg.Fleet,
+		clusterID:     clusterID,
+		license:       lic,
+		internalToken: cfg.InternalToken,
 	}
+
+	// OIDC verifier: prefer an injected verifier (for tests or pre-built
+	// production callers) over on-the-fly discovery.
+	if cfg.OIDCVerifier != nil {
+		s.oidcVerifier = cfg.OIDCVerifier
+	} else if cfg.OIDC != nil {
+		// Eager discovery: if the provider is unreachable at startup, the
+		// misconfiguration is caught here — not at the first admin request.
+		// In production, main.go pre-creates the provider and passes it via
+		// OIDCVerifier, so this branch is a defensive fallback.
+		provider, err := oidc.NewProvider(context.Background(), cfg.OIDC.Issuer)
+		if err != nil {
+			panic("purser: OIDC discovery failed for issuer " + cfg.OIDC.Issuer + ": " + err.Error())
+		}
+		s.oidcVerifier = NewOIDCVerifierAdapter(
+			provider.Verifier(&oidc.Config{ClientID: cfg.OIDC.ClientID}),
+		)
+		logger.Info("OIDC authentication enabled", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID)
+	}
+
 	s.routes()
+	s.handler = s.oidcMiddleware(s.mux)
 	s.server = &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           s.mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
 }
 
 // Handler returns the composed http.Handler (useful for tests via httptest).
-func (s *Server) Handler() http.Handler { return s.mux }
+// When OIDC is configured this is oidcMiddleware(mux); otherwise it is the
+// mux directly (pass-through middleware).
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // ListenAndServe starts serving and blocks until the server stops.
 func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
+
+// oidcMiddleware returns an http.Handler that enforces OIDC authentication
+// before delegating to next. It is a pass-through when s.oidcVerifier is nil
+// (OIDC not configured). When active:
+//
+//  1. Requests carrying the correct X-Purser-Internal-Token header are
+//     exempted so the gateway can perform route-sync without a human token.
+//  2. All other requests must include a valid Bearer token in the Authorization
+//     header; absent, malformed, or invalid tokens yield 401 Unauthorized with
+//     a JSON body {"error":"unauthorized","message":"valid OIDC token required"}.
+//  3. On a valid token the verified sub and email claims are injected into the
+//     request context (keyed by ctxKeyOIDCSub / ctxKeyOIDCEmail) so handlers
+//     can log the authenticated actor.
+func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. OIDC disabled — pass through unconditionally.
+		if s.oidcVerifier == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 2. Gateway internal-token exemption: the gateway sends route-sync
+		// requests with X-Purser-Internal-Token; those must not require a
+		// human OIDC token.
+		if s.internalToken != "" && r.Header.Get("X-Purser-Internal-Token") == s.internalToken {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 3. Extract Bearer token from the Authorization header.
+		rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || strings.TrimSpace(rawToken) == "" {
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error":   "unauthorized",
+				"message": "valid OIDC token required",
+			})
+			return
+		}
+		// 4. Verify the token via the configured IdP.
+		sub, email, err := s.oidcVerifier.VerifyToken(r.Context(), rawToken)
+		if err != nil {
+			s.log.Debug("OIDC token verification failed", "err", err)
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error":   "unauthorized",
+				"message": "valid OIDC token required",
+			})
+			return
+		}
+		// 5. Inject verified claims into the request context for downstream
+		// handlers to log as the authenticated actor.
+		ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+		ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)

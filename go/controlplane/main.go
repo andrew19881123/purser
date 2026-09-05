@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -168,17 +170,45 @@ func run(logger *slog.Logger) error {
 			"features", lic.Features, "valid", lic.ValidAt(time.Now()), "expires", lic.Expires)
 	}
 
+	// OIDC authentication for the admin UI and management REST API (optional).
+	// Read PURSER_OIDC_ISSUER and PURSER_OIDC_CLIENT_ID from the environment.
+	// If either is empty, OIDC is disabled — the community default. When both
+	// are set the provider is discovered eagerly so a bad issuer URL fails here
+	// at startup with a clear message rather than at the first admin request.
+	var oidcCfg *server.OIDCConfig
+	var oidcVerifier server.TokenVerifier
+	if oidcIssuer := os.Getenv("PURSER_OIDC_ISSUER"); oidcIssuer != "" {
+		oidcClientID := os.Getenv("PURSER_OIDC_CLIENT_ID")
+		if oidcClientID == "" {
+			return fmt.Errorf("PURSER_OIDC_ISSUER is set but PURSER_OIDC_CLIENT_ID is empty")
+		}
+		provider, err := oidc.NewProvider(ctx, oidcIssuer)
+		if err != nil {
+			return fmt.Errorf("OIDC discovery failed for issuer %s: %w", oidcIssuer, err)
+		}
+		oidcCfg = &server.OIDCConfig{Issuer: oidcIssuer, ClientID: oidcClientID}
+		oidcVerifier = server.NewOIDCVerifierAdapter(
+			provider.Verifier(&oidc.Config{ClientID: oidcClientID}),
+		)
+		logger.Info("OIDC authentication enabled", "issuer", oidcIssuer, "client_id", oidcClientID)
+	} else {
+		logger.Info("OIDC authentication disabled (set PURSER_OIDC_ISSUER to enable)")
+	}
+
 	// Management HTTP API. The Planner turns fleet state into DeploymentPlans
 	// for plan-less deploys and the /models fit verdicts.
 	srv := server.New(reg, server.Config{
-		Addr:      cfg.addr,
-		Logger:    logger,
-		Deployer:  orch,
-		Metrics:   regServer.Metrics(),
-		Planner:   planning.New(reg),
-		Fleet:     mgr,
-		ClusterID: cfg.clusterID,
-		License:   lic,
+		Addr:          cfg.addr,
+		Logger:        logger,
+		Deployer:      orch,
+		Metrics:       regServer.Metrics(),
+		Planner:       planning.New(reg),
+		Fleet:         mgr,
+		ClusterID:     cfg.clusterID,
+		License:       lic,
+		OIDC:          oidcCfg,
+		OIDCVerifier:  oidcVerifier,
+		InternalToken: cfg.gatewayToken,
 	})
 
 	errCh := make(chan error, 2)
