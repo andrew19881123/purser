@@ -141,14 +141,17 @@ class PurserClient:
         self._request("POST", f"/api/v1/nodes/{node_id}/drain")
 
     def restart_node(self, node_id: str) -> None:
-        """Restart a node.
+        """Tear down all active deployments on the node and let the reconciler
+        re-provision them.  The node process itself is not rebooted.
 
-        .. note::
-            This endpoint is not yet available in the current server version.
+        Returns 409 if no active deployments are present; raises
+        :exc:`ConflictError`.
+
+        Raises:
+            NotFoundError: If no node with that ID exists.
+            ConflictError: If there are no active deployments to restart.
         """
-        raise NotImplementedError(
-            "restart_node is not yet available in this server version"
-        )
+        self._request("POST", f"/api/v1/nodes/{node_id}/restart")
 
     def delete_node(self, node_id: str) -> None:
         """Decommission a node (lifecycle transition to DECOMMISSIONED).
@@ -271,12 +274,11 @@ class PurserClient:
     def get_model_health(self, model_id: str) -> ModelHealth:
         """Return health information for a deployed model.
 
-        .. note::
-            This endpoint is not yet available in the current server version.
+        Raises:
+            NotFoundError: If no model with that ID exists.
         """
-        raise NotImplementedError(
-            "get_model_health is not yet available in this server version"
-        )
+        data = self._request("GET", f"/api/v1/models/{model_id}/health")
+        return ModelHealth(**{k: v for k, v in data.items() if k in ModelHealth.__dataclass_fields__})
 
     # ------------------------------------------------------------------
     # Deployments
@@ -345,14 +347,13 @@ class PurserClient:
         self._request("DELETE", f"/api/v1/apikeys/{key_id}")
 
     def get_key_usage(self, key_id: str) -> KeyUsage:
-        """Return usage statistics for an API key.
+        """Return token usage statistics for an API key.
 
-        .. note::
-            This endpoint is not yet available in the current server version.
+        Raises:
+            NotFoundError: If no key with that ID exists.
         """
-        raise NotImplementedError(
-            "get_key_usage is not yet available in this server version"
-        )
+        data = self._request("GET", f"/api/v1/apikeys/{key_id}/usage")
+        return KeyUsage(**{k: v for k, v in data.items() if k in KeyUsage.__dataclass_fields__})
 
     # ------------------------------------------------------------------
     # Join token
