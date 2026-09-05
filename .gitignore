@@ -43,6 +43,8 @@ license-signing.key
 
 # --- Internal solution-design & strategy docs (kept local, not published) ---
 docs/
+# Public website docs are tracked under website/
+!website/docs/
 
 # --- Misc ---
 *.tmp

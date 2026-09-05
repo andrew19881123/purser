@@ -157,6 +157,12 @@ export function useRotateToken() {
   });
 }
 
+export function useCreateJoinToken() {
+  return useMutation({
+    mutationFn: (ttlSeconds: number) => api.createJoinToken(ttlSeconds),
+  });
+}
+
 // --- api keys ---------------------------------------------------------------
 
 export function useApiKeys() {

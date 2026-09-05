@@ -31,6 +31,7 @@ import type {
   DeploymentState,
   FitVerdict,
   JoinInfo,
+  JoinTokenResult,
   LinkQuality,
   MetricsSnapshot,
   MetricsStreamHandlers,
@@ -339,6 +340,15 @@ function normalizeJoinInfo(raw: unknown): JoinInfo {
   };
 }
 
+function normalizeJoinTokenResult(raw: unknown): JoinTokenResult {
+  const j = (raw ?? {}) as Record<string, unknown>;
+  return {
+    token: str(j.token),
+    clusterId: str(j.clusterId),
+    expiresAt: str(j.expiresAt),
+  };
+}
+
 function normalizeSnapshot(raw: unknown): MetricsSnapshot {
   const s = (raw ?? {}) as Record<string, unknown>;
   const nodes = Array.isArray(s.nodes)
@@ -453,6 +463,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
     getJoinInfo: () => request<unknown>('/join-token').then(normalizeJoinInfo),
     rotateJoinToken: () =>
       request<unknown>('/join-token/rotate', { method: 'POST' }).then(normalizeJoinInfo),
+    // POST /api/v1/join-token — body {ttl_seconds} (snakeizeKeys converts automatically)
+    createJoinToken: (ttlSeconds) =>
+      request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds } }).then(
+        normalizeJoinTokenResult,
+      ),
 
     // --- settings / api keys ---
     listApiKeys: () =>

@@ -13,6 +13,7 @@ import type {
   Deployment,
   DeploymentPlan,
   JoinInfo,
+  JoinTokenResult,
   MetricsSnapshot,
   MetricsStreamHandlers,
   ModelSpec,
@@ -222,6 +223,20 @@ export const mockBackend: PurserApi = {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     };
     return delay(structuredClone(joinInfo), 350);
+  },
+
+  createJoinToken(ttlSeconds: number): Promise<JoinTokenResult> {
+    const rand = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+      .map((b) => 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz0123456789'[b % 58])
+      .join('');
+    return delay(
+      {
+        token: `prsr_join_${rand}`,
+        clusterId: 'cluster-mock-001',
+        expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+      },
+      350,
+    );
   },
 
   listApiKeys(): Promise<ApiKey[]> {

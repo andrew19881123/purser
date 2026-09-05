@@ -24,6 +24,7 @@ import type {
   Deployment,
   DeploymentPlan,
   JoinInfo,
+  JoinTokenResult,
   MetricsStreamHandlers,
   ModelSpec,
   NodeView,
@@ -62,6 +63,8 @@ export interface PurserApi {
   // --- onboarding ---
   getJoinInfo(): Promise<JoinInfo>;
   rotateJoinToken(): Promise<JoinInfo>;
+  /** POST /api/v1/join-token — generate a new TTL-scoped join token on demand. */
+  createJoinToken(ttlSeconds: number): Promise<JoinTokenResult>;
 
   // --- settings / api keys ---
   listApiKeys(): Promise<ApiKey[]>;

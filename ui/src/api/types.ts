@@ -303,6 +303,19 @@ export interface JoinInfo {
   expiresAt: string;
 }
 
+/**
+ * Result of POST /api/v1/join-token — an ephemeral, TTL-scoped enrollment
+ * token generated on demand. Shown to the operator exactly once.
+ */
+export interface JoinTokenResult {
+  /** The raw join token string (PURSER_JOIN_TOKEN). */
+  token: string;
+  /** Cluster identifier the agent should join (PURSER_CLUSTER_ID). */
+  clusterId: string;
+  /** ISO-8601 expiry timestamp. */
+  expiresAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Settings — API keys (managed by control plane, used as Bearer tokens on /v1).
 // ---------------------------------------------------------------------------
