@@ -66,6 +66,12 @@ pub struct AgentConfig {
     /// advertised host plus [`inference_port`](Self::inference_port). Overridable
     /// via `PURSER_INFERENCE_ADVERTISED_ADDR`.
     pub advertised_inference_addr: Option<String>,
+
+    /// How many times [`HttpFetcher`](crate::modelcache::HttpFetcher) retries a
+    /// transient failure before giving up (0 = try once, no retries).
+    ///
+    /// Overridable via `PURSER_MODEL_FETCH_MAX_RETRIES`. Defaults to 3.
+    pub model_fetch_max_retries: u32,
 }
 
 impl Default for AgentConfig {
@@ -80,6 +86,7 @@ impl Default for AgentConfig {
             inference_port: DEFAULT_INFERENCE_PORT,
             advertised_agent_addr: None,
             advertised_inference_addr: None,
+            model_fetch_max_retries: 3,
         }
     }
 }
@@ -98,6 +105,7 @@ impl AgentConfig {
     /// - `PURSER_INFERENCE_PORT`         — e.g. `8000`
     /// - `PURSER_AGENT_ADVERTISED_ADDR`  — e.g. `192.168.1.10:50151`
     /// - `PURSER_INFERENCE_ADVERTISED_ADDR` — e.g. `192.168.1.10:8000`
+    /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -126,6 +134,13 @@ impl AgentConfig {
         cfg.advertised_agent_addr = non_empty(std::env::var("PURSER_AGENT_ADVERTISED_ADDR").ok());
         cfg.advertised_inference_addr =
             non_empty(std::env::var("PURSER_INFERENCE_ADVERTISED_ADDR").ok());
+        if let Ok(retries) = std::env::var("PURSER_MODEL_FETCH_MAX_RETRIES") {
+            cfg.model_fetch_max_retries = retries
+                .parse()
+                .with_context(|| {
+                    format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}")
+                })?;
+        }
 
         Ok(cfg)
     }
