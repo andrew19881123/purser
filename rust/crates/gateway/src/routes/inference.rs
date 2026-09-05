@@ -213,7 +213,7 @@ async fn proxy_inference(
 
     // Record the model id on the enclosing span so it is visible in OTEL
     // traces. When no OTEL provider is configured this is a no-op.
-    tracing::Span::current().record("model.id", &model.as_str());
+    tracing::Span::current().record("model.id", model.as_str());
 
     // Resolve the host (404 if unknown, 503 if draining).
     let route = state.resolve_active(&model).await?;

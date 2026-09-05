@@ -296,7 +296,7 @@ pub(crate) fn load_or_generate_key(dir: &Path) -> anyhow::Result<[u8; 32]> {
     let mut key = [0u8; 32];
     getrandom::getrandom(&mut key)
         .map_err(|e| anyhow::anyhow!("key generation failed: {e}"))?;
-    std::fs::write(&key_file, &key)
+    std::fs::write(&key_file, key)
         .with_context(|| format!("writing key file {}", key_file.display()))?;
     #[cfg(unix)]
     {

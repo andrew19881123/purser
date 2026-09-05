@@ -364,7 +364,7 @@ fn rocm_smi_query(expected_count: usize) -> Option<Vec<f64>> {
     let mut vrams: Vec<f64> = Vec::new();
     for line in stdout.lines() {
         if line.contains("VRAM Total Memory (B):") {
-            if let Some(bytes_str) = line.split(':').last() {
+            if let Some(bytes_str) = line.split(':').next_back() {
                 if let Ok(bytes) = bytes_str.trim().parse::<u64>() {
                     vrams.push(bytes as f64 / BYTES_PER_GB);
                 }
