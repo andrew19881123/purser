@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +31,9 @@ import (
 	plannerplan "github.com/purser/purser/go/planner/plan"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+//go:embed openapi.json
+var openAPISpec []byte
 
 // Deployer is the orchestration surface the API needs. It is satisfied by
 // *orchestrator.Orchestrator but declared here structurally to avoid a hard
@@ -172,6 +176,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
+	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
 
 	// Enterprise (open-core) endpoints. Public code, gated at runtime by a
 	// valid, offline-verified license key (see enterprise/license).
@@ -182,6 +187,15 @@ func (s *Server) routes() {
 // featureAudit is the entitlement required by the tamper-evident audit log
 // (see LICENSING.md, "Compliance").
 const featureAudit = "audit"
+
+// handleOpenAPISpec serves the embedded OpenAPI 3.0 specification as JSON.
+// The spec is embedded at compile time from openapi.json (generated from
+// openapi.yaml) and served verbatim — no runtime conversion needed.
+func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(openAPISpec)
+}
 
 // licenseAllows reports whether the active license currently entitles feature:
 // it must be temporally valid now AND include the feature. This is the single
