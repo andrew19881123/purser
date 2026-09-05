@@ -107,3 +107,18 @@ Multi-replica HA (Raft-replicated Registry + Gateway VIP) is an **Enterprise** f
 | Agent | 8000 | HTTP | Inference endpoint (OpenAI-compatible, served by engine) |
 | Agent | 50152 | UDP | Link-benchmark reflector (agent port + 1, best-effort) |
 | Gateway | (configured) | HTTP | OpenAI-compatible `/v1` endpoint for clients |
+
+## E2E test coverage
+
+The full request flow above is exercised by the automated E2E test suite:
+
+- **`tools/e2e_full.sh`** — single-node: enroll one agent, seed a model, deploy it, drive
+  a real chat (non-streaming and SSE) through the gateway.  This is the primary
+  integration gate and runs in CI on every push to a `release/*` branch.
+
+- **`tools/e2e_multinode.sh`** — multi-node: enroll two agents, find a model size that
+  spans both nodes (requires exactly 2 nodes), verify HOST/WORKER pipeline ordering,
+  and confirm the chat is proxied through the pipeline HOST.
+
+Both scripts exit 0 on pass and non-zero on any assertion failure, making them
+suitable as unattended CI steps.

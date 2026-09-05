@@ -13,6 +13,19 @@ source ./env.sh  # cargo / go / buf on PATH
 make build test  # verify a green baseline
 ```
 
+## Running E2E tests locally
+
+After `make build`, run the single-node end-to-end test (enroll → deploy → chat):
+
+```bash
+bash tools/e2e_full.sh
+```
+
+The script starts a control-plane, gateway, and agent in-process (no GPU required),
+registers a model, deploys it, and exercises the full chat path through the gateway.
+Logs land in `/tmp/purser-e2e/`.  A multi-node variant is available at
+`tools/e2e_multinode.sh`.
+
 ## Repository layout
 
 - `proto/` — the `purser.v1` gRPC contracts. **Source of truth.** Changing a
