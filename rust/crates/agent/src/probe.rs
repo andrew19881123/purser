@@ -34,13 +34,43 @@ pub trait HardwareProbe: Send + Sync {
 pub struct DefaultProbe {
     /// Node identity assigned by the control plane; empty before enrollment.
     node_id: String,
+    /// Engine backend names registered on this agent (from the
+    /// [`BackendRegistry`](crate::supervisor::BackendRegistry)).
+    /// Always contains at least `"mock"` (the built-in GPU-free backend).
+    /// Used to populate [`HardwareProfile::engine_versions`] at probe time.
+    backends: Vec<String>,
 }
 
 impl DefaultProbe {
     /// Create a probe stamping profiles with `node_id` (may be empty pre-Join).
+    ///
+    /// Registers the built-in `"mock"` backend by default. Use
+    /// [`DefaultProbe::with_backends`] to pass the full registry name list so
+    /// that `engine_versions` reflects all installed adapters.
     pub fn new(node_id: impl Into<String>) -> Self {
         Self {
             node_id: node_id.into(),
+            backends: vec!["mock".to_string()],
+        }
+    }
+
+    /// As [`DefaultProbe::new`], but also records the full list of registered
+    /// backend names for [`HardwareProfile::engine_versions`].
+    ///
+    /// Typically called from `main` with `registry.names()` so every installed
+    /// adapter appears in the heartbeat payload. `"mock"` is always included
+    /// even if absent from `backends`.
+    pub fn with_backends(
+        node_id: impl Into<String>,
+        backends: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Self {
+        let mut b: Vec<String> = backends.into_iter().map(|s| s.as_ref().to_string()).collect();
+        if !b.contains(&"mock".to_string()) {
+            b.insert(0, "mock".to_string());
+        }
+        Self {
+            node_id: node_id.into(),
+            backends: b,
         }
     }
 }
@@ -80,8 +110,7 @@ impl HardwareProbe for DefaultProbe {
             // TODO(phase2): measure via a memory-bandwidth microbenchmark.
             mem_bandwidth_gbs: 0.0,
             disk_free_gb,
-            // TODO(phase2): populated by the supervisor from installed engines.
-            engine_versions: HashMap::new(),
+            engine_versions: build_engine_versions(&self.backends),
             last_seen: Some(prost_types::Timestamp::from(SystemTime::now())),
             // A node that can answer Probe is up and ready to be scheduled.
             state: NodeState::Ready as i32,
@@ -161,13 +190,18 @@ fn enumerate_nvml() -> Result<Vec<GpuInfo>, nvml_wrapper::error::NvmlError> {
             .memory_info()
             .map(|m| m.total as f64 / BYTES_PER_GB)
             .unwrap_or(0.0);
+        // SM >= 10.0 (Blackwell+) natively supports FP4.
+        // SM 8.9 (Ada Lovelace / RTX 4000 series) adds FP8 but not FP4.
+        let fp4_native = device
+            .cuda_compute_capability()
+            .map(|cap| fp4_native_from_compute_cap(cap.major as i32, cap.minor as i32))
+            .unwrap_or(false);
         gpus.push(GpuInfo {
             name,
             vram_gb,
             // Discrete NVIDIA GPUs do not share host memory.
             unified: false,
-            // TODO(phase2): detect native FP4 (Blackwell+) from compute cap.
-            fp4_native: false,
+            fp4_native,
             count: 1,
         });
     }
@@ -182,6 +216,88 @@ fn enumerate_nvml() -> Result<Vec<GpuInfo>, nvml_wrapper::error::NvmlError> {
 #[cfg(not(feature = "nvml"))]
 fn detect_gpus() -> Vec<GpuInfo> {
     Vec::new()
+}
+
+// ---- engine version helpers ------------------------------------------------
+
+/// Build the `engine_versions` map from the list of registered backend names.
+///
+/// - `"mock"` → always `"built-in"`.
+/// - `"llamacpp"` → tries `$PURSER_LLAMACPP_BIN --version`; falls back to
+///   `"unknown"` when the variable is unset or the binary is unavailable.
+/// - Any other name → `"unknown"`.
+///
+/// `"mock"` is always present even if absent from `backends`.
+fn build_engine_versions(backends: &[String]) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = backends
+        .iter()
+        .map(|name| (name.clone(), engine_version_for(name)))
+        .collect();
+    // Guarantee the invariant: mock is always present.
+    map.entry("mock".to_string())
+        .or_insert_with(|| "built-in".to_string());
+    map
+}
+
+/// Return the version string for a single registered backend.
+fn engine_version_for(name: &str) -> String {
+    match name {
+        "mock" => "built-in".to_string(),
+        "llamacpp" => llamacpp_version(),
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Query the llama.cpp binary version via `$PURSER_LLAMACPP_BIN --version`.
+///
+/// Returns `"unknown"` when:
+/// - `PURSER_LLAMACPP_BIN` is unset or empty,
+/// - the binary cannot be executed, or
+/// - the combined stdout + stderr output is blank.
+fn llamacpp_version() -> String {
+    let bin = match std::env::var("PURSER_LLAMACPP_BIN") {
+        Ok(b) if !b.is_empty() => b,
+        _ => return "unknown".to_string(),
+    };
+    match std::process::Command::new(&bin).arg("--version").output() {
+        Ok(out) => {
+            // llama.cpp prints version info to stdout or stderr depending on the
+            // build; combine both and return the first non-blank line.
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            combined
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .map(str::trim)
+                .unwrap_or("unknown")
+                .to_string()
+        }
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+// ---- FP4 compute-capability helper -----------------------------------------
+
+/// Returns `true` when an NVIDIA GPU with CUDA compute capability
+/// `(major, minor)` natively supports FP4 tensor operations.
+///
+/// | SM | Architecture | FP4 native |
+/// |----|-------------|-----------|
+/// | 10.0+ (SM ≥ 100) | Blackwell+ | yes |
+/// | 8.9 (SM 89) | Ada Lovelace / RTX 4000 | no (FP8 only) |
+/// | < 8.9 | older | no |
+///
+/// The threshold `major * 10 + minor >= 100` covers SM 10.0, 10.1, … and any
+/// future Blackwell+ variant without changes.
+///
+/// Compiled in non-nvml builds only when running tests, so that the unit tests
+/// for this pure helper can verify the SM threshold without GPU hardware.
+#[cfg(any(feature = "nvml", test))]
+fn fp4_native_from_compute_cap(major: i32, minor: i32) -> bool {
+    major * 10 + minor >= 100
 }
 
 #[cfg(test)]
@@ -207,5 +323,76 @@ mod tests {
         );
         assert_eq!(profile.state, NodeState::Ready as i32);
         assert!(profile.last_seen.is_some());
+    }
+
+    /// P3: engine_versions always contains {"mock": "built-in"}.
+    #[test]
+    fn engine_versions_contains_mock() {
+        let profile = DefaultProbe::new("test-node").probe();
+        assert_eq!(
+            profile.engine_versions.get("mock").map(String::as_str),
+            Some("built-in"),
+            "engine_versions must always contain {{\"mock\": \"built-in\"}}"
+        );
+    }
+
+    /// P3: with_backends propagates all registered names and resolves versions.
+    #[test]
+    fn engine_versions_with_backends_covers_all() {
+        let probe = DefaultProbe::with_backends("test-node", ["mock"]);
+        let profile = probe.probe();
+        assert_eq!(
+            profile.engine_versions.get("mock").map(String::as_str),
+            Some("built-in")
+        );
+    }
+
+    /// P3: with_backends always inserts mock even if caller omits it.
+    #[test]
+    fn engine_versions_always_includes_mock_even_when_omitted() {
+        let probe = DefaultProbe::with_backends("test-node", ["llamacpp"]);
+        let profile = probe.probe();
+        assert_eq!(
+            profile.engine_versions.get("mock").map(String::as_str),
+            Some("built-in"),
+            "mock must be present even when caller did not list it"
+        );
+    }
+
+    /// P4: SM 10.0 (Blackwell) → fp4_native = true.
+    #[test]
+    fn fp4_native_true_for_sm100() {
+        assert!(
+            fp4_native_from_compute_cap(10, 0),
+            "SM 10.0 (Blackwell) must report fp4_native = true"
+        );
+        // SM 10.1+ and beyond are also Blackwell+.
+        assert!(fp4_native_from_compute_cap(10, 1));
+        assert!(fp4_native_from_compute_cap(11, 0));
+    }
+
+    /// P4: SM 8.9 (Ada Lovelace / RTX 4000) → fp4_native = false.
+    #[test]
+    fn fp4_native_false_for_sm89() {
+        assert!(
+            !fp4_native_from_compute_cap(8, 9),
+            "SM 8.9 (Ada Lovelace) must report fp4_native = false"
+        );
+        // Older architectures also false.
+        assert!(!fp4_native_from_compute_cap(8, 6));
+        assert!(!fp4_native_from_compute_cap(7, 5));
+    }
+
+    /// P4: no GPU in CI/no-nvml builds → all gpu entries have fp4_native = false.
+    #[test]
+    fn fp4_native_false_no_gpu() {
+        let profile = DefaultProbe::new("test").probe();
+        // Without the `nvml` feature, detect_gpus() returns an empty Vec, so
+        // this assertion is trivially true; it also guards against regressions
+        // if a future no-op path incorrectly sets fp4_native = true.
+        assert!(
+            profile.gpus.iter().all(|g| !g.fp4_native),
+            "without nvml, no GPU should report fp4_native = true"
+        );
     }
 }
