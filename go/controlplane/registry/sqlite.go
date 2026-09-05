@@ -73,7 +73,7 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"audit_log", "seq", "INTEGER"},
 		{"audit_log", "prev_hash", "TEXT"},
 		{"audit_log", "hash", "TEXT"},
-		// Import provenance for models (HuggingFace Hub coordinates etc.).
+		// Import provenance for models (HuggingFace Hub, s3://, gs://, az://).
 		{"models", "source", "TEXT NOT NULL DEFAULT '{}'"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {

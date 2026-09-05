@@ -73,20 +73,22 @@ type Link struct {
 // Type (it is informational only at this stage); the field exists so the catalog
 // and the UI can label and filter models by their primary capability.
 //
-// Source carries the import provenance (e.g. HuggingFace Hub coordinates) as a
-// JSON blob; it is omitted for models registered directly via POST /api/v1/models.
+// Source carries the import provenance (HuggingFace Hub, s3://, gs://, az://) as
+// a JSON blob; it is omitted for models registered directly via POST /api/v1/models.
+// The agent reads DownloadURL from Source to fetch the model weights at deploy time.
 type Model struct {
-	ID           string          `json:"id"`
-	Family       string          `json:"family"`
-	Architecture string          `json:"architecture"`
-	ParamsTotalB float64         `json:"params_total_b"`
-	Engine       string          `json:"engine"`
+	ID           string  `json:"id"`
+	Family       string  `json:"family"`
+	Architecture string  `json:"architecture"`
+	ParamsTotalB float64 `json:"params_total_b"`
+	Engine       string  `json:"engine"`
 	// Type distinguishes the model's primary serving mode: "llm" or "embedding".
 	// Defaults to "llm" when not supplied by the caller.
-	Type   string          `json:"type,omitempty"`
-	Spec   json.RawMessage `json:"spec,omitempty"`
+	Type string          `json:"type,omitempty"`
+	Spec json.RawMessage `json:"spec,omitempty"`
 	// Source is the import provenance stored as an opaque JSON blob. The shape
-	// depends on the import source type (e.g. {"type":"huggingface","repo":"..."}).
+	// depends on the import source type (e.g. {"type":"huggingface","repo":"..."} or
+	// {"type":"s3","bucket":"...","download_url":"..."}).
 	Source    json.RawMessage `json:"source,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`

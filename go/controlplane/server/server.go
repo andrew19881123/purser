@@ -863,11 +863,20 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // importRequest is the body of POST /api/v1/models/import.
+//
+// HuggingFace (source="huggingface"): set repo, revision, filename_pattern.
+// Object storage (source="s3"/"gcs"/"azure"): set uri, name (optional), family.
 type importRequest struct {
-	Source          string `json:"source"`
+	Source string `json:"source"`
+	// HuggingFace fields
 	Repo            string `json:"repo"`
 	Revision        string `json:"revision"`
 	FilenamePattern string `json:"filename_pattern"`
+	// Object-storage fields (s3://, gs://, az://)
+	URI    string  `json:"uri"`
+	Name   string  `json:"name"`
+	Family string  `json:"family"`
+	SizeGB float64 `json:"size_gb"`
 }
 
 // hfSourceBlob is the JSON shape stored in Model.Source for HuggingFace
@@ -881,8 +890,31 @@ type hfSourceBlob struct {
 	SizeBytesTotal int64  `json:"size_bytes_total"`
 }
 
-// handleImportModel auto-populates a Model spec from HuggingFace Hub metadata
-// and registers it in the catalog.
+// handleImportModel registers a model imported from an external source.
+// It dispatches by the "source" field in the request body:
+//
+//   - "huggingface" — auto-populates spec from HuggingFace Hub metadata.
+//   - "s3", "gcs", "azure" — resolves the object-storage URI to a download URL.
+//
+// POST /api/v1/models/import
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	var body importRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	switch body.Source {
+	case "huggingface":
+		s.handleImportHuggingFace(w, r, body)
+	case "s3", "gcs", "azure":
+		s.handleImportObjectStorage(w, r, body)
+	default:
+		s.writeError(w, http.StatusBadRequest, "unknown_source",
+			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure")
+	}
+}
+
+// handleImportHuggingFace implements the "huggingface" branch of handleImportModel.
 //
 // The HuggingFace API token is resolved in precedence order:
 //  1. X-HF-Token request header (caller-supplied, e.g. CI workflows);
@@ -893,18 +925,8 @@ type hfSourceBlob struct {
 //   - HF API 401/403 → 401 hf_auth_required
 //   - No matching GGUF files → 400 no_matching_files
 //   - Network/decode failure → 502 Bad Gateway
-//   - Model already exists → 409 model_exists (mirrors handleCreateModel)
-func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
-	var body importRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
-		return
-	}
-	if body.Source != "huggingface" {
-		s.writeError(w, http.StatusBadRequest, "unsupported_source",
-			"unsupported import source: "+body.Source+"; supported: huggingface")
-		return
-	}
+//   - Model already exists → 409 model_exists
+func (s *Server) handleImportHuggingFace(w http.ResponseWriter, r *http.Request, body importRequest) {
 	if body.Repo == "" {
 		s.writeError(w, http.StatusBadRequest, "bad_request", "repo is required")
 		return
@@ -1003,6 +1025,73 @@ func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
 		Target: modelID,
 	})
 	s.writeJSON(w, http.StatusCreated, m)
+}
+
+// handleImportObjectStorage implements the "s3"/"gcs"/"azure" branch of
+// handleImportModel. It resolves the object-storage URI to an HTTPS download
+// URL (pre-signed when credentials are present, public otherwise) and stores
+// the result in Model.Source so the agent can fetch the weights at deploy time.
+func (s *Server) handleImportObjectStorage(w http.ResponseWriter, r *http.Request, body importRequest) {
+	if body.URI == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "uri is required")
+		return
+	}
+
+	objSrc, err := importer.ParseObjectURI(body.URI)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_uri", err.Error())
+		return
+	}
+
+	// Derive the model ID from the request name; fall back to the key's
+	// last path segment (best-effort, not authoritative metadata).
+	id := body.Name
+	if id == "" {
+		if objSrc.Key != "" {
+			parts := strings.Split(objSrc.Key, "/")
+			id = parts[len(parts)-1]
+		}
+		if id == "" {
+			id = objSrc.Bucket + "-" + objSrc.Type
+		}
+	}
+
+	// Reject duplicates before attempting the insert.
+	if _, err := s.reg.GetModel(r.Context(), id); err == nil {
+		s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+id)
+		return
+	} else if !errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	sourceBlob, err := json.Marshal(objSrc)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     id,
+		Family: body.Family,
+		Source: sourceBlob,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+id)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "model.imported", Target: id,
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id":     id,
+		"source_type":  objSrc.Type,
+		"download_url": objSrc.DownloadURL,
+	})
 }
 
 // deploymentTerminal reports whether a deployment in the given state has
