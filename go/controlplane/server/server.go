@@ -26,6 +26,7 @@ import (
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
+	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	plannerplan "github.com/purser/purser/go/planner/plan"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -88,6 +89,10 @@ type Config struct {
 	// license.FromEnv). It gates the enterprise endpoints. If nil, the server
 	// falls back to the community license (enterprise features off).
 	License *license.License
+	// VertexAI, if set, is used for VertexAI model import requests instead of
+	// constructing a client from environment variables at request time.
+	// Primarily useful for testing with a pre-configured mock client.
+	VertexAI *importer.VertexAIClient
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
@@ -103,6 +108,7 @@ type Server struct {
 	fleet     FleetManager
 	clusterID string
 	license   *license.License
+	vertexai  *importer.VertexAIClient
 }
 
 // New builds a Server backed by reg.
@@ -134,6 +140,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		fleet:     cfg.Fleet,
 		clusterID: clusterID,
 		license:   lic,
+		vertexai:  cfg.VertexAI,
 	}
 	s.routes()
 	s.server = &http.Server{
@@ -160,6 +167,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
+	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
@@ -1139,6 +1147,153 @@ func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
 		"by_state":    byState,
 		"at":          time.Now().UTC(),
 	}, nil
+}
+
+// importModelRequest is the body of POST /api/v1/models/import.
+type importModelRequest struct {
+	// Source identifies the external registry type. Currently only "vertexai"
+	// is supported.
+	Source string `json:"source"`
+	// Model is the model identifier. For VertexAI this is either a full
+	// resource name ("projects/p/locations/l/models/m") or a bare model ID
+	// (requires PURSER_VERTEX_PROJECT to be set).
+	Model string `json:"model"`
+	// Version is the specific version to import. Empty means latest.
+	Version string `json:"version"`
+}
+
+// handleImportModel dispatches import requests to the appropriate source
+// handler. It supports:
+//
+//	POST /api/v1/models/import
+//	{"source":"vertexai","model":"projects/p/locations/l/models/m","version":""}
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	var req importModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	switch req.Source {
+	case "vertexai":
+		s.handleImportVertexAI(w, r, req)
+	default:
+		s.writeError(w, http.StatusBadRequest, "unknown_source",
+			"unsupported import source: "+req.Source+"; supported: vertexai")
+	}
+}
+
+// handleImportVertexAI imports a model from the GCP Vertex AI Model Registry.
+//
+// Flow:
+//  1. Resolve the VertexAIClient (injected via Config.VertexAI for tests, or
+//     constructed from env vars: PURSER_VERTEX_PROJECT, PURSER_VERTEX_LOCATION,
+//     GOOGLE_APPLICATION_CREDENTIALS).
+//  2. Validate that a GCP project is known (either from the client config or
+//     embedded in the model's full resource name).
+//  3. Call ListModelVersions → pick the requested version or the latest.
+//  4. Extract the GCS artifact URI from the chosen version (or via GetArtifactURI
+//     if the list endpoint did not include it).
+//  5. Persist a registry.Model with source metadata in the Spec JSON blob.
+//  6. Return 201 with {model_id, source}.
+func (s *Server) handleImportVertexAI(w http.ResponseWriter, r *http.Request, req importModelRequest) {
+	// Resolve the client: prefer the injected one (tests / static config) over
+	// constructing one from env at request time.
+	client := s.vertexai
+	if client == nil {
+		client = importer.NewVertexAIClient()
+	}
+
+	// Validate project: required when the model name is not a full resource path.
+	isFullPath := strings.HasPrefix(req.Model, "projects/")
+	if client.Project == "" && !isFullPath {
+		s.writeError(w, http.StatusBadRequest, "missing_project",
+			"PURSER_VERTEX_PROJECT must be set when model is not a full resource name")
+		return
+	}
+
+	// List versions to find the target.
+	versions, err := client.ListModelVersions(r.Context(), req.Model)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_versions_failed", err.Error())
+		return
+	}
+	if len(versions) == 0 {
+		s.writeError(w, http.StatusNotFound, "no_versions", "model has no registered versions in Vertex AI")
+		return
+	}
+
+	// Pick the specified version, or the latest (versions[0] is newest first).
+	var chosen importer.ModelVersion
+	if req.Version != "" {
+		for _, v := range versions {
+			if v.VersionID == req.Version {
+				chosen = v
+				break
+			}
+		}
+		if chosen.VersionID == "" {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version not found in Vertex AI: "+req.Version)
+			return
+		}
+	} else {
+		chosen = versions[0]
+	}
+
+	// Resolve the GCS artifact URI. ListModelVersions populates ArtifactURI
+	// when the API returns it inline; fall back to GetArtifactURI otherwise.
+	gcsURI := chosen.ArtifactURI
+	if gcsURI == "" {
+		gcsURI, err = client.GetArtifactURI(r.Context(), req.Model, chosen.VersionID)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "get_artifact_uri_failed", err.Error())
+			return
+		}
+	}
+
+	// Build source metadata.
+	source := map[string]string{
+		"type":    "vertexai",
+		"model":   req.Model,
+		"version": chosen.VersionID,
+		"gcs_uri": gcsURI,
+	}
+	sourceJSON, _ := json.Marshal(source)
+
+	// Derive a stable model ID from the last path segment and the version.
+	modelID := req.Model
+	if idx := strings.LastIndex(modelID, "/"); idx >= 0 {
+		modelID = modelID[idx+1:]
+	}
+	modelID = modelID + "@" + chosen.VersionID
+
+	// Spec carries the source metadata. For VertexAI imports no ModelSpec proto
+	// is available, so the Spec blob is the source object itself wrapped to
+	// keep the JSON well-formed and extensible.
+	specJSON, _ := json.Marshal(map[string]any{"source": source})
+
+	m := &registry.Model{
+		ID:   modelID,
+		Spec: json.RawMessage(specJSON),
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already imported: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:   "api",
+		Action:  "model.imported",
+		Target:  modelID,
+		Details: json.RawMessage(sourceJSON),
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   source,
+	})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {

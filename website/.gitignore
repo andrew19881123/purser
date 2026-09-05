@@ -1,0 +1,4 @@
+# The root .gitignore excludes docs/ to keep internal design documents local.
+# The website/docs/ directory is product documentation and IS tracked.
+!docs/
+!docs/**
