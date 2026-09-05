@@ -20,6 +20,8 @@ package reconciler
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -27,6 +29,8 @@ import (
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/registry"
+	purserv1 "github.com/purser/purser/go/gen/purser/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // AutomationLevel controls how much the reconciler acts on its own.
@@ -141,6 +145,20 @@ type Actuator interface {
 	Cleanup(ctx context.Context, deploymentID string) error
 }
 
+// FailoverPlanner computes a deployment plan for a model against the current
+// READY fleet. Used by the reconciler during EventNodeDown handling to find
+// an alternate placement when a node fails. The failed node is excluded
+// because its lifecycle state transitions away from READY/RUNNING before the
+// planner is consulted.
+//
+// A non-nil error (e.g. *planning.FitError) means no feasible plan is
+// available; the reconciler falls back to approval-required behavior. The
+// interface is satisfied by a thin wrapper over *planning.Planner, declared
+// structurally here so the reconciler can be tested without a live planner.
+type FailoverPlanner interface {
+	Plan(ctx context.Context, modelID string) (*purserv1.DeploymentPlan, error)
+}
+
 // Event is a detected discrepancy and the decision taken about it.
 type Event struct {
 	Type         EventType
@@ -176,11 +194,12 @@ type discState struct {
 
 // Reconciler runs the control loop.
 type Reconciler struct {
-	reg registry.Registry
-	act Actuator
-	cfg Config
-	log *slog.Logger
-	now func() time.Time
+	reg     registry.Registry
+	act     Actuator
+	planner FailoverPlanner
+	cfg     Config
+	log     *slog.Logger
+	now     func() time.Time
 
 	tracker map[string]*discState
 }
@@ -219,6 +238,13 @@ func (rc *Reconciler) SetClock(now func() time.Time) {
 		rc.now = now
 	}
 }
+
+// SetPlanner wires the FailoverPlanner consulted during EventNodeDown
+// handling. Without a planner the reconciler calls the Actuator's Failover
+// directly; failover succeeds only if the deployment already has a
+// FailoverPlanID set externally. Setting one enables autonomous plan
+// computation and execution.
+func (rc *Reconciler) SetPlanner(p FailoverPlanner) { rc.planner = p }
 
 // Run drives the control loop until ctx is cancelled.
 func (rc *Reconciler) Run(ctx context.Context) error {
@@ -365,12 +391,16 @@ func (rc *Reconciler) dispatch(ctx context.Context, ev Event) bool {
 			rc.log.Warn("no actuator; cannot auto-act", "type", ev.Type)
 			return false
 		}
+		// EventNodeDown: compute and persist a failover plan (if a planner is
+		// configured) before delegating to the actuator so it has a populated
+		// FailoverPlanID to apply.
+		if ev.Type == EventNodeDown {
+			return rc.handleNodeDown(ctx, ev)
+		}
 		var err error
 		switch ev.Type {
 		case EventEngineDown:
 			err = rc.act.RestartEngine(ctx, ev.DeploymentID, ev.NodeID)
-		case EventNodeDown:
-			err = rc.act.Failover(ctx, ev.DeploymentID)
 		case EventOrphanDeployment:
 			err = rc.act.Cleanup(ctx, ev.DeploymentID)
 		case EventNewNode:
@@ -401,6 +431,115 @@ func (rc *Reconciler) nodeDown(n *registry.Node, now time.Time) bool {
 		return now.Sub(n.CreatedAt) > rc.cfg.NodeTimeout
 	}
 	return now.Sub(n.LastSeen) > rc.cfg.NodeTimeout
+}
+
+// handleNodeDown is the AutomationAuto handler for EventNodeDown. When a
+// FailoverPlanner is configured it:
+//  1. Loads the deployment and verifies it is non-terminal.
+//  2. Calls the planner for an alternate plan (the failed node is excluded
+//     because its state is no longer READY/RUNNING by this point).
+//  3. Persists the plan and stamps deployment.Detail.FailoverPlanID so the
+//     Actuator can load it.
+//  4. Calls actuator.Failover, which applies the new plan and tears down the
+//     failed deployment.
+//
+// Without a planner the Actuator is called directly (legacy/manual path;
+// succeeds only if the deployment already carries a FailoverPlanID).
+//
+// On any planning or persistence failure the method emits a
+// reconciler.failover.no_capacity audit event and returns false so the
+// discrepancy is reported as pending-approval.
+func (rc *Reconciler) handleNodeDown(ctx context.Context, ev Event) bool {
+	if rc.planner != nil {
+		dep, err := rc.reg.GetDeployment(ctx, ev.DeploymentID)
+		if err != nil {
+			rc.log.Error("failover: load deployment failed",
+				"deployment", ev.DeploymentID, "err", err)
+			rc.audit(ctx, "reconciler.action_failed", ev)
+			return false
+		}
+		if failoverIsTerminal(dep.State) {
+			// Cleaned up concurrently; nothing to failover.
+			return false
+		}
+		detail := decodeDetail(dep)
+		if detail.ModelID != "" {
+			newPlan, planErr := rc.planner.Plan(ctx, detail.ModelID)
+			if planErr != nil {
+				rc.log.Warn("failover: no alternate plan available",
+					"deployment", ev.DeploymentID, "node", ev.NodeID,
+					"model", detail.ModelID, "err", planErr)
+				rc.audit(ctx, "reconciler.failover.no_capacity", ev)
+				return false
+			}
+			// Assign a unique persistence ID to avoid collisions on the plans PK
+			// (the planner's ID is deterministic for a given model+fleet snapshot).
+			planID := newPlan.GetPlanId() + "-fo-" + failoverRandHex(4)
+			newPlan.PlanId = planID
+			planBlob, merr := protojson.Marshal(newPlan)
+			if merr != nil {
+				rc.log.Error("failover: marshal plan failed",
+					"deployment", ev.DeploymentID, "err", merr)
+				rc.audit(ctx, "reconciler.action_failed", ev)
+				return false
+			}
+			if perr := rc.reg.CreatePlan(ctx, &registry.Plan{
+				ID:           planID,
+				ModelID:      newPlan.GetModelId(),
+				Quantization: newPlan.GetQuantization(),
+				Cost:         newPlan.GetCost(),
+				Plan:         planBlob,
+			}); perr != nil {
+				rc.log.Error("failover: persist plan failed",
+					"deployment", ev.DeploymentID, "plan", planID, "err", perr)
+				rc.audit(ctx, "reconciler.action_failed", ev)
+				return false
+			}
+			// Stamp the deployment so actuator.Failover can retrieve the plan.
+			detail.FailoverPlanID = planID
+			dep.Detail = failoverMustJSON(detail)
+			if uerr := rc.reg.UpdateDeployment(ctx, dep); uerr != nil {
+				rc.log.Error("failover: update deployment detail failed",
+					"deployment", ev.DeploymentID, "err", uerr)
+				rc.audit(ctx, "reconciler.action_failed", ev)
+				return false
+			}
+		}
+	}
+
+	if err := rc.act.Failover(ctx, ev.DeploymentID); err != nil {
+		rc.log.Error("failover: actuator error",
+			"deployment", ev.DeploymentID, "node", ev.NodeID, "err", err)
+		rc.audit(ctx, "reconciler.action_failed", ev)
+		return false
+	}
+	rc.log.Info("failover initiated", "deployment", ev.DeploymentID, "node", ev.NodeID)
+	rc.audit(ctx, "reconciler.failover.initiated", ev)
+	return true
+}
+
+// failoverIsTerminal reports whether state means the deployment has released
+// all resources (STOPPED or FAILED). Uses the orchestrator's exported state
+// constants to stay in sync with the rest of the control plane.
+func failoverIsTerminal(state string) bool {
+	return state == orchestrator.StateStopped || state == orchestrator.StateFailed
+}
+
+// failoverMustJSON marshals v to JSON, returning "{}" on error. Mirrors the
+// same helper in the orchestrator package (unexported there, so redefined).
+func failoverMustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return b
+}
+
+// failoverRandHex returns n random bytes encoded as a hex string.
+func failoverRandHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (rc *Reconciler) audit(ctx context.Context, action string, ev Event) {
