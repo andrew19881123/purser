@@ -26,6 +26,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -644,6 +645,78 @@ func (rc *Reconciler) audit(ctx context.Context, action string, ev Event) {
 		Action: action,
 		Target: ev.DeploymentID,
 	})
+}
+
+// ReconcilerConfigSnapshot is the JSON-serialisable view of Config
+// returned by Status(). Durations are converted to whole seconds for
+// easy consumption by dashboards and the status endpoint.
+type ReconcilerConfigSnapshot struct {
+	IntervalS       int `json:"interval_s"`
+	NodeTimeoutS    int `json:"node_timeout_s"`
+	HysteresisS     int `json:"hysteresis_s"`
+	ActionCooldownS int `json:"action_cooldown_s"`
+}
+
+// ReconcilerEventSummary is the per-EventType tracker aggregation returned
+// by Status(). OldestAgeS is the age in seconds of the oldest discrepancy
+// still in the tracker (0 when Tracked == 0).
+type ReconcilerEventSummary struct {
+	Tracked    int     `json:"tracked"`
+	OldestAgeS float64 `json:"oldest_age_s"`
+}
+
+// ReconcilerStatus is the snapshot returned by Status().
+type ReconcilerStatus struct {
+	Config  ReconcilerConfigSnapshot          `json:"config"`
+	Tracker map[string]ReconcilerEventSummary `json:"tracker"`
+}
+
+// Status returns a point-in-time snapshot of the reconciler's configuration
+// and hysteresis tracker state. It is safe to call from an HTTP handler
+// concurrently with Reconcile (reads are non-destructive; the tracker map is
+// only mutated inside Reconcile's single goroutine, so the read may observe
+// a partially-updated pass — this is intentional, eventual-consistency
+// semantics).
+func (rc *Reconciler) Status() ReconcilerStatus {
+	now := rc.now()
+
+	// Aggregate tracker entries by EventType. Each key is "type|depID|nodeID".
+	type summary struct {
+		tracked    int
+		oldestAgeS float64
+	}
+	byType := map[string]*summary{}
+	for k, st := range rc.tracker {
+		typ, _, _ := strings.Cut(k, "|")
+		s, ok := byType[typ]
+		if !ok {
+			s = &summary{}
+			byType[typ] = s
+		}
+		s.tracked++
+		age := now.Sub(st.firstSeen).Seconds()
+		if age > s.oldestAgeS {
+			s.oldestAgeS = age
+		}
+	}
+
+	tracker := make(map[string]ReconcilerEventSummary, len(byType))
+	for et, s := range byType {
+		tracker[et] = ReconcilerEventSummary{
+			Tracked:    s.tracked,
+			OldestAgeS: s.oldestAgeS,
+		}
+	}
+
+	return ReconcilerStatus{
+		Config: ReconcilerConfigSnapshot{
+			IntervalS:       int(rc.cfg.Interval.Seconds()),
+			NodeTimeoutS:    int(rc.cfg.NodeTimeout.Seconds()),
+			HysteresisS:     int(rc.cfg.Hysteresis.Seconds()),
+			ActionCooldownS: int(rc.cfg.ActionCooldown.Seconds()),
+		},
+		Tracker: tracker,
+	}
 }
 
 // Node state string constants (mirror the NodeState proto enum values used
