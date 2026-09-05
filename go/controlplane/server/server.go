@@ -205,6 +205,10 @@ type Config struct {
 	// handler. Leave empty to use the default (https://huggingface.co). Useful
 	// in tests that point the server at an httptest mock.
 	HFBaseURL string
+	// VertexAI, if set, is used for VertexAI model import requests instead of
+	// constructing a client from environment variables at request time.
+	// Primarily useful for testing with a pre-configured mock client.
+	VertexAI *importer.VertexAIClient
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
@@ -226,6 +230,7 @@ type Server struct {
 	internalToken string        // gateway exemption secret
 	hfToken       string
 	hfBaseURL     string
+	vertexai      *importer.VertexAIClient
 
 	// handler is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC
 	// (inner) middleware. Returned by Handler() and used as http.Server.Handler
@@ -277,6 +282,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		internalToken: cfg.InternalToken,
 		hfToken:       cfg.HFToken,
 		hfBaseURL:     cfg.HFBaseURL,
+		vertexai:      cfg.VertexAI,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -982,6 +988,7 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 // HuggingFace (source="huggingface"): set repo, revision, filename_pattern.
 // Object storage (source="s3"/"gcs"/"azure"): set uri, name (optional), family.
 // SageMaker (source="sagemaker"): set model_group (optional override), version.
+// VertexAI (source="vertexai"): set model, vertex_version (empty means latest).
 type importRequest struct {
 	Source string `json:"source"`
 	// HuggingFace fields
@@ -998,6 +1005,13 @@ type importRequest struct {
 	ModelGroup string `json:"model_group,omitempty"`
 	// Version selects a specific approved package version; 0 means latest.
 	Version int `json:"version,omitempty"`
+	// VertexAI fields
+	// Model is the GCP Vertex AI model resource name
+	// ("projects/p/locations/l/models/m") or a bare model ID
+	// (requires PURSER_VERTEX_PROJECT to be set).
+	Model string `json:"model,omitempty"`
+	// VertexVersion selects a specific Vertex AI model version. Empty means latest.
+	VertexVersion string `json:"vertex_version,omitempty"`
 }
 
 // hfSourceBlob is the JSON shape stored in Model.Source for HuggingFace
@@ -1017,6 +1031,7 @@ type hfSourceBlob struct {
 //   - "huggingface" — auto-populates spec from HuggingFace Hub metadata.
 //   - "s3", "gcs", "azure" — resolves the object-storage URI to a download URL.
 //   - "sagemaker" — lists approved packages from an AWS SageMaker model group.
+//   - "vertexai" — imports from GCP Vertex AI Model Registry.
 //
 // POST /api/v1/models/import
 func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
@@ -1032,9 +1047,11 @@ func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
 		s.handleImportObjectStorage(w, r, body)
 	case "sagemaker":
 		s.handleImportSageMaker(w, r, body)
+	case "vertexai":
+		s.handleImportVertexAI(w, r, body)
 	default:
 		s.writeError(w, http.StatusBadRequest, "unknown_source",
-			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure, sagemaker")
+			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure, sagemaker, vertexai")
 	}
 }
 
@@ -2224,6 +2241,120 @@ func (s *Server) handleImportSageMaker(w http.ResponseWriter, r *http.Request, b
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"model_id": modelID,
 		"source":   json.RawMessage(specJSON),
+	})
+}
+
+// handleImportVertexAI imports a model from the GCP Vertex AI Model Registry.
+//
+// Flow:
+//  1. Resolve the VertexAIClient (injected via Config.VertexAI for tests, or
+//     constructed from env vars: PURSER_VERTEX_PROJECT, PURSER_VERTEX_LOCATION,
+//     GOOGLE_APPLICATION_CREDENTIALS).
+//  2. Validate that a GCP project is known (either from the client config or
+//     embedded in the model's full resource name).
+//  3. Call ListModelVersions → pick the requested version or the latest.
+//  4. Extract the GCS artifact URI from the chosen version (or via GetArtifactURI
+//     if the list endpoint did not include it).
+//  5. Persist a registry.Model with source metadata in the Spec JSON blob.
+//  6. Return 201 with {model_id, source}.
+func (s *Server) handleImportVertexAI(w http.ResponseWriter, r *http.Request, body importRequest) {
+	// Resolve the client: prefer the injected one (tests / static config) over
+	// constructing one from env at request time.
+	client := s.vertexai
+	if client == nil {
+		client = importer.NewVertexAIClient()
+	}
+
+	// Validate project: required when the model name is not a full resource path.
+	isFullPath := strings.HasPrefix(body.Model, "projects/")
+	if client.Project == "" && !isFullPath {
+		s.writeError(w, http.StatusBadRequest, "missing_project",
+			"PURSER_VERTEX_PROJECT must be set when model is not a full resource name")
+		return
+	}
+
+	// List versions to find the target.
+	versions, err := client.ListModelVersions(r.Context(), body.Model)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_versions_failed", err.Error())
+		return
+	}
+	if len(versions) == 0 {
+		s.writeError(w, http.StatusNotFound, "no_versions", "model has no registered versions in Vertex AI")
+		return
+	}
+
+	// Pick the specified version, or the latest (versions[0] is newest first).
+	var chosen importer.ModelVersion
+	if body.VertexVersion != "" {
+		for _, v := range versions {
+			if v.VersionID == body.VertexVersion {
+				chosen = v
+				break
+			}
+		}
+		if chosen.VersionID == "" {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version not found in Vertex AI: "+body.VertexVersion)
+			return
+		}
+	} else {
+		chosen = versions[0]
+	}
+
+	// Resolve the GCS artifact URI. ListModelVersions populates ArtifactURI
+	// when the API returns it inline; fall back to GetArtifactURI otherwise.
+	gcsURI := chosen.ArtifactURI
+	if gcsURI == "" {
+		gcsURI, err = client.GetArtifactURI(r.Context(), body.Model, chosen.VersionID)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "get_artifact_uri_failed", err.Error())
+			return
+		}
+	}
+
+	// Build source metadata.
+	source := map[string]string{
+		"type":    "vertexai",
+		"model":   body.Model,
+		"version": chosen.VersionID,
+		"gcs_uri": gcsURI,
+	}
+	sourceJSON, _ := json.Marshal(source)
+
+	// Derive a stable model ID from the last path segment and the version.
+	modelID := body.Model
+	if idx := strings.LastIndex(modelID, "/"); idx >= 0 {
+		modelID = modelID[idx+1:]
+	}
+	modelID = modelID + "@" + chosen.VersionID
+
+	// Spec carries the source metadata. For VertexAI imports no ModelSpec proto
+	// is available, so the Spec blob is the source object itself wrapped to
+	// keep the JSON well-formed and extensible.
+	specJSON, _ := json.Marshal(map[string]any{"source": source})
+
+	m := &registry.Model{
+		ID:   modelID,
+		Spec: json.RawMessage(specJSON),
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already imported: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:   "api",
+		Action:  "model.imported",
+		Target:  modelID,
+		Details: json.RawMessage(sourceJSON),
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   source,
 	})
 }
 
