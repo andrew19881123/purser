@@ -157,6 +157,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)
 	s.mux.HandleFunc("POST /api/v1/nodes/{id}/drain", s.handleDrainNode)
+	s.mux.HandleFunc("POST /api/v1/nodes/{id}/restart", s.handleRestartNode)
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
@@ -427,6 +428,71 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRestartNode tears down all active deployments on the node and lets the
+// reconciler re-provision them on remaining available nodes. The node itself
+// is not rebooted.
+//
+// Responses:
+//   - 404 if the node does not exist;
+//   - 409 if the node has no active deployments to restart (nothing to do);
+//   - 202 Accepted on success — restart is async; actual re-provisioning
+//     happens in the background as the reconciler notices the STOPPED
+//     deployments and re-schedules them on remaining READY nodes.
+func (s *Server) handleRestartNode(w http.ResponseWriter, r *http.Request) {
+	if s.deployer == nil {
+		s.writeError(w, http.StatusNotImplemented, "no_deployer", "orchestrator not configured")
+		return
+	}
+	id := r.PathValue("id")
+
+	// 404 up front so a missing node is never misreported as "nothing to restart".
+	if _, err := s.reg.GetNode(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "node not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "get_node_failed", err.Error())
+		return
+	}
+
+	deps, err := s.reg.ListDeployments(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
+		return
+	}
+	var targets []string
+	for _, d := range deps {
+		if !deploymentTerminal(d.State) && deploymentOccupiesNode(d, id) {
+			targets = append(targets, d.ID)
+		}
+	}
+
+	// 409 if there are no active deployments to restart.
+	if len(targets) == 0 {
+		s.writeError(w, http.StatusConflict, "nothing_to_restart",
+			"node has no active deployments to restart")
+		return
+	}
+
+	// Tear down each deployment; the reconciler will notice the STOPPED state
+	// and re-provision on remaining READY nodes.
+	for _, depID := range targets {
+		if err := s.deployer.Teardown(r.Context(), depID); err != nil {
+			s.log.Warn("restart: teardown failed",
+				"node", id, "deployment", depID, "err", err)
+		}
+	}
+
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "api.node.restart", Target: id,
+	})
+	s.writeJSON(w, http.StatusAccepted, map[string]any{
+		"node_id":     id,
+		"deployments": targets,
+		"message":     "deployments torn down; re-provisioning proceeds in the background",
+	})
 }
 
 // modelWithFit augments a catalog Model with its deployability verdict against
