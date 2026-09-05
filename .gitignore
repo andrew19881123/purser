@@ -12,7 +12,6 @@ target/
 *.test
 *.out
 # `go build ./...` drops a compiled executable in each main-package module root.
-/go/planner/planner
 /go/controlplane/controlplane
 
 # --- Node / UI ---
