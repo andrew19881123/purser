@@ -150,31 +150,6 @@ jobs:
           cd dist
           sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS
 
-      # Generate SPDX SBOMs for each published container image.
-      # Note: the docker job runs in parallel; these steps will pull the
-      # images once they are available (the release job enforces ordering by
-      # depending on both package and docker).
-      - name: Generate SBOM — control-plane
-        uses: anchore/sbom-action@v0
-        with:
-          image: ghcr.io/${{ github.repository_owner }}/purser-control-plane:${{ github.ref_name }}
-          artifact-name: sbom-control-plane.spdx.json
-          output-file: dist/sbom-control-plane.spdx.json
-
-      - name: Generate SBOM — gateway
-        uses: anchore/sbom-action@v0
-        with:
-          image: ghcr.io/${{ github.repository_owner }}/purser-gateway:${{ github.ref_name }}
-          artifact-name: sbom-gateway.spdx.json
-          output-file: dist/sbom-gateway.spdx.json
-
-      - name: Generate SBOM — ui
-        uses: anchore/sbom-action@v0
-        with:
-          image: ghcr.io/${{ github.repository_owner }}/purser-ui:${{ github.ref_name }}
-          artifact-name: sbom-ui.spdx.json
-          output-file: dist/sbom-ui.spdx.json
-
       - uses: actions/upload-artifact@v4
         with:
           name: release-packages
@@ -295,6 +270,28 @@ jobs:
       # Uses the GitHub Actions OIDC token — no secrets or long-lived keys.
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+
+      # Generate SPDX SBOMs — runs here (after docker job) so images exist.
+      - name: Generate SBOM — control-plane
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/purser-control-plane:${{ env.TAG }}
+          artifact-name: sbom-control-plane.spdx.json
+          output-file: dist/sbom-control-plane.spdx.json
+
+      - name: Generate SBOM — gateway
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/purser-gateway:${{ env.TAG }}
+          artifact-name: sbom-gateway.spdx.json
+          output-file: dist/sbom-gateway.spdx.json
+
+      - name: Generate SBOM — ui
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/purser-ui:${{ env.TAG }}
+          artifact-name: sbom-ui.spdx.json
+          output-file: dist/sbom-ui.spdx.json
 
       # Sign each binary tarball; the cosign bundle (*.bundle) embeds the
       # certificate and signature and is uploaded as a release asset alongside
