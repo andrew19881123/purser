@@ -32,7 +32,7 @@ NFPM  := $(GOBIN)/nfpm
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean release package-agent
+.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-agent
 
 all: gen build
 
@@ -105,3 +105,29 @@ clean:
 	@for m in $(GO_MODULES); do \
 		( cd go/$$m && "$(GO)" clean -cache -testcache ./... 2>/dev/null || true ); \
 	done
+
+# Start the Purser demo stack (no GPU required)
+demo:
+	docker compose up -d
+	@echo ""
+	@echo "Purser demo started!"
+	@echo "  Dashboard:      http://localhost:3000"
+	@echo "  Control Plane:  http://localhost:8080"
+	@echo "  Gateway (OpenAI): http://localhost:8081"
+	@echo "  API Key: demo-key-12345"
+	@echo ""
+	@echo "Try: curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'"
+	@echo "Stop: make demo-stop"
+
+demo-stop:
+	docker compose down
+
+# Enroll a mock agent for demo purposes
+demo-agent:
+	@echo "Minting join token..."
+	@TOKEN=$$(curl -s -X POST http://localhost:8080/api/v1/join-token \
+	  -H 'Content-Type: application/json' -d '{"ttl_seconds":3600}' | jq -r .token) && \
+	echo "Join token: $$TOKEN" && \
+	PURSER_CONTROL_PLANE_ADDR=http://localhost:9443 \
+	PURSER_JOIN_TOKEN=$$TOKEN \
+	./bin/purser-agent
