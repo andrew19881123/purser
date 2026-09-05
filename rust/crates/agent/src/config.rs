@@ -27,10 +27,13 @@ pub struct AgentConfig {
     /// Socket address `AgentService` (gRPC) binds to.
     pub bind_addr: SocketAddr,
 
-    /// Address of the control plane's `RegistrationService`, used to enroll and
-    /// heartbeat. `None` until provisioning wires it in.
-    ///
-    /// TODO(phase2): consumed by discovery/enrollment (see `discovery.rs`).
+    /// Address of the control plane's `RegistrationService`, used to enroll
+    /// and heartbeat. When set, the agent connects here at startup to call
+    /// `RegistrationService::Join`, then streams periodic `Heartbeat` RPCs.
+    /// Also seeded into the peer-discovery path so LAN neighbors can be found
+    /// via the control plane's address. When absent, the agent serves
+    /// `AgentService` without registering with any control plane. Overridable
+    /// via `PURSER_CONTROL_PLANE_ADDR`.
     pub control_plane_addr: Option<String>,
 
     /// Logical cluster this node belongs to.
@@ -40,9 +43,12 @@ pub struct AgentConfig {
     /// during `RegistrationService::Join`.
     pub node_id: Option<String>,
 
-    /// One-time join token used to enroll into the cluster.
-    ///
-    /// TODO(phase2): used by the enrollment flow (see `discovery.rs`).
+    /// One-time join token used to authenticate the node during
+    /// `RegistrationService::Join`. Sent verbatim to the control plane so it
+    /// can verify the node is authorized to enroll. After enrollment succeeds
+    /// the certificate issued by the control plane is stored in the secret
+    /// store and the token is no longer needed. Overridable via
+    /// `PURSER_JOIN_TOKEN`.
     pub join_token: Option<String>,
 
     /// Cadence at which `Health` streams `HealthReport`s.
@@ -309,5 +315,47 @@ mod tests {
         let (agent, inference) = cfg.advertised_addrs();
         assert!(agent.ends_with(&format!(":{DEFAULT_AGENT_PORT}")));
         assert!(inference.ends_with(&format!(":{DEFAULT_INFERENCE_PORT}")));
+    }
+
+    /// Verify that `from_env` correctly picks up `PURSER_CONTROL_PLANE_ADDR`
+    /// and `PURSER_JOIN_TOKEN`, which are consumed by the enrollment /
+    /// heartbeat path in `main.rs`.
+    ///
+    /// Note: `std::env::set_var` is not thread-safe when tests run in
+    /// parallel.  The unique variable names and the save/restore pattern
+    /// below make accidental cross-test contamination very unlikely.
+    #[test]
+    fn from_env_reads_control_plane_addr_and_join_token() {
+        const CP_VAR: &str = "PURSER_CONTROL_PLANE_ADDR";
+        const TOK_VAR: &str = "PURSER_JOIN_TOKEN";
+
+        let prev_cp = std::env::var(CP_VAR).ok();
+        let prev_tok = std::env::var(TOK_VAR).ok();
+
+        std::env::set_var(CP_VAR, "http://cp.test:9443");
+        std::env::set_var(TOK_VAR, "tok-abc123");
+
+        let cfg = AgentConfig::from_env().unwrap();
+
+        // Restore before asserting so a test failure cannot leak into other tests.
+        match prev_cp {
+            Some(v) => std::env::set_var(CP_VAR, v),
+            None => std::env::remove_var(CP_VAR),
+        }
+        match prev_tok {
+            Some(v) => std::env::set_var(TOK_VAR, v),
+            None => std::env::remove_var(TOK_VAR),
+        }
+
+        assert_eq!(
+            cfg.control_plane_addr.as_deref(),
+            Some("http://cp.test:9443"),
+            "control_plane_addr must round-trip through PURSER_CONTROL_PLANE_ADDR"
+        );
+        assert_eq!(
+            cfg.join_token.as_deref(),
+            Some("tok-abc123"),
+            "join_token must round-trip through PURSER_JOIN_TOKEN"
+        );
     }
 }
