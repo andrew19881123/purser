@@ -332,6 +332,213 @@ helm install purser deploy/helm/purser \
 
 ---
 
+---
+
+## Enterprise secret management
+
+By default the chart creates Kubernetes `Secret` objects directly from values
+you supply at install time. Enterprises that centralise credentials in
+HashiCorp Vault, Azure Key Vault, or AWS Secrets Manager can instead use the
+**External Secrets Operator (ESO)** to pull secrets at runtime; and those who
+manage certificate lifecycle with **cert-manager** can have the Control Plane's
+mTLS certificate issued and renewed automatically.
+
+### 1. Default — inline secrets via `helm install --set`
+
+No extra prerequisites. Pass sensitive values on the command line:
+
+```bash
+helm install purser deploy/helm/purser \
+  --set gateway.internalToken="$(openssl rand -hex 20)" \
+  --set gateway.apiKeys="key1,key2" \
+  --set license.key="ENTERPRISE-LICENSE-STRING"
+```
+
+The chart stores these in `Secret` objects (`purser-gateway`, `purser-license`)
+and mounts them into the relevant pods via `secretKeyRef`. Values are generated
+randomly at install if omitted.
+
+---
+
+### 2. With ESO + HashiCorp Vault
+
+**Prerequisites**
+
+- [External Secrets Operator](https://external-secrets.io/latest/introduction/getting-started/)
+  installed in the cluster (`helm install external-secrets ...`).
+- HashiCorp Vault accessible from the cluster with a Kubernetes auth backend
+  configured.
+
+**Step 1 — Create a `ClusterSecretStore`**
+
+```yaml
+# vault-store.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: vault-backend
+spec:
+  provider:
+    vault:
+      server: "https://vault.example.com"
+      path: "secret"          # KV v2 mount
+      version: "v2"
+      auth:
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "purser"      # Vault role with read access to purser/* paths
+          serviceAccountRef:
+            name: "default"   # SA in the release namespace
+```
+
+```bash
+kubectl apply -f vault-store.yaml
+```
+
+**Step 2 — Store secrets in Vault**
+
+```bash
+vault kv put secret/purser/internal-token  value="<random-40-char-token>"
+vault kv put secret/purser/license-key     value="ENTERPRISE-LICENSE-STRING"
+# join-token is optional — Purser mints ephemeral join tokens via the REST API.
+# Store one here only if you want ESO to pre-seed a long-lived bootstrap token.
+vault kv put secret/purser/join-token      value="<bootstrap-join-token>"
+```
+
+**Step 3 — Install Purser with ESO enabled**
+
+```bash
+helm install purser deploy/helm/purser \
+  --set externalSecrets.enabled=true \
+  --set externalSecrets.secretStoreRef.name=vault-backend \
+  --set externalSecrets.remoteRefs.internalToken="secret/data/purser/internal-token" \
+  --set externalSecrets.remoteRefs.licenseKey="secret/data/purser/license-key" \
+  --set externalSecrets.remoteRefs.joinToken="secret/data/purser/join-token"
+```
+
+Or via a `values.yaml` override file:
+
+```yaml
+# purser-vault-values.yaml
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  remoteRefs:
+    internalToken: "secret/data/purser/internal-token"
+    licenseKey: "secret/data/purser/license-key"
+    joinToken: "secret/data/purser/join-token"
+```
+
+```bash
+helm install purser deploy/helm/purser -f purser-vault-values.yaml
+```
+
+**What happens:** The chart renders one `ExternalSecret` CR per non-empty
+`remoteRef`. ESO reconciles each `ExternalSecret` by reading from Vault and
+writing the result into a regular Kubernetes `Secret` with the same name the
+pods already reference (`purser-gateway`, `purser-license`, `purser-join-token`).
+No inline `Secret` objects are created by the chart.
+
+---
+
+### 3. With ESO + Azure Key Vault
+
+**Prerequisites**: ESO installed; an Azure Key Vault with a managed-identity or
+service-principal configured for ESO's `AzureKVProvider`.
+
+```yaml
+# azure-store.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: azure-keyvault
+spec:
+  provider:
+    azurekv:
+      tenantId: "00000000-0000-0000-0000-000000000000"
+      vaultUrl: "https://purser-kv.vault.azure.net"
+      authType: WorkloadIdentity   # or ManagedIdentity / ServicePrincipal
+```
+
+```yaml
+# purser-azure-values.yaml
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: azure-keyvault
+    kind: ClusterSecretStore
+  remoteRefs:
+    internalToken: "purser-internal-token"   # Key Vault secret name
+    licenseKey: "purser-license-key"
+```
+
+```bash
+helm install purser deploy/helm/purser -f purser-azure-values.yaml
+```
+
+Key Vault secret names use hyphens, not slash-separated paths; adjust
+`remoteRefs` accordingly.
+
+---
+
+### 4. cert-manager — automatic TLS for the Control Plane
+
+**Prerequisites**: [cert-manager](https://cert-manager.io/docs/installation/) v1.x
+installed in the cluster, and a `ClusterIssuer` (or `Issuer`) configured.
+
+**Example `ClusterIssuer` (internal CA)**
+
+```yaml
+# internal-ca-issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: internal-ca
+spec:
+  ca:
+    secretName: internal-ca-key-pair   # pre-created Secret with CA cert+key
+```
+
+**Enable cert-manager in the Purser chart**
+
+```bash
+helm install purser deploy/helm/purser \
+  --set tls.certManager.enabled=true \
+  --set tls.certManager.issuerRef.name=internal-ca \
+  --set tls.certManager.issuerRef.kind=ClusterIssuer
+```
+
+Or in a values file:
+
+```yaml
+tls:
+  certManager:
+    enabled: true
+    issuerRef:
+      name: internal-ca         # name of your ClusterIssuer or Issuer
+      kind: ClusterIssuer
+    duration: "8760h"           # 1 year (default)
+    renewBefore: "720h"         # renew 30 days before expiry (default)
+```
+
+**What gets rendered**: a `cert-manager.io/v1` `Certificate` CR for the
+Control Plane, covering the DNS names:
+
+| DNS name | Purpose |
+|---|---|
+| `<fullname>-control-plane.<namespace>.svc.cluster.local` | FQDN — used by gRPC clients |
+| `<fullname>-control-plane.<namespace>.svc` | Short cluster-DNS form |
+| `<fullname>-control-plane` | In-namespace short name |
+
+cert-manager issues the certificate and stores it in the secret
+`<fullname>-control-plane-tls`, which the Control Plane mounts as its gRPC
+server certificate. Renewal is handled automatically according to `duration`
+and `renewBefore`.
+
+---
+
 ## 4. Uninstall
 
 ```bash
