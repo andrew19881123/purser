@@ -125,5 +125,8 @@ export const IconTrash = (p: IconProps) => (
 export const IconKey = (p: IconProps) => (
   <Svg {...p}>
     <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
+export const IconBox = (p: IconProps) => (
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+    <path d="M3.29 7 12 12l8.71-5M12 22V12" />
   </Svg>
 );

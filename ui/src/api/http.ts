@@ -30,6 +30,7 @@ import type {
   DeploymentPlan,
   DeploymentState,
   FitVerdict,
+  ImportSource,
   JoinInfo,
   JoinTokenResult,
   LinkQuality,
@@ -39,6 +40,7 @@ import type {
   NodeLoadStatus,
   NodeView,
   PerfEstimate,
+  PlanPreviewResult,
   Role,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
@@ -427,6 +429,43 @@ export function createHttpApi(baseUrl: string): PurserApi {
         if (!found) throw new ApiError(404, `Model ${modelId} is not in the catalog.`);
         return found.model;
       }),
+
+    // POST /api/v1/models/import — register a model from an external registry.
+    // The backend fetches metadata from the source and persists a ModelSpec.
+    importModel: (source: ImportSource) =>
+      request<unknown>('/models/import', {
+        method: 'POST',
+        body: source,
+      }).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        // Backend may return the full ModelSpec or just { model_id: "..." }.
+        if (r.modelId || r.model) {
+          return (r.model ?? raw) as ModelSpec;
+        }
+        throw new ApiError(500, 'Import returned no model spec');
+      }),
+
+    // POST /api/v1/models/{id}/plan — dry-run plan, never persisted.
+    // A 200 body is always returned: { feasible, reason? } or { feasible, ...planFields }.
+    previewModelPlan: (modelId: string) =>
+      request<unknown>(`/models/${enc(modelId)}/plan`, { method: 'POST', body: {} })
+        .then((raw): PlanPreviewResult => {
+          const r = (raw ?? {}) as Record<string, unknown>;
+          if (r.feasible === false) {
+            return { feasible: false, reason: typeof r.reason === 'string' ? r.reason : 'Model cannot be deployed on this fleet.' };
+          }
+          // The embedded plan may be in r.plan (protojson blob) or at the top level.
+          const inner = r.plan && typeof r.plan === 'object'
+            ? (r.plan as Record<string, unknown>)
+            : r;
+          // Top-level `id` from registry.Plan maps to planId.
+          const merged: Record<string, unknown> = {
+            ...inner,
+            planId: inner.planId ?? r.id,
+            modelId: inner.modelId ?? r.modelId,
+          };
+          return { feasible: true, plan: normalizePlan(merged) };
+        }),
 
     // --- deployments ---
     // Dry-run plan (preview). Conventional path alongside POST .../deploy.

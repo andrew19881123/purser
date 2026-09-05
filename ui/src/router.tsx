@@ -12,6 +12,7 @@ import { CatalogPage } from './pages/CatalogPage';
 import { DeployPage } from './pages/DeployPage';
 import { DeploymentsPage } from './pages/DeploymentsPage';
 import { JoinTokenPage } from './pages/JoinTokenPage';
+import { ModelStudioPage } from './pages/ModelStudioPage';
 import { PlaygroundPage } from './pages/PlaygroundPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -24,6 +25,7 @@ export const router = createHashRouter([
       { index: true, element: <OnboardingPage /> },
       { path: 'fleet', element: <FleetPage /> },
       { path: 'catalog', element: <CatalogPage /> },
+      { path: 'model-studio', element: <ModelStudioPage /> },
       { path: 'deployments', element: <DeploymentsPage /> },
       { path: 'deploy/:modelId', element: <DeployPage /> },
       { path: 'join-token', element: <JoinTokenPage /> },

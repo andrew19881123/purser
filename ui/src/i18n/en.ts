@@ -197,6 +197,80 @@ export const en = {
   'jointoken.result.env.label': 'Agent environment',
   'jointoken.result.env.hint': 'Paste these into /etc/purser/agent.env on the target node.',
   'jointoken.result.instructions.title': 'Connection instructions (Debian / Ubuntu)',
+  // model studio
+  'nav.modelStudio': 'Model Studio',
+  'studio.title': 'Model Studio',
+  'studio.subtitle': 'Import models from any registry, preview how they split across your fleet, and deploy in one click.',
+  'studio.source.label': 'Import source',
+  'studio.source.huggingface': 'HuggingFace Hub',
+  'studio.source.object_storage': 'Object Storage',
+  'studio.source.sagemaker': 'SageMaker',
+  'studio.source.vertexai': 'Vertex AI',
+  'studio.source.azure_ml': 'Azure ML',
+  'studio.source.catalog': 'Purser Catalog',
+  // HuggingFace
+  'studio.hf.repo': 'Repository',
+  'studio.hf.repo.placeholder': 'meta-llama/Llama-3.1-8B-Instruct',
+  'studio.hf.revision': 'Revision',
+  'studio.hf.revision.placeholder': 'main',
+  'studio.hf.filename': 'Filename pattern',
+  'studio.hf.filename.placeholder': '*.gguf',
+  // Object storage
+  'studio.obj.uri': 'Storage URI',
+  'studio.obj.uri.placeholder': 's3://bucket/model.gguf',
+  'studio.obj.name': 'Model name',
+  'studio.obj.family': 'Model family',
+  // SageMaker
+  'studio.sm.modelGroup': 'Model group',
+  'studio.sm.version': 'Version (optional)',
+  // Vertex AI
+  'studio.vertex.modelPath': 'Model path',
+  'studio.vertex.version': 'Version (optional)',
+  // Azure ML
+  'studio.azure.workspace': 'Workspace',
+  'studio.azure.modelName': 'Model name',
+  'studio.azure.version': 'Version (optional)',
+  // Catalog picker
+  'studio.catalog.select': 'Select a model from the Purser catalog',
+  'studio.catalog.empty': 'Catalog is empty. Import a model first.',
+  // Inspect action
+  'studio.action.inspect': 'Inspect model',
+  'studio.action.reimport': 'Re-import',
+  // Model info card
+  'studio.model.title': 'Model info',
+  'studio.model.family': 'Family',
+  'studio.model.size': 'Size (smallest variant)',
+  'studio.model.quantizations': 'Quantizations',
+  'studio.model.source': 'Source',
+  'studio.model.params': 'Parameters',
+  'studio.model.layers': 'Layers',
+  // Deployment preview
+  'studio.preview.title': 'Deployment preview',
+  'studio.preview.compute': 'Preview deployment',
+  'studio.preview.recompute': 'Recompute',
+  'studio.preview.fleet': 'Fleet split',
+  'studio.preview.throughput': 'Estimated throughput',
+  'studio.preview.pipeline': 'Pipeline order',
+  'studio.preview.infeasible': 'Cannot be deployed on this fleet',
+  'studio.preview.layers': 'Layers {start}–{end}',
+  // Node filter
+  'studio.nodes.title': 'Node filter',
+  'studio.nodes.hint': 'Uncheck nodes to exclude them from this deployment.',
+  'studio.nodes.all': 'All {n} ready nodes',
+  // Quantization
+  'studio.quant.label': 'Quantization',
+  // Actions
+  'studio.action.deploy': 'Deploy',
+  'studio.action.importOnly': 'Import only',
+  'studio.action.importOnlyDone': 'Imported',
+  // Success states
+  'studio.deployed.title': 'Deployment started',
+  'studio.deployed.body': 'Deployment {id} is provisioning. Track progress in Deployments.',
+  'studio.imported.title': 'Model imported',
+  'studio.imported.body': '{model} is now in your catalog.',
+  // Errors
+  'error.import': 'Could not import the model. Check the source details and try again.',
+  'error.studioPreview': 'Could not compute a preview. The model may not be in the catalog yet.',
 
   // settings
   'settings.title': 'Settings',

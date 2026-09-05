@@ -15,7 +15,7 @@ import {
 } from '@tanstack/react-query';
 import { api, type CreateApiKeyInput } from '../api/client';
 import type { ChatClient } from '../api/openai';
-import type { DeployOverrides, MetricsSnapshot } from '../api/types';
+import type { DeployOverrides, ImportSource, MetricsSnapshot } from '../api/types';
 
 export const qk = {
   capacity: ['capacity'] as const,
@@ -72,6 +72,43 @@ export function useNodeAction() {
 
 export function useCatalog() {
   return useQuery({ queryKey: qk.catalog, queryFn: () => api.getCatalog() });
+}
+
+// --- model studio -----------------------------------------------------------
+
+/**
+ * Mutation: import a model from an external registry into the Purser catalog.
+ * On success the catalog cache is invalidated so the Catalog page reflects the
+ * new entry immediately.
+ */
+export function useImportModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (source: ImportSource) => api.importModel(source),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.catalog }),
+  });
+}
+
+/** Mutation: compute a plan-preview for an already-imported model. */
+export function usePreviewModelPlan() {
+  return useMutation({
+    mutationFn: (modelId: string) => api.previewModelPlan(modelId),
+  });
+}
+
+/** Mutation: deploy an already-imported model (alias over createDeployment). */
+export function useDeployModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { modelId: string }) =>
+      api.createDeployment(args.modelId, { forceNodeCount: null, preference: 'balanced' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.deployments });
+      qc.invalidateQueries({ queryKey: qk.nodes });
+      qc.invalidateQueries({ queryKey: qk.capacity });
+      qc.invalidateQueries({ queryKey: qk.catalog });
+    },
+  });
 }
 
 export function useModel(id: string | undefined) {
