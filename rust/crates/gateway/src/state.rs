@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 use crate::auth::AuthConfig;
 use crate::error::ApiError;
 use crate::metrics::prometheus_handle;
-use crate::quota::{Limiter, QuotaConfig};
+use crate::quota::{Limiter, ModelQueueSemaphores, QuotaConfig};
 use crate::upstream::HttpClient;
 
 /// A mock model id pre-loaded by [`AppState::with_mock`], used by tests until a
@@ -99,6 +99,9 @@ pub struct AppState {
     pub quota: Arc<QuotaConfig>,
     /// Runtime rate-limiter/backpressure state.
     pub limiter: Arc<Limiter>,
+    /// Per-model in-flight concurrency gate (Semaphore-backed). Requests are
+    /// shed with 429 when the per-model slot limit is reached.
+    pub queue: Arc<ModelQueueSemaphores>,
     /// Outbound client to deployment hosts.
     pub http: HttpClient,
     /// Prometheus render handle for `GET /metrics`.
@@ -113,11 +116,13 @@ impl AppState {
         quota: QuotaConfig,
         http: HttpClient,
     ) -> Self {
+        let queue = Arc::new(ModelQueueSemaphores::new(quota.max_queue_depth));
         Self {
             models: Arc::new(RwLock::new(models)),
             auth: Arc::new(auth),
             quota: Arc::new(quota),
             limiter: Arc::new(Limiter::new()),
+            queue,
             http,
             metrics: prometheus_handle(),
         }
@@ -151,8 +156,10 @@ impl AppState {
         )
     }
 
-    /// Override the quota thresholds (builder style, for tests).
+    /// Override the quota thresholds (builder style, for tests). Also
+    /// recreates the per-model queue semaphores from the new `max_queue_depth`.
     pub fn with_quota(mut self, quota: QuotaConfig) -> Self {
+        self.queue = Arc::new(ModelQueueSemaphores::new(quota.max_queue_depth));
         self.quota = Arc::new(quota);
         self
     }
@@ -175,7 +182,8 @@ impl AppState {
 
     /// Resolve an **active** route for `model`.
     ///
-    /// * unknown model → `404` with the served-model list;
+    /// * unknown model → `503` "model not available" (may be deploying or
+    ///   failed; a retrying client should back off before trying again);
     /// * known but draining → `503` (transient, retry).
     pub async fn resolve_active(&self, model: &str) -> Result<ModelRoute, ApiError> {
         let registry = self.models.read().await;
@@ -184,14 +192,7 @@ impl AppState {
             Some(_) => Err(ApiError::NodeUnavailable(format!(
                 "The model '{model}' is draining and not accepting new requests; retry shortly."
             ))),
-            None => Err(ApiError::model_not_found(
-                model,
-                registry
-                    .iter()
-                    .filter(|(_, r)| r.is_active())
-                    .map(|(id, _)| id.clone())
-                    .collect(),
-            )),
+            None => Err(ApiError::NodeUnavailable("model not available".to_string())),
         }
     }
 

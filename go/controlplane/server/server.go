@@ -162,6 +162,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
+	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
@@ -711,6 +712,101 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "model.deleted", Target: id})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ModelHealth is the response body of GET /api/v1/models/{id}/health.
+type ModelHealth struct {
+	ModelID         string `json:"model_id"`
+	Status          string `json:"status"` // "healthy" | "degraded" | "unavailable"
+	DeploymentID    string `json:"deployment_id"`
+	DeploymentState string `json:"deployment_state"`
+	NodeCount       int    `json:"node_count"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+}
+
+// handleModelHealth reports the operational health of a deployed model.
+// Does not perform a live inference probe.
+//
+// Rules:
+//   - 404 if the model does not exist in the catalog.
+//   - "healthy"   when the most-recent deployment is ACTIVE.
+//   - "degraded"  when the deployment is PROVISIONING or STOPPING (transient).
+//   - "unavailable" when FAILED, STOPPED, or no deployment exists.
+func (s *Server) handleModelHealth(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	// 404 if the model is not in the catalog.
+	if _, err := s.reg.GetModel(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "model not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	deps, err := s.reg.ListDeployments(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
+		return
+	}
+
+	// Pick the most-recent deployment for this model (by CreatedAt).
+	var latest *registry.Deployment
+	for _, d := range deps {
+		d := d
+		if d.ModelID != id {
+			continue
+		}
+		if latest == nil || d.CreatedAt.After(latest.CreatedAt) {
+			latest = d
+		}
+	}
+
+	health := ModelHealth{ModelID: id}
+	if latest == nil {
+		health.Status = "unavailable"
+		health.ErrorMessage = "no deployment found for this model"
+		s.writeJSON(w, http.StatusOK, health)
+		return
+	}
+
+	health.DeploymentID = latest.ID
+	// Strip the "DEPLOYMENT_STATE_" proto prefix for a clean wire representation.
+	health.DeploymentState = strings.TrimPrefix(latest.State, "DEPLOYMENT_STATE_")
+	health.NodeCount = countDeploymentNodes(latest)
+
+	switch latest.State {
+	case purserv1.DeploymentState_DEPLOYMENT_STATE_ACTIVE.String():
+		health.Status = "healthy"
+	case purserv1.DeploymentState_DEPLOYMENT_STATE_PROVISIONING.String(),
+		purserv1.DeploymentState_DEPLOYMENT_STATE_STOPPING.String():
+		health.Status = "degraded"
+	default: // FAILED, STOPPED, PLANNED, or any unrecognised state
+		health.Status = "unavailable"
+		health.ErrorMessage = "deployment is in state " + health.DeploymentState
+	}
+
+	s.writeJSON(w, http.StatusOK, health)
+}
+
+// countDeploymentNodes decodes the deployment's placement detail and counts
+// the total number of nodes it references (1 host + N engines). Returns 0 when
+// no placement detail is stored.
+func countDeploymentNodes(d *registry.Deployment) int {
+	if len(d.Detail) == 0 {
+		return 0
+	}
+	var refs deploymentNodeRefs
+	if err := json.Unmarshal(d.Detail, &refs); err != nil {
+		return 0
+	}
+	n := 0
+	if refs.HostNodeID != "" {
+		n++
+	}
+	n += len(refs.Engines)
+	return n
 }
 
 // deployRequest is the body of POST /models/{id}/deploy. Provide either an

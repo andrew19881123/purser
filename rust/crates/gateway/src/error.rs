@@ -11,7 +11,7 @@
 //! Errors are meant to be *actionable*: the message tells the client what to
 //! do (retry later, pick another model, check the key), not just a bare code.
 
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -53,13 +53,18 @@ pub enum ApiError {
         model: String,
         available: Vec<String>,
     },
-    /// 429 — quota exceeded or cluster saturated (backpressure). Sets
-    /// `Retry-After`.
+    /// 429 — quota exceeded, cluster saturated (backpressure), or per-model
+    /// request queue full. Sets `Retry-After`; optionally sets
+    /// `X-Queue-Position` when the rejection is from the per-model semaphore.
     RateLimited {
         message: String,
         retry_after_secs: u64,
+        /// Position in the notional per-model queue (set for queue-full 429s).
+        queue_position: Option<usize>,
     },
-    /// 503 — a pipeline node is down (possibly being rescheduled).
+    /// 503 — model is not deployed, deployment failed, or a pipeline node is
+    /// down. Sets `Retry-After: 30` so LiteLLM and other retrying callers back
+    /// off before a follow-up attempt.
     NodeUnavailable(String),
     /// 504 — generation timed out.
     Timeout(String),
@@ -106,6 +111,8 @@ struct Rendered {
     code: Option<String>,
     message: String,
     retry_after_secs: Option<u64>,
+    /// When set, the `X-Queue-Position` header is added to the response.
+    queue_position: Option<usize>,
 }
 
 impl ApiError {
@@ -117,6 +124,7 @@ impl ApiError {
                 code,
                 message,
                 retry_after_secs: None,
+                queue_position: None,
             },
             ApiError::Unauthorized(message) => Rendered {
                 status: StatusCode::UNAUTHORIZED,
@@ -124,6 +132,7 @@ impl ApiError {
                 code: Some("invalid_api_key".to_string()),
                 message,
                 retry_after_secs: None,
+                queue_position: None,
             },
             ApiError::Forbidden(message) => Rendered {
                 status: StatusCode::FORBIDDEN,
@@ -131,6 +140,7 @@ impl ApiError {
                 code: Some("insufficient_permissions".to_string()),
                 message,
                 retry_after_secs: None,
+                queue_position: None,
             },
             ApiError::ModelNotFound { model, available } => {
                 let list = if available.is_empty() {
@@ -147,24 +157,33 @@ impl ApiError {
                          this cluster. Available models: {list}."
                     ),
                     retry_after_secs: None,
+                    queue_position: None,
                 }
             }
             ApiError::RateLimited {
                 message,
                 retry_after_secs,
+                queue_position,
             } => Rendered {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 error_type: "rate_limit_error",
                 code: Some("rate_limit_exceeded".to_string()),
                 message,
                 retry_after_secs: Some(retry_after_secs),
+                queue_position,
             },
             ApiError::NodeUnavailable(message) => Rendered {
                 status: StatusCode::SERVICE_UNAVAILABLE,
-                error_type: "api_error",
+                // Use the OpenAI-compatible service_unavailable type so
+                // LiteLLM and other callers can classify this correctly.
+                error_type: "service_unavailable",
                 code: Some("node_unavailable".to_string()),
                 message,
-                retry_after_secs: None,
+                // Signal to retrying callers to back off 30 s before
+                // re-attempting — appropriate for both missing routes and
+                // temporarily-down deployment hosts.
+                retry_after_secs: Some(30),
+                queue_position: None,
             },
             ApiError::Timeout(message) => Rendered {
                 status: StatusCode::GATEWAY_TIMEOUT,
@@ -172,6 +191,7 @@ impl ApiError {
                 code: Some("timeout".to_string()),
                 message,
                 retry_after_secs: None,
+                queue_position: None,
             },
             ApiError::Internal(message) => Rendered {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -179,6 +199,7 @@ impl ApiError {
                 code: None,
                 message,
                 retry_after_secs: None,
+                queue_position: None,
             },
         }
     }
@@ -192,6 +213,7 @@ impl IntoResponse for ApiError {
             code,
             message,
             retry_after_secs,
+            queue_position,
         } = self.render();
 
         if status.is_server_error() {
@@ -212,6 +234,14 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        if let Some(pos) = queue_position {
+            if let Ok(value) = HeaderValue::from_str(&pos.to_string()) {
+                response.headers_mut().insert(
+                    HeaderName::from_static("x-queue-position"),
+                    value,
+                );
+            }
         }
         response
     }
