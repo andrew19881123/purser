@@ -4,20 +4,16 @@
 // the mTLS certificates used by Agents, and revokes them on decommission. See
 // docs/04_Control_Plane.html §10.
 //
-// This package is a phase-1 skeleton: it defines the CA interface; a concrete
-// (self-signed, on-disk) CA implementation lands in phase 2.
+// The CA interface is defined here; the concrete self-signed, on-disk
+// implementation lives in pki/ca.go and is fully wired into the control plane.
 package pki
 
 import (
 	"context"
 	"crypto/x509"
-	"errors"
 	"net"
 	"time"
 )
-
-// ErrNotImplemented marks phase-2 functionality not yet built.
-var ErrNotImplemented = errors.New("pki: not implemented (phase 2)")
 
 // CertRequest describes a certificate to issue.
 type CertRequest struct {
@@ -42,10 +38,6 @@ type IssuedCert struct {
 }
 
 // CA is the internal certificate authority abstraction.
-//
-// TODO(phase2): provide a concrete implementation that persists CA state and
-// issued-certificate metadata via the registry (certs table) and supports
-// rotation and CRL/OCSP-style revocation lookup.
 type CA interface {
 	// CACertificate returns the CA's own certificate (for trust distribution).
 	CACertificate(ctx context.Context) (*x509.Certificate, error)
