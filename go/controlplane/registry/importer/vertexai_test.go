@@ -178,7 +178,7 @@ func TestHandleImport_VertexAI(t *testing.T) {
 	}
 	srv := server.New(reg, server.Config{VertexAI: client})
 
-	reqBody := `{"source":"vertexai","model":"` + modelName + `","version":""}`
+	reqBody := `{"source":"vertexai","model":"` + modelName + `","vertex_version":""}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/models/import", strings.NewReader(reqBody))
 	srv.Handler().ServeHTTP(rec, req)
@@ -229,7 +229,7 @@ func TestHandleImport_VertexAI_MissingProject(t *testing.T) {
 	}
 	srv := server.New(reg, server.Config{VertexAI: client})
 
-	reqBody := `{"source":"vertexai","model":"my-model","version":""}`
+	reqBody := `{"source":"vertexai","model":"my-model","vertex_version":""}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/models/import", strings.NewReader(reqBody))
 	srv.Handler().ServeHTTP(rec, req)

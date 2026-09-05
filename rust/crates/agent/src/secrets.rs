@@ -28,11 +28,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use anyhow::Context as _;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
+use anyhow::Context as _;
 
 /// A value whose `Debug`/`Display` never reveal its contents. Use it for tokens
 /// and keys so a stray log statement cannot leak them.
@@ -235,9 +235,7 @@ impl SecretStore for EncryptedFileSecretStore {
             // Do NOT include any ciphertext/tag bytes in the error — they could
             // leak partial information about the secret.
             .map_err(|_| {
-                anyhow::anyhow!(
-                    "authentication failure decrypting {name:?} — possible tampering"
-                )
+                anyhow::anyhow!("authentication failure decrypting {name:?} — possible tampering")
             })?;
         Ok(Some(plaintext))
     }
@@ -294,8 +292,7 @@ pub(crate) fn load_or_generate_key(dir: &Path) -> anyhow::Result<[u8; 32]> {
 
     // No key file — generate a fresh one from the OS CSPRNG.
     let mut key = [0u8; 32];
-    getrandom::getrandom(&mut key)
-        .map_err(|e| anyhow::anyhow!("key generation failed: {e}"))?;
+    getrandom::getrandom(&mut key).map_err(|e| anyhow::anyhow!("key generation failed: {e}"))?;
     std::fs::write(&key_file, key)
         .with_context(|| format!("writing key file {}", key_file.display()))?;
     #[cfg(unix)]

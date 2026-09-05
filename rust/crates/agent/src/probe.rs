@@ -70,7 +70,10 @@ impl DefaultProbe {
         node_id: impl Into<String>,
         backends: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Self {
-        let mut b: Vec<String> = backends.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let mut b: Vec<String> = backends
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
+            .collect();
         if !b.contains(&"mock".to_string()) {
             b.insert(0, "mock".to_string());
         }
@@ -93,8 +96,7 @@ impl HardwareProbe for DefaultProbe {
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
 
         // Memory bandwidth: measured once at startup; subsequent probes are free.
-        let mem_bandwidth_gbs =
-            *CACHED_MEM_BW_GBS.get_or_init(measure_mem_bandwidth_gbs) as f64;
+        let mem_bandwidth_gbs = *CACHED_MEM_BW_GBS.get_or_init(measure_mem_bandwidth_gbs) as f64;
 
         // Accelerator discovery: each backend enumerates independently so we can
         // emit precise backend tags (CUDA / ROCm / Metal) per GPU vendor.
@@ -688,7 +690,10 @@ mod tests {
     fn metal_detection_does_not_panic() {
         let gpus = detect_metal_gpus();
         // Must report at least one GPU (the stub fallback guarantees this).
-        assert!(!gpus.is_empty(), "Metal detection must return at least one GPU");
+        assert!(
+            !gpus.is_empty(),
+            "Metal detection must return at least one GPU"
+        );
         for gpu in &gpus {
             assert!(!gpu.name.is_empty(), "GPU name must not be empty");
         }

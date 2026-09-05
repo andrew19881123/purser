@@ -77,7 +77,6 @@ pub struct AgentConfig {
     // -----------------------------------------------------------------------
     // SWIM gossip membership (T2-8: opt-in, default disabled)
     // -----------------------------------------------------------------------
-
     /// Enable the SWIM gossip membership layer.
     ///
     /// When `true`, a UDP gossip socket is opened and Foca drives peer-to-peer
@@ -205,9 +204,7 @@ impl AgentConfig {
         if let Ok(retries) = std::env::var("PURSER_MODEL_FETCH_MAX_RETRIES") {
             cfg.model_fetch_max_retries = retries
                 .parse()
-                .with_context(|| {
-                    format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}")
-                })?;
+                .with_context(|| format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}"))?;
         }
 
         Ok(cfg)
@@ -458,7 +455,10 @@ mod tests {
             None => std::env::remove_var(TOK_VAR),
         }
 
-        assert_eq!(cfg.control_plane_addr.as_deref(), Some("http://cp.test:9443"));
+        assert_eq!(
+            cfg.control_plane_addr.as_deref(),
+            Some("http://cp.test:9443")
+        );
         assert_eq!(cfg.join_token.as_deref(), Some("tok-abc123"));
     }
 }
