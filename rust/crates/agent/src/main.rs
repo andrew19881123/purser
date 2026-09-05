@@ -205,10 +205,19 @@ async fn main() -> anyhow::Result<()> {
 
         let bind = config.swim_bind_addr;
         let enabled = config.swim_enabled;
+        // Derive the gRPC address to embed in the SWIM identity.  The same
+        // address is later sent to the control plane at Join, so peers that
+        // learn about us via gossip already have the correct dial target.
+        // `advertised_addrs()` resolves wildcards (0.0.0.0 → primary LAN IP)
+        // and honours `PURSER_AGENT_ADVERTISED_ADDR` overrides.
+        let grpc_addr: SocketAddr = {
+            let (agent_str, _) = config.advertised_addrs();
+            agent_str.parse::<SocketAddr>().unwrap_or(config.bind_addr)
+        };
         let membership_swim = Arc::clone(&membership);
         let shutdown_rx = swim_shutdown_rx.clone();
         tokio::spawn(async move {
-            match swim::start(enabled, bind, swim_seeds, membership_swim, shutdown_rx).await {
+            match swim::start(enabled, bind, grpc_addr, swim_seeds, membership_swim, shutdown_rx).await {
                 Ok(()) => {
                     if enabled {
                         // start() returned Ok after spawning the background tasks — nothing

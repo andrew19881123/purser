@@ -12,14 +12,13 @@
 //! 3. **Membership** — a minimal in-memory [`Membership`] view fed by discovery
 //!    and heartbeats.
 //!
-//! ## Deviation: gossip
+//! ## Gossip / SWIM
 //!
-//! A SWIM-style gossip layer (e.g. the `foca` crate) would disseminate
-//! membership and failure detection peer-to-peer. Per the task's priority
-//! ordering (mDNS + seed + heartbeat first) it is intentionally **not** wired
-//! yet; [`Membership`] is the clean interface such a layer would populate.
-//! TODO(gossip): integrate `foca` (needs a runtime + wire codec + identity),
-//! feeding `Membership::observe`/`remove` from gossip events.
+//! The SWIM gossip layer is implemented in [`crate::swim`] and feeds this
+//! module's [`Membership`] view via [`Membership::observe`] / [`Membership::remove`]
+//! on `MemberUp` / `MemberDown` events.  On `MemberUp` the gRPC
+//! `AgentService` address (not the SWIM UDP address) is recorded, so the rest
+//! of the system always has the correct dial target.
 //!
 //! ## Security
 //!

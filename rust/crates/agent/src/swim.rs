@@ -18,6 +18,15 @@
 //! All three tasks honour a `tokio::sync::watch` shutdown channel: send
 //! `true` to stop them cleanly.
 //!
+//! ## Identity
+//!
+//! Each node's SWIM identity ([`SwimIdentity`]) carries **two addresses**:
+//! the UDP gossip port (`swim_addr`) used by foca for all SWIM traffic, and
+//! the gRPC `AgentService` port (`grpc_addr`) that the control plane and
+//! peers need in order to dial this node.  On `MemberUp` the membership view
+//! receives `grpc_addr`, not `swim_addr`, so the rest of the system (heartbeat
+//! path, gateway routing) sees the correct dial target.
+//!
 //! ## Configuration
 //!
 //! | Env variable              | Default           | Description                          |
@@ -29,12 +38,14 @@
 //! When disabled (the default) or when the UDP bind fails, the existing
 //! mDNS + seed path runs unchanged.
 //!
-//! ## TODO(gossip)
+//! ## N4 — surfacing peers to the control plane
 //!
-//! Wire the SWIM-detected peer addresses back to the gRPC advertised address
-//! once the identity carries both the SWIM UDP port and the gRPC port.
-//! Currently, MemberUp adds the SWIM UDP address to the membership view —
-//! sufficient for local cluster-state tracking and liveness detection.
+//! When `MemberUp` fires the gRPC address is logged at `INFO` and added to
+//! the local [`Membership`] view.  A future step is to include these addresses
+//! in the `HeartbeatRequest` so the control plane learns about SWIM-discovered
+//! peers without a separate out-of-band channel — this requires adding a
+//! `repeated string seen_peers` field to the proto, which is deferred to avoid
+//! regenerating the bindings in this PR.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -55,49 +66,67 @@ use crate::discovery::{Membership, Peer};
 
 /// SWIM cluster-member identity.
 ///
-/// Wraps the SWIM UDP listen address and a random [`bump`](Self::bump) nonce.
-/// The `bump` allows a node to re-join the cluster quickly after a graceful
-/// leave, because foca can distinguish the fresh instance from the
-/// still-declared-down entry at the same address via [`Identity::renew`].
-#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub struct SwimId {
-    /// The peer's SWIM UDP listen address.
-    pub addr: SocketAddr,
+/// Carries the node's **UDP gossip address** (`swim_addr`, used by foca for
+/// all SWIM traffic) and its **gRPC `AgentService` address** (`grpc_addr`,
+/// the port the control plane and peers must dial).  Separating the two
+/// allows the membership view to be populated with the correct dial target
+/// on `MemberUp`, regardless of whether the SWIM and gRPC ports are the same.
+///
+/// A random `bump` nonce enables quick re-join after a graceful leave: foca
+/// can distinguish the fresh instance from the still-declared-down entry at
+/// the same address via [`Identity::renew`].
+#[derive(Clone, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SwimIdentity {
+    /// UDP gossip address — used by foca to route all SWIM protocol traffic.
+    pub swim_addr: SocketAddr,
+    /// gRPC `AgentService` address — what peers and the control plane dial.
+    pub grpc_addr: SocketAddr,
     /// Random nonce, incremented on re-join.
     bump: u64,
 }
 
-impl SwimId {
-    fn new(addr: SocketAddr) -> Self {
+impl SwimIdentity {
+    fn new(swim_addr: SocketAddr, grpc_addr: SocketAddr) -> Self {
         Self {
-            addr,
+            swim_addr,
+            grpc_addr,
             bump: fastrand::u64(..),
         }
     }
 
-    /// Construct a seed identity with a zero bump.
+    /// Construct a seed identity for bootstrapping.
     ///
-    /// The zero bump is fine for seeds: [`Identity::has_same_prefix`] relaxes
-    /// exact-match checking so a seed node accepts an Announce regardless of
-    /// the bump mismatch.
-    fn seed(addr: SocketAddr) -> Self {
-        Self { addr, bump: 0 }
+    /// Seeds are used only to kick off the initial `Announce`; foca never
+    /// places them in the live-member set itself.  The zero bump is fine:
+    /// [`Identity::has_same_prefix`] relaxes exact-match checking so the seed
+    /// target accepts our `Announce` regardless of bump mismatch.  The
+    /// `grpc_addr` is set to the same value as `swim_addr` because we do not
+    /// know the remote's gRPC port at seed time — `MemberUp` will fire with
+    /// the actual full identity once the peer joins.
+    fn seed(swim_addr: SocketAddr) -> Self {
+        Self {
+            swim_addr,
+            grpc_addr: swim_addr,
+            bump: 0,
+        }
     }
 }
 
-impl foca::Identity for SwimId {
-    /// Auto-rejoin by bumping the nonce.
+impl foca::Identity for SwimIdentity {
+    /// Auto-rejoin by bumping the nonce while keeping both addresses.
     fn renew(&self) -> Option<Self> {
         Some(Self {
-            addr: self.addr,
+            swim_addr: self.swim_addr,
+            grpc_addr: self.grpc_addr,
             bump: self.bump.wrapping_add(1),
         })
     }
 
-    /// Relax exact-identity matching so any node that knows our UDP address
-    /// can send us an Announce (e.g. a seed that doesn't know our bump).
+    /// Prefix-match on the UDP gossip address only so any node that knows our
+    /// SWIM address can Announce to us (e.g. a seed that doesn't know our bump
+    /// or our gRPC port).
     fn has_same_prefix(&self, other: &Self) -> bool {
-        self.addr == other.addr
+        self.swim_addr == other.swim_addr
     }
 }
 
@@ -110,9 +139,9 @@ impl foca::Identity for SwimId {
 /// Collects all side-effects from one foca call so the async driver can act
 /// on them *outside* the synchronous foca lock.
 struct AccumulatingRuntime {
-    to_send: Vec<(SwimId, Bytes)>,
-    to_schedule: Vec<(Duration, Timer<SwimId>)>,
-    notifications: Vec<Notification<SwimId>>,
+    to_send: Vec<(SwimIdentity, Bytes)>,
+    to_schedule: Vec<(Duration, Timer<SwimIdentity>)>,
+    notifications: Vec<Notification<SwimIdentity>>,
     /// Reusable buffer for packet construction.
     buf: BytesMut,
 }
@@ -128,18 +157,18 @@ impl AccumulatingRuntime {
     }
 }
 
-impl Runtime<SwimId> for AccumulatingRuntime {
-    fn notify(&mut self, notification: Notification<SwimId>) {
+impl Runtime<SwimIdentity> for AccumulatingRuntime {
+    fn notify(&mut self, notification: Notification<SwimIdentity>) {
         self.notifications.push(notification);
     }
 
-    fn send_to(&mut self, to: SwimId, data: &[u8]) {
+    fn send_to(&mut self, to: SwimIdentity, data: &[u8]) {
         let mut packet = self.buf.split();
         packet.put_slice(data);
         self.to_send.push((to, packet.freeze()));
     }
 
-    fn submit_after(&mut self, event: Timer<SwimId>, after: Duration) {
+    fn submit_after(&mut self, event: Timer<SwimIdentity>, after: Duration) {
         self.to_schedule.push((after, event));
     }
 }
@@ -149,9 +178,9 @@ impl Runtime<SwimId> for AccumulatingRuntime {
 // ---------------------------------------------------------------------------
 
 enum Input {
-    Event(Timer<SwimId>),
+    Event(Timer<SwimIdentity>),
     Data(Bytes),
-    Announce(SwimId),
+    Announce(SwimIdentity),
 }
 
 // ---------------------------------------------------------------------------
@@ -169,9 +198,13 @@ enum Input {
 ///
 /// On success, three background [`tokio::spawn`]ed tasks run until `shutdown`
 /// receives `true`.
+///
+/// `grpc_addr` is the `AgentService` gRPC address this node advertises in its
+/// SWIM identity so peers learn the correct dial target on `MemberUp`.
 pub async fn start(
     enabled: bool,
     bind_addr: SocketAddr,
+    grpc_addr: SocketAddr,
     seeds: Vec<SocketAddr>,
     membership: Arc<Membership>,
     shutdown: watch::Receiver<bool>,
@@ -185,9 +218,9 @@ pub async fn start(
             .await
             .map_err(|e| anyhow::anyhow!("SWIM: cannot bind UDP {bind_addr}: {e}"))?,
     );
-    tracing::info!(%bind_addr, seeds = seeds.len(), "SWIM gossip layer started");
+    tracing::info!(%bind_addr, %grpc_addr, seeds = seeds.len(), "SWIM gossip layer started");
 
-    let identity = SwimId::new(bind_addr);
+    let identity = SwimIdentity::new(bind_addr, grpc_addr);
     let rng = StdRng::from_entropy();
     let mut config = FocaConfig::simple();
     config.notify_down_members = true;
@@ -211,7 +244,7 @@ pub async fn start(
 
     // Kick off the gossip ring by announcing to all configured seeds.
     for seed_addr in seeds {
-        let seed = SwimId::seed(seed_addr);
+        let seed = SwimIdentity::seed(seed_addr);
         let _ = tx_foca.send(Input::Announce(seed)).await;
     }
 
@@ -233,7 +266,7 @@ fn spawn_writer(socket: Arc<UdpSocket>, mut rx: mpsc::Receiver<(SocketAddr, Byte
 }
 
 fn spawn_driver(
-    mut foca: Foca<SwimId, PostcardCodec, StdRng, NoCustomBroadcast>,
+    mut foca: Foca<SwimIdentity, PostcardCodec, StdRng, NoCustomBroadcast>,
     mut rx: mpsc::Receiver<Input>,
     tx: mpsc::Sender<Input>,
     tx_send: mpsc::Sender<(SocketAddr, Bytes)>,
@@ -310,9 +343,10 @@ async fn drain_runtime(
     tx_send: &mpsc::Sender<(SocketAddr, Bytes)>,
     membership: &Arc<Membership>,
 ) {
-    // Forward outbound UDP packets.
+    // Forward outbound UDP packets — route to the *SWIM* (UDP) address, not
+    // the gRPC address.
     while let Some((id, data)) = rt.to_send.pop() {
-        let _ = tx_send.send((id.addr, data)).await;
+        let _ = tx_send.send((id.swim_addr, data)).await;
     }
     // Spawn timer tasks; each fires a single `Input::Event` after the delay.
     while let Some((delay, event)) = rt.to_schedule.pop() {
@@ -326,12 +360,28 @@ async fn drain_runtime(
     while let Some(notification) = rt.notifications.pop() {
         match notification {
             Notification::MemberUp(id) => {
-                tracing::debug!(addr = %id.addr, "SWIM: member up");
-                membership.observe(Peer::seed(id.addr.to_string()));
+                // N4: log at INFO so operators and the control plane heartbeat
+                // path can see newly discovered peers.  The gRPC address (not
+                // the SWIM UDP address) is what the rest of the system dials.
+                //
+                // TODO(N4-proto): add `repeated string seen_peers` to
+                // HeartbeatRequest so the control plane learns about
+                // SWIM-discovered gRPC endpoints; requires `make gen` —
+                // deferred to a follow-up PR.
+                tracing::info!(
+                    swim_addr = %id.swim_addr,
+                    grpc_addr = %id.grpc_addr,
+                    "SWIM discovered peer"
+                );
+                membership.observe(Peer::seed(id.grpc_addr.to_string()));
             }
             Notification::MemberDown(id) => {
-                tracing::debug!(addr = %id.addr, "SWIM: member down");
-                membership.remove(&id.addr.to_string());
+                tracing::debug!(
+                    swim_addr = %id.swim_addr,
+                    grpc_addr = %id.grpc_addr,
+                    "SWIM: member down"
+                );
+                membership.remove(&id.grpc_addr.to_string());
             }
             Notification::Active => tracing::info!("SWIM: node is active in the cluster"),
             Notification::Idle   => tracing::debug!("SWIM: cluster is idle (no other members)"),
@@ -339,7 +389,12 @@ async fn drain_runtime(
                 tracing::warn!("SWIM: node declared defunct; will auto-rejoin via identity renewal")
             }
             Notification::Rejoin(id) => {
-                tracing::info!(new_addr = %id.addr, bump = id.bump, "SWIM: rejoined cluster");
+                tracing::info!(
+                    swim_addr = %id.swim_addr,
+                    grpc_addr = %id.grpc_addr,
+                    bump = id.bump,
+                    "SWIM: rejoined cluster"
+                );
             }
         }
     }
@@ -354,6 +409,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use foca::Identity as _;
     use tokio::sync::watch;
 
     use super::*;
@@ -368,7 +424,97 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // T1: SWIM disabled → falls back cleanly (no panic, no bind attempt)
+    // P2-T1: SwimIdentity carries both addresses and they are accessible
+    // ------------------------------------------------------------------
+
+    /// `SwimIdentity` must expose both `swim_addr` and `grpc_addr` as public
+    /// fields — this is the structural contract the rest of the SWIM layer
+    /// relies on when populating the membership view (P2 requirement).
+    #[test]
+    fn swim_identity_carries_both_addrs() {
+        let swim: std::net::SocketAddr = "127.0.0.1:7946".parse().unwrap();
+        let grpc: std::net::SocketAddr = "127.0.0.1:50151".parse().unwrap();
+
+        let id = SwimIdentity::new(swim, grpc);
+
+        assert_eq!(id.swim_addr, swim, "swim_addr must match the UDP bind address");
+        assert_eq!(id.grpc_addr, grpc, "grpc_addr must match the gRPC bind address");
+        assert_ne!(id.swim_addr, id.grpc_addr, "the two addresses are distinct");
+
+        // renew() keeps both addresses, only bumps the nonce
+        let renewed = id.renew().expect("renew must return Some");
+        assert_eq!(renewed.swim_addr, swim);
+        assert_eq!(renewed.grpc_addr, grpc);
+
+        // prefix-matching ignores grpc_addr; two identities with the same
+        // swim_addr but a different grpc_addr are the same prefix.
+        let other = SwimIdentity::new(swim, "10.0.0.1:50151".parse().unwrap());
+        assert!(
+            id.has_same_prefix(&other),
+            "has_same_prefix must match on swim_addr only"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // P2-T2: MemberUp feeds the gRPC address (not the SWIM address) into
+    //        the membership view.
+    // ------------------------------------------------------------------
+
+    /// Simulate a `MemberUp` notification and verify that `membership.observe`
+    /// receives the `grpc_addr`, not `swim_addr`.
+    #[tokio::test]
+    async fn member_up_uses_grpc_addr() {
+        let swim: std::net::SocketAddr = "127.0.0.1:7946".parse().unwrap();
+        let grpc: std::net::SocketAddr = "127.0.0.1:50151".parse().unwrap();
+
+        let mem = membership();
+        let (tx, _rx_send) = tokio::sync::mpsc::channel::<(SocketAddr, Bytes)>(8);
+        let (tx_input, _rx_input) = tokio::sync::mpsc::channel::<Input>(8);
+
+        let mut rt = AccumulatingRuntime::new();
+        // Inject a MemberUp notification directly into the runtime.
+        rt.notifications.push(Notification::MemberUp(SwimIdentity::new(swim, grpc)));
+
+        drain_runtime(&mut rt, &tx_input, &tx, &mem).await;
+
+        let alive = mem.alive();
+        assert_eq!(alive.len(), 1, "one peer must be observed after MemberUp");
+        assert_eq!(
+            alive[0].addr,
+            grpc.to_string(),
+            "MemberUp must register the gRPC address in the membership view, not the SWIM address"
+        );
+        assert_ne!(
+            alive[0].addr,
+            swim.to_string(),
+            "the SWIM UDP address must NOT appear in the membership view"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // N4-T1: SWIM disabled → no membership changes, no panics
+    // ------------------------------------------------------------------
+
+    /// When SWIM is disabled the start() function returns Ok immediately
+    /// without touching the membership view or binding any sockets.
+    #[tokio::test]
+    async fn swim_disabled_no_notification() {
+        let swim: std::net::SocketAddr = "127.0.0.1:7946".parse().unwrap();
+        let grpc: std::net::SocketAddr = "127.0.0.1:50151".parse().unwrap();
+        let (_tx, rx) = shutdown_pair();
+        let mem = membership();
+
+        let result = start(false, swim, grpc, vec![], Arc::clone(&mem), rx).await;
+
+        assert!(result.is_ok(), "disabled SWIM must succeed without binding");
+        assert!(
+            mem.is_empty(),
+            "no membership changes when SWIM is disabled"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // T-existing: SWIM disabled → falls back cleanly (no panic, no bind attempt)
     // ------------------------------------------------------------------
 
     #[tokio::test]
@@ -377,6 +523,7 @@ mod tests {
         let result = start(
             false,
             "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:50151".parse().unwrap(),
             vec![],
             membership(),
             rx,
@@ -386,7 +533,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // T2: config parsing — PURSER_SWIM_BIND_ADDR round-trips correctly
+    // T-existing: config parsing — PURSER_SWIM_BIND_ADDR round-trips correctly
     // ------------------------------------------------------------------
 
     #[test]
@@ -404,14 +551,14 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // T3: two in-process instances discover each other over loopback UDP
+    // T-existing: two in-process instances discover each other over loopback
     //
     // Marked #[ignore] because it requires a real tokio runtime, actual
     // UDP sockets on loopback, and a brief sleep for protocol convergence.
     // Run with: cargo test -p purser-agent swim_two_nodes -- --ignored
     // ------------------------------------------------------------------
 
-    /// Integration test: two `SWIMMembership` instances on loopback discover each other.
+    /// Integration test: two SWIM instances on loopback discover each other.
     ///
     /// Uses real UDP sockets on 127.0.0.1 with ephemeral ports so the test
     /// is deterministic.  Ignored by default to keep `cargo test` fast; pass
@@ -419,15 +566,17 @@ mod tests {
     #[tokio::test]
     #[ignore = "real UDP + sleep; run with --ignored for integration coverage"]
     async fn swim_two_nodes_discover_each_other() {
-        // Node A on 127.0.0.1:0 (OS-assigned port)
+        // Node A: SWIM on 127.0.0.1:0 (OS-assigned), gRPC on 127.0.0.1:50151
         let sock_a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr_a: std::net::SocketAddr = sock_a.local_addr().unwrap();
-        drop(sock_a); // release; start() will re-bind
+        let swim_a: std::net::SocketAddr = sock_a.local_addr().unwrap();
+        drop(sock_a);
+        let grpc_a: std::net::SocketAddr = "127.0.0.1:50151".parse().unwrap();
 
-        // Node B on 127.0.0.1:0
+        // Node B: SWIM on 127.0.0.1:0 (OS-assigned), gRPC on 127.0.0.1:50152
         let sock_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr_b: std::net::SocketAddr = sock_b.local_addr().unwrap();
+        let swim_b: std::net::SocketAddr = sock_b.local_addr().unwrap();
         drop(sock_b);
+        let grpc_b: std::net::SocketAddr = "127.0.0.1:50152".parse().unwrap();
 
         let mem_a = membership();
         let mem_b = membership();
@@ -435,29 +584,29 @@ mod tests {
         let (_tx_a, rx_a) = shutdown_pair();
         let (_tx_b, rx_b) = shutdown_pair();
 
-        // A seeds with B
-        start(true, addr_a, vec![addr_b], Arc::clone(&mem_a), rx_a)
+        // A seeds with B's SWIM address
+        start(true, swim_a, grpc_a, vec![swim_b], Arc::clone(&mem_a), rx_a)
             .await
             .expect("node A start");
-        // B seeds with A
-        start(true, addr_b, vec![addr_a], Arc::clone(&mem_b), rx_b)
+        // B seeds with A's SWIM address
+        start(true, swim_b, grpc_b, vec![swim_a], Arc::clone(&mem_b), rx_b)
             .await
             .expect("node B start");
 
         // Give foca time to exchange Announce/Feed messages.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Each node should see the other in its membership view.
+        // Each node should see the other's gRPC address in its membership view.
         let alive_a = mem_a.alive();
         let alive_b = mem_b.alive();
 
         assert!(
-            alive_a.iter().any(|p| p.addr.contains(&addr_b.port().to_string())),
-            "node A should see node B; alive={alive_a:?}"
+            alive_a.iter().any(|p| p.addr == grpc_b.to_string()),
+            "node A should see node B's gRPC addr; alive={alive_a:?}"
         );
         assert!(
-            alive_b.iter().any(|p| p.addr.contains(&addr_a.port().to_string())),
-            "node B should see node A; alive={alive_b:?}"
+            alive_b.iter().any(|p| p.addr == grpc_a.to_string()),
+            "node B should see node A's gRPC addr; alive={alive_b:?}"
         );
     }
 }
