@@ -92,3 +92,19 @@ under the **MIT License**, and your contributions to the **`enterprise/`**
 directory are licensed under the **Purser Enterprise License**. In both cases
 you sign off your commits under the Developer Certificate of Origin
 (`git commit -s`).
+
+## Good first issues
+
+Ready to contribute? Here are concrete, well-scoped tasks with links to the exact code:
+
+1. **Add `GET /api/v1/models/{id}` endpoint** — today `list_models()` in the Python SDK fetches all models and filters client-side. Add the server endpoint in `go/controlplane/server/server.go` (follow `handleGetNode` as a template).
+
+2. **Fix remaining gofmt drift** — run `gofmt -l go/` from repo root and fix any remaining formatting issues.
+
+3. **Add test for SWIM disabled path** — `rust/crates/agent/src/swim.rs` test `swim_disabled_no_bind` exists but could cover more edge cases.
+
+4. **Improve error messages in planner** — `go/planner/plan/plan.go` `FitError` messages are terse; add node-specific context (which node had insufficient memory).
+
+5. **Document PURSER_RECONCILER_* env vars** — the reconciler config is configurable via env (v0.2 feature) but not in `website/docs/configuration/env-vars.md`.
+
+Quick start for all of these: `make dev` starts a local control plane.

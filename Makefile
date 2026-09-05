@@ -32,7 +32,7 @@ NFPM  := $(GOBIN)/nfpm
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean release package-agent
+.PHONY: all help setup gen build test lint fmt clean release package-agent dev
 
 all: gen build
 
@@ -47,9 +47,26 @@ help:
 	@echo "  make clean   Remove build artifacts"
 	@echo "  make release Build stripped release binaries + stage dist/ (scripts/build-release.sh)"
 	@echo "  make package-agent  Build the agent .deb + .rpm into dist/ (nfpm)"
+	@echo "  make dev     Build and start the control plane locally (SQLite + mock engine)"
 
 setup:
 	./tools/setup-toolchain.sh
+
+dev: build
+	@echo "Starting Purser development stack..."
+	@echo "Control Plane: http://localhost:8080"
+	@echo "Dashboard UI: http://localhost:5173 (run 'cd ui && npm run dev' separately)"
+	@mkdir -p /tmp/purser-dev bin
+	( cd go/controlplane && "$(GO)" build -o "$(ROOT)/bin/control-plane" . )
+	PURSER_DB=/tmp/purser-dev/registry.db \
+	PURSER_ADDR=:8080 \
+	PURSER_GRPC_ADDR=:9443 \
+	PURSER_PKI_DIR=/tmp/purser-dev/pki \
+	PURSER_ENGINE_BACKEND=mock \
+	./bin/control-plane &
+	@echo "Control plane PID: $$!"
+	@echo "Press Ctrl+C to stop"
+	@wait
 
 gen:
 	cd proto && "$(BUF)" generate
