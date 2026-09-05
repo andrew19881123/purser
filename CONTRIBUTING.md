@@ -34,6 +34,37 @@ make build test  # verify a green baseline
 - Add tests. The Planner in particular is verified against a brute-force
   reference and property-based invariants — keep those green.
 
+## Cutting a release
+
+Releases are fully automated via the `release.yml` CI pipeline. The pipeline
+runs on any `vX.Y.Z` tag push and produces:
+
+- Stripped `linux/amd64` binaries for `purser-agent`, `purser-gateway`, and
+  `control-plane` (tarball per binary).
+- `.deb` and `.rpm` installer packages (via nfpm).
+- `SHA256SUMS` for all release assets.
+- Docker images pushed to GHCR:
+  `ghcr.io/<owner>/purser-control-plane`, `purser-gateway`, `purser-ui`.
+- Helm chart pushed to `oci://ghcr.io/<owner>/charts`.
+- A GitHub Release with all of the above attached.
+
+**Steps to cut a release:**
+
+1. Update `packaging/nfpm/purser-agent.yaml` — set `version:` to the new
+   version number (without the leading `v`).
+2. Add a dated entry to `CHANGELOG.md` under the new version heading.
+3. Commit, then create and push a signed, annotated tag:
+   ```bash
+   git tag -s vX.Y.Z -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+4. CI takes over — watch the **Release** workflow in the Actions tab.
+
+To trigger a release manually (e.g. to re-run a failed publish without
+re-tagging), use the **workflow_dispatch** trigger in the
+[Actions tab](../../actions/workflows/release.yml) and supply the existing
+`vX.Y.Z` tag as the input.
+
 ## Pull requests
 
 1. Branch from `main`.
