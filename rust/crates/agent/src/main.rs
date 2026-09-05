@@ -19,7 +19,7 @@ use purser_agent::discovery::{self, Membership};
 use purser_agent::healing::{diagnose, DiagnosisInput, Liveness, NodeHealthMonitor};
 use purser_agent::linkbench::BandwidthReflector;
 use purser_agent::probe::{DefaultProbe, HardwareProbe};
-use purser_agent::secrets::{self, InMemorySecretStore, SecretStore};
+use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
 use purser_agent::state::NodeStateMachine;
 use purser_agent::supervisor::{BackendRegistry, RestartPolicy, Supervisor};
@@ -125,9 +125,29 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Encrypted-at-rest secret storage (interface). In-memory today; the
-    // enrollment certificates land here rather than in logs or plaintext files.
-    let secret_store: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+    // Encrypted-at-rest secret storage. The store directory and optional
+    // explicit key are sourced from the environment; if no key is set a random
+    // one is auto-generated and persisted so secrets survive restarts.
+    let secret_store: Arc<dyn SecretStore> = {
+        let dir = &config.secret_store_dir;
+        match EncryptedFileSecretStore::from_env_or_generate(dir) {
+            Ok(store) => {
+                tracing::info!(
+                    dir = %dir.display(),
+                    "encrypted file secret store initialised"
+                );
+                Arc::new(store)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %dir.display(),
+                    "encrypted secret store unavailable, falling back to in-memory (secrets will not persist)"
+                );
+                Arc::new(InMemorySecretStore::new())
+            }
+        }
+    };
 
     // Initial peer discovery (seeds + mDNS) into a membership view (best-effort).
     {

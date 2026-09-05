@@ -6,6 +6,7 @@
 //! made by the control plane, never here.
 
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -66,6 +67,18 @@ pub struct AgentConfig {
     /// advertised host plus [`inference_port`](Self::inference_port). Overridable
     /// via `PURSER_INFERENCE_ADVERTISED_ADDR`.
     pub advertised_inference_addr: Option<String>,
+
+    /// Directory where [`EncryptedFileSecretStore`] stores per-secret `.enc`
+    /// files and the auto-generated `.secret_key`.
+    ///
+    /// Overridable via `PURSER_SECRET_STORE_DIR`.
+    /// Default: `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` if
+    /// `$HOME` is unset).
+    ///
+    /// The encryption key itself is read from `PURSER_SECRET_KEY` (hex or
+    /// base64, 32 bytes). If that env var is absent, the key is loaded from or
+    /// auto-generated into `{secret_store_dir}/.secret_key`.
+    pub secret_store_dir: PathBuf,
 }
 
 impl Default for AgentConfig {
@@ -80,6 +93,7 @@ impl Default for AgentConfig {
             inference_port: DEFAULT_INFERENCE_PORT,
             advertised_agent_addr: None,
             advertised_inference_addr: None,
+            secret_store_dir: default_secret_store_dir(),
         }
     }
 }
@@ -89,15 +103,18 @@ impl AgentConfig {
     /// for any variable that is unset.
     ///
     /// Recognized variables:
-    /// - `PURSER_AGENT_BIND`           — e.g. `0.0.0.0:50151`
-    /// - `PURSER_CONTROL_PLANE_ADDR`   — e.g. `https://cp.internal:50150`
+    /// - `PURSER_AGENT_BIND`                — e.g. `0.0.0.0:50151`
+    /// - `PURSER_CONTROL_PLANE_ADDR`        — e.g. `https://cp.internal:50150`
     /// - `PURSER_CLUSTER_ID`
     /// - `PURSER_NODE_ID`
     /// - `PURSER_JOIN_TOKEN`
     /// - `PURSER_HEALTH_INTERVAL_SECS`
-    /// - `PURSER_INFERENCE_PORT`         — e.g. `8000`
-    /// - `PURSER_AGENT_ADVERTISED_ADDR`  — e.g. `192.168.1.10:50151`
+    /// - `PURSER_INFERENCE_PORT`            — e.g. `8000`
+    /// - `PURSER_AGENT_ADVERTISED_ADDR`     — e.g. `192.168.1.10:50151`
     /// - `PURSER_INFERENCE_ADVERTISED_ADDR` — e.g. `192.168.1.10:8000`
+    /// - `PURSER_SECRET_STORE_DIR`          — directory for encrypted secret files
+    /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
+    ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -126,6 +143,9 @@ impl AgentConfig {
         cfg.advertised_agent_addr = non_empty(std::env::var("PURSER_AGENT_ADVERTISED_ADDR").ok());
         cfg.advertised_inference_addr =
             non_empty(std::env::var("PURSER_INFERENCE_ADVERTISED_ADDR").ok());
+        if let Some(dir) = non_empty(std::env::var("PURSER_SECRET_STORE_DIR").ok()) {
+            cfg.secret_store_dir = PathBuf::from(dir);
+        }
 
         Ok(cfg)
     }
@@ -224,6 +244,18 @@ fn primary_local_ipv4() -> IpAddr {
         }
     }
     LOOPBACK
+}
+
+/// Default directory for encrypted secret files.
+///
+/// Uses `$HOME/.purser/secrets` when `$HOME` is set, falling back to
+/// `/var/lib/purser/secrets` (suitable for system-service deployments).
+fn default_secret_store_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".purser").join("secrets")
+    } else {
+        PathBuf::from("/var/lib/purser/secrets")
+    }
 }
 
 /// Treat empty strings as absent — avoids `Some("")` surprises from the env.
