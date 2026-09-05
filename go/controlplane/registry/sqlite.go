@@ -1,12 +1,16 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
+
+	"github.com/purser/purser/go/controlplane/audit"
 
 	// modernc.org/sqlite is a pure-Go (CGO-free) SQLite driver. It registers
 	// itself under the name "sqlite". Keeping the build CGO-free is essential
@@ -22,6 +26,10 @@ var schemaSQL string
 // use: database/sql serializes access and WAL mode is enabled for readers.
 type SQLiteRegistry struct {
 	db *sql.DB
+	// auditMu serializes AppendAudit so the read-tail / compute-hash / insert
+	// sequence is atomic in-process and concurrent writers receive a strictly
+	// monotonic, gap-free seq and the correct prev_hash for the chain.
+	auditMu sync.Mutex
 }
 
 // compile-time assertion that SQLiteRegistry satisfies Registry.
@@ -57,10 +65,22 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 	for _, m := range []struct{ table, column, def string }{
 		{"nodes", "advertised_agent_addr", "TEXT NOT NULL DEFAULT ''"},
 		{"nodes", "advertised_inference_addr", "TEXT NOT NULL DEFAULT ''"},
+		// Tamper-evident hash-chain columns for the audit log. Nullable (no
+		// default) so rows written before the chain existed remain valid.
+		{"audit_log", "seq", "INTEGER"},
+		{"audit_log", "prev_hash", "TEXT"},
+		{"audit_log", "hash", "TEXT"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
 		}
+	}
+	// Enforce chain-position uniqueness once the seq column is guaranteed to
+	// exist (created here, after ensureColumn, so it works on both fresh and
+	// pre-existing databases). SQLite permits multiple NULLs in a UNIQUE index,
+	// so legacy rows with a NULL seq do not collide.
+	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_seq ON audit_log (seq)`); err != nil {
+		return fmt.Errorf("registry: migrate: %w", err)
 	}
 	return nil
 }
@@ -711,19 +731,131 @@ func (r *SQLiteRegistry) DeleteCert(ctx context.Context, serial string) error {
 
 // --- Audit log -------------------------------------------------------------
 
+// ChainEntry reconstructs the tamper-evident audit.Entry that AppendAudit
+// hashed for this row. It is the single, shared definition of how a stored
+// audit row maps onto the hash chain, used both when a row is written (to
+// compute its Hash) and when it is read back (to re-verify it). Because the
+// same fields flow through the same rule in both directions, the bytes hashed
+// at write time and re-derived at read time are identical, so audit.Verify
+// passes on an untouched log and fails if any stored field was mutated.
+//
+// The time that is hashed is CreatedAt.UnixNano(); created_at is persisted as
+// RFC3339Nano TEXT, which round-trips to the exact UnixNano. Details is mapped
+// to a deterministic map[string]string by detailsToMap.
+func (e *AuditEntry) ChainEntry() audit.Entry {
+	return audit.Entry{
+		Seq:          e.Seq,
+		TimeUnixNano: e.CreatedAt.UnixNano(),
+		Actor:        e.Actor,
+		Action:       e.Action,
+		Target:       e.Target,
+		Details:      detailsToMap(e.Details),
+		PrevHash:     e.PrevHash,
+		Hash:         e.Hash,
+	}
+}
+
+// detailsToMap converts a stored audit "details" JSON blob into the
+// deterministic map[string]string that the hash chain covers. The rule is
+// fixed so equal input bytes always yield an equal map at both write and read
+// time:
+//
+//   - a null/empty/non-object or unparseable blob yields an empty (nil) map,
+//     which the audit engine treats identically to an empty map;
+//   - a JSON string value is used verbatim (unquoted);
+//   - any non-string value (number, bool, array, nested object, null) is
+//     encoded as its compact JSON form, giving a stable, order-preserving
+//     stringification.
+//
+// The map is order-independent because audit.Entry.CanonicalBytes sorts keys.
+func detailsToMap(raw []byte) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || len(obj) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(obj))
+	for k, v := range obj {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			out[k] = s
+			continue
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, v); err == nil {
+			out[k] = buf.String()
+		} else {
+			out[k] = string(v)
+		}
+	}
+	return out
+}
+
+// AppendAudit appends one entry and extends the tamper-evident hash chain. It
+// reads the current chain tail, assigns the next contiguous Seq and the tail's
+// Hash as PrevHash, computes this entry's Hash over its content (via
+// ChainEntry), and persists the row with its chain fields. The whole
+// read-tail/compute/insert sequence runs under auditMu and a single
+// transaction so concurrent writers get a monotonic, gap-free seq and a correct
+// prev_hash. The assigned ID, Seq, PrevHash and Hash are written back into e.
 func (r *SQLiteRegistry) AppendAudit(ctx context.Context, e *AuditEntry) error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = nowUTC()
 	}
-	res, err := r.db.ExecContext(ctx, `
-		INSERT INTO audit_log (actor, action, target, details, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		e.Actor, e.Action, e.Target, jsonOrEmpty(e.Details), fmtTime(e.CreatedAt))
+
+	r.auditMu.Lock()
+	defer r.auditMu.Unlock()
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("registry: append audit: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var (
+		lastSeq  sql.NullInt64
+		lastHash sql.NullString
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT seq, hash FROM audit_log
+		WHERE seq IS NOT NULL
+		ORDER BY seq DESC LIMIT 1`).Scan(&lastSeq, &lastHash)
+	switch {
+	case err == sql.ErrNoRows:
+		e.Seq = audit.FirstSeq
+		e.PrevHash = audit.GenesisPrevHash
+	case err != nil:
+		return fmt.Errorf("registry: append audit: read tail: %w", err)
+	default:
+		e.Seq = uint64(lastSeq.Int64) + 1
+		e.PrevHash = lastHash.String
+	}
+
+	// jsonOrEmpty is the canonical stored form; ChainEntry re-parses the same
+	// bytes at read time, so hashing detailsToMap(e.Details) here is consistent
+	// (an empty/nil Details and "{}" both map to an empty map).
+	detailsJSON := jsonOrEmpty(e.Details)
+	hash, err := e.ChainEntry().ComputeHash()
+	if err != nil {
+		return fmt.Errorf("registry: append audit: hash: %w", err)
+	}
+	e.Hash = hash
+
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_log (actor, action, target, details, created_at, seq, prev_hash, hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.Actor, e.Action, e.Target, detailsJSON, fmtTime(e.CreatedAt),
+		int64(e.Seq), e.PrevHash, e.Hash)
 	if err != nil {
 		return fmt.Errorf("registry: append audit: %w", err)
 	}
 	if id, err := res.LastInsertId(); err == nil {
 		e.ID = id
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("registry: append audit: commit: %w", err)
 	}
 	return nil
 }
@@ -733,7 +865,7 @@ func (r *SQLiteRegistry) ListAudit(ctx context.Context, limit int) ([]*AuditEntr
 		limit = 100
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, actor, action, target, details, created_at
+		SELECT id, actor, action, target, details, created_at, seq, prev_hash, hash
 		FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("registry: list audit: %w", err)
@@ -742,15 +874,23 @@ func (r *SQLiteRegistry) ListAudit(ctx context.Context, limit int) ([]*AuditEntr
 	var out []*AuditEntry
 	for rows.Next() {
 		var (
-			e       AuditEntry
-			details string
-			created sql.NullString
+			e        AuditEntry
+			details  string
+			created  sql.NullString
+			seq      sql.NullInt64
+			prevHash sql.NullString
+			hash     sql.NullString
 		)
-		if err := rows.Scan(&e.ID, &e.Actor, &e.Action, &e.Target, &details, &created); err != nil {
+		if err := rows.Scan(&e.ID, &e.Actor, &e.Action, &e.Target, &details, &created, &seq, &prevHash, &hash); err != nil {
 			return nil, fmt.Errorf("registry: list audit: %w", err)
 		}
 		e.Details = json.RawMessage(details)
 		e.CreatedAt = parseTime(created)
+		if seq.Valid {
+			e.Seq = uint64(seq.Int64)
+		}
+		e.PrevHash = prevHash.String
+		e.Hash = hash.String
 		out = append(out, &e)
 	}
 	return out, rows.Err()

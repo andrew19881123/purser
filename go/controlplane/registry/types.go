@@ -25,10 +25,10 @@ var ErrNotFound = errors.New("registry: not found")
 // purserv1.HardwareProfile); the promoted columns exist for cheap querying and
 // indexing.
 type Node struct {
-	ID       string `json:"id"`
-	Hostname string `json:"hostname"`
-	OS       string `json:"os"`
-	Arch     string `json:"arch"`
+	ID       string  `json:"id"`
+	Hostname string  `json:"hostname"`
+	OS       string  `json:"os"`
+	Arch     string  `json:"arch"`
 	RAMGB    float64 `json:"ram_gb"`
 	VRAMGB   float64 `json:"vram_gb"`
 	// State is the lifecycle state (e.g. NODE_STATE_READY).
@@ -119,6 +119,12 @@ type Session struct {
 
 // AuditEntry is one row of the append-only administrative audit log
 // (who-did-what-when). ID is assigned by the store.
+//
+// Seq, PrevHash and Hash are the tamper-evident hash-chain fields assigned by
+// AppendAudit (see the audit package). Seq is the 1-based, gap-free position in
+// the chain; PrevHash links to the preceding entry's Hash; Hash is this entry's
+// chain digest. Rows written before the hash chain existed carry the zero
+// values (Seq==0) and are not part of the verifiable chain.
 type AuditEntry struct {
 	ID        int64           `json:"id"`
 	Actor     string          `json:"actor"`
@@ -126,6 +132,9 @@ type AuditEntry struct {
 	Target    string          `json:"target"`
 	Details   json.RawMessage `json:"details,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
+	Seq       uint64          `json:"seq"`
+	PrevHash  string          `json:"prev_hash"`
+	Hash      string          `json:"hash"`
 }
 
 // Cert tracks a certificate issued by the internal CA (see package pki).

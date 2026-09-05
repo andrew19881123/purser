@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/registry"
 )
 
@@ -216,6 +219,235 @@ func TestAppendAudit(t *testing.T) {
 	// Newest first.
 	if entries[0].Action != "stop" {
 		t.Errorf("expected newest-first ordering, got first action %q", entries[0].Action)
+	}
+}
+
+// reconstructAscending turns ListAudit's newest-first rows into the ascending
+// (oldest-first) hash chain that audit.Verify expects.
+func reconstructAscending(entries []*registry.AuditEntry) []audit.Entry {
+	out := make([]audit.Entry, 0, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		out = append(out, entries[i].ChainEntry())
+	}
+	return out
+}
+
+// TestAuditChainVerifiesAndDetectsTamper is the end-to-end check for the
+// tamper-evident storage: appends (including one carrying Details) form a chain
+// that audit.Verify accepts, and mutating a stored row's content — without
+// recomputing its hash — makes Verify fail at exactly that entry.
+func TestAuditChainVerifiesAndDetectsTamper(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "registry.db")
+	reg, err := registry.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := reg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { reg.Close() })
+
+	events := []*registry.AuditEntry{
+		{Actor: "api", Action: "model.created", Target: "m1"},
+		{Actor: "fleet", Action: "node.decommissioned", Target: "node-7",
+			Details: json.RawMessage(`{"reason":"drain","zone":"eu"}`)},
+		{Actor: "api", Action: "apikey.created", Target: "key-1"},
+	}
+	for i, e := range events {
+		if err := reg.AppendAudit(ctx, e); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+		if e.Seq != uint64(i)+1 {
+			t.Errorf("event %d seq = %d, want %d", i, e.Seq, i+1)
+		}
+		if e.Hash == "" {
+			t.Errorf("event %d hash not assigned", i)
+		}
+	}
+
+	entries, err := reg.ListAudit(ctx, 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(entries))
+	}
+
+	asc := reconstructAscending(entries)
+	if err := audit.Verify(asc); err != nil {
+		t.Fatalf("verify untampered chain: %v", err)
+	}
+	if asc[0].PrevHash != audit.GenesisPrevHash {
+		t.Errorf("first prev_hash = %q, want genesis", asc[0].PrevHash)
+	}
+	for i := 1; i < len(asc); i++ {
+		if asc[i].PrevHash != asc[i-1].Hash {
+			t.Errorf("entry %d prev_hash does not link to entry %d hash", i, i-1)
+		}
+	}
+
+	// Tamper with a stored row's content, leaving its stored hash intact.
+	if _, err := reg.DB().ExecContext(ctx, `UPDATE audit_log SET target = ? WHERE seq = ?`, "hacked", 2); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	entries, err = reg.ListAudit(ctx, 100)
+	if err != nil {
+		t.Fatalf("list post-tamper: %v", err)
+	}
+	verr := audit.Verify(reconstructAscending(entries))
+	if verr == nil {
+		t.Fatalf("verify detected no tamper, want failure at seq 2")
+	}
+	var ve *audit.VerifyError
+	if !errors.As(verr, &ve) {
+		t.Fatalf("error = %v, want *audit.VerifyError", verr)
+	}
+	if ve.Index != 1 || ve.Kind != audit.KindHash {
+		t.Errorf("break index/kind = %d/%s, want 1/%s", ve.Index, ve.Kind, audit.KindHash)
+	}
+}
+
+// TestAuditChainConcurrentAppends asserts the core write-side guarantee: even
+// with many concurrent writers, seq is monotonic and gap-free (exactly 1..n
+// with no duplicates) and the resulting chain verifies.
+func TestAuditChainConcurrentAppends(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "registry.db")
+	reg, err := registry.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := reg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { reg.Close() })
+
+	const n = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			e := &registry.AuditEntry{Actor: "load", Action: "ping", Target: fmt.Sprintf("t%d", i)}
+			if err := reg.AppendAudit(ctx, e); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent append: %v", err)
+	}
+
+	entries, err := reg.ListAudit(ctx, 1000)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(entries) != n {
+		t.Fatalf("entries = %d, want %d", len(entries), n)
+	}
+	seen := make(map[uint64]bool, n)
+	for _, e := range entries {
+		if e.Seq < 1 || e.Seq > n {
+			t.Fatalf("seq %d out of range 1..%d", e.Seq, n)
+		}
+		if seen[e.Seq] {
+			t.Fatalf("duplicate seq %d", e.Seq)
+		}
+		seen[e.Seq] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("gap in seq: got %d distinct, want %d", len(seen), n)
+	}
+	if err := audit.Verify(reconstructAscending(entries)); err != nil {
+		t.Fatalf("verify concurrent chain: %v", err)
+	}
+}
+
+// TestAuditMigrationExistingDBWithLegacyRows verifies the additive migration on
+// a database created before the hash-chain columns existed: Migrate adds the
+// columns (idempotently), a pre-existing row coexists as an unchained row
+// (Seq==0), and new appends start a clean chain at FirstSeq that verifies once
+// the legacy prefix is skipped (as the endpoint does).
+func TestAuditMigrationExistingDBWithLegacyRows(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	// 1. Fabricate a pre-feature database: audit_log WITHOUT the chain columns,
+	//    plus one legacy row.
+	raw, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE audit_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			actor TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL DEFAULT '',
+			target TEXT NOT NULL DEFAULT '',
+			details TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL
+		);
+		INSERT INTO audit_log (actor, action, target, details, created_at)
+		VALUES ('legacy', 'boot', 'system', '{}', '2020-01-01T00:00:00Z');`); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	// 2. Open + migrate (twice, to prove idempotency).
+	reg, err := registry.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	if err := reg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := reg.Migrate(ctx); err != nil {
+		t.Fatalf("migrate (2nd, idempotent): %v", err)
+	}
+
+	// 3. New appends chain from FirstSeq, independent of the legacy row.
+	for _, e := range []*registry.AuditEntry{
+		{Actor: "api", Action: "model.created", Target: "m1"},
+		{Actor: "api", Action: "model.deleted", Target: "m1"},
+	} {
+		if err := reg.AppendAudit(ctx, e); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	entries, err := reg.ListAudit(ctx, 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3 (1 legacy + 2 chained)", len(entries))
+	}
+
+	// The legacy row is unchained (Seq==0); skip it exactly as the endpoint does.
+	chained := make([]audit.Entry, 0, len(entries))
+	legacy := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Seq < audit.FirstSeq {
+			legacy++
+			continue
+		}
+		chained = append(chained, entries[i].ChainEntry())
+	}
+	if legacy != 1 {
+		t.Errorf("legacy (Seq==0) rows = %d, want 1", legacy)
+	}
+	if len(chained) != 2 || chained[0].Seq != 1 || chained[1].Seq != 2 {
+		t.Fatalf("chained seqs = %+v, want [1 2]", chained)
+	}
+	if err := audit.Verify(chained); err != nil {
+		t.Fatalf("verify chain after legacy migration: %v", err)
 	}
 }
 
