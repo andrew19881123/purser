@@ -981,6 +981,7 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 //
 // HuggingFace (source="huggingface"): set repo, revision, filename_pattern.
 // Object storage (source="s3"/"gcs"/"azure"): set uri, name (optional), family.
+// SageMaker (source="sagemaker"): set model_group (optional override), version.
 type importRequest struct {
 	Source string `json:"source"`
 	// HuggingFace fields
@@ -992,6 +993,11 @@ type importRequest struct {
 	Name   string  `json:"name"`
 	Family string  `json:"family"`
 	SizeGB float64 `json:"size_gb"`
+	// SageMaker fields
+	// ModelGroup overrides PURSER_SAGEMAKER_MODEL_GROUP for "sagemaker" imports.
+	ModelGroup string `json:"model_group,omitempty"`
+	// Version selects a specific approved package version; 0 means latest.
+	Version int `json:"version,omitempty"`
 }
 
 // hfSourceBlob is the JSON shape stored in Model.Source for HuggingFace
@@ -1010,6 +1016,7 @@ type hfSourceBlob struct {
 //
 //   - "huggingface" — auto-populates spec from HuggingFace Hub metadata.
 //   - "s3", "gcs", "azure" — resolves the object-storage URI to a download URL.
+//   - "sagemaker" — lists approved packages from an AWS SageMaker model group.
 //
 // POST /api/v1/models/import
 func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
@@ -1023,9 +1030,11 @@ func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
 		s.handleImportHuggingFace(w, r, body)
 	case "s3", "gcs", "azure":
 		s.handleImportObjectStorage(w, r, body)
+	case "sagemaker":
+		s.handleImportSageMaker(w, r, body)
 	default:
 		s.writeError(w, http.StatusBadRequest, "unknown_source",
-			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure")
+			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure, sagemaker")
 	}
 }
 
@@ -2121,6 +2130,101 @@ func (s *Server) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
 		tenants = []registry.TenantUsage{}
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+}
+
+// handleImportSageMaker implements the "sagemaker" import path:
+//  1. Build a SageMakerClient from env + request overrides.
+//  2. List approved packages in the model group.
+//  3. Select the latest (version==0) or the requested version.
+//  4. Create a registry.Model with source metadata in Spec.
+//  5. Return 201 with the created model and its source JSON.
+func (s *Server) handleImportSageMaker(w http.ResponseWriter, r *http.Request, body importRequest) {
+	client := importer.NewSageMakerClient()
+	if body.ModelGroup != "" {
+		client.ModelGroup = body.ModelGroup
+	}
+	if client.ModelGroup == "" {
+		s.writeError(w, http.StatusBadRequest, "missing_model_group",
+			"model_group is required (set in request body or PURSER_SAGEMAKER_MODEL_GROUP env)")
+		return
+	}
+
+	packages, err := client.ListApprovedModelPackages(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "sagemaker_error", err.Error())
+		return
+	}
+	if len(packages) == 0 {
+		s.writeError(w, http.StatusNotFound, "no_approved_packages",
+			"no approved model packages found in group "+client.ModelGroup)
+		return
+	}
+
+	// packages is sorted newest-first; version==0 means "latest".
+	var pkg importer.ModelPackage
+	if body.Version == 0 {
+		pkg = packages[0]
+	} else {
+		found := false
+		for _, p := range packages {
+			if p.ModelPackageVersion == body.Version {
+				pkg = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version "+strconv.Itoa(body.Version)+" not found in approved packages")
+			return
+		}
+	}
+
+	// Model ID: {GroupName}-v{N}
+	modelID := pkg.ModelPackageGroupName + "-v" + strconv.Itoa(pkg.ModelPackageVersion)
+
+	// Source metadata stored as Spec (opaque JSON blob).
+	type sourceDoc struct {
+		Type    string `json:"type"`
+		ARN     string `json:"arn"`
+		S3URI   string `json:"s3_uri"`
+		Version int    `json:"version"`
+	}
+	src := sourceDoc{
+		Type:    "sagemaker",
+		ARN:     pkg.ModelPackageArn,
+		S3URI:   pkg.ModelDataURL,
+		Version: pkg.ModelPackageVersion,
+	}
+	specJSON, err := json.Marshal(src)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     modelID,
+		Family: importer.GuessFamilyFromName(pkg.ModelPackageGroupName, pkg.ModelPackageDescription),
+		Spec:   specJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:  "api",
+		Action: "model.imported",
+		Target: modelID,
+	})
+
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   json.RawMessage(specJSON),
+	})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {
