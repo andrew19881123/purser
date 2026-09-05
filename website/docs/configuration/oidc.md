@@ -1,9 +1,7 @@
 # OIDC Configuration (EntraID / Okta / Keycloak)
 
-!!! note "OIDC is a planned Enterprise feature"
-    As of v0.1.1, OIDC authentication is listed as an Enterprise feature in [LICENSING.md](https://github.com/andrew19881123/purser/blob/main/LICENSING.md) under "Identity & access — RBAC, SSO/SAML/OIDC, LDAP/AD integration". The configuration below documents the intended interface and environment variables; the implementation is gated behind a valid `PURSER_LICENSE_KEY` with the OIDC feature entitlement.
-
-    Machine-to-machine access (API keys for the Gateway, the internal gateway token) works in the community edition without OIDC.
+!!! note "OIDC is available in the community edition"
+    As of v0.2, OIDC authentication is **implemented** and available without an enterprise license. Set `PURSER_OIDC_ISSUER` and `PURSER_OIDC_CLIENT_ID` to enable it. Machine-to-machine access (API keys, the internal gateway token) also continues to work regardless of OIDC state.
 
 ---
 

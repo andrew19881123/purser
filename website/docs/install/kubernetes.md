@@ -5,6 +5,40 @@ This guide covers a complete Helm-based install of the Purser control plane (Con
 !!! note "Agents run outside Kubernetes"
     Agents run as native host packages on your fleet nodes, not as pods. See [Linux Agent (.deb/.rpm)](linux-agent.md) for the agent install guide.
 
+## Deployment topology
+
+```mermaid
+graph TD
+    subgraph Kubernetes Cluster
+        CP["Control Plane Pod\n(purser-control-plane)"]
+        GW["Gateway Pod\n(purser-gateway)"]
+        UI["UI Pod\n(purser-ui, nginx)"]
+        PVC[("PVC /data\nSQLite registry\n+ PKI CA key")]
+        SVC_CP["Service: control-plane\nHTTP :8080 / gRPC :9443"]
+        SVC_GW["Service: gateway\nHTTP :8080"]
+        SVC_UI["Service: ui\nHTTP :80"]
+        ING["Ingress (optional)\npurser.example.com"]
+        CP --- PVC
+        SVC_CP --> CP
+        SVC_GW --> GW
+        SVC_UI --> UI
+        ING --> SVC_CP
+        ING --> SVC_GW
+        ING --> SVC_UI
+    end
+    subgraph LAN Fleet
+        A1["Agent Node 1"]
+        A2["Agent Node 2"]
+    end
+    A1 -- "gRPC :9443 (enroll/heartbeat)" --> SVC_CP
+    A2 -- "gRPC :9443 (enroll/heartbeat)" --> SVC_CP
+    CP -. "route sync HTTP" .-> GW
+    Client["Client\nOpenAI SDK"] --> SVC_GW
+    Operator["Operator\nbrowser"] --> SVC_UI
+```
+
+`replicaCount` is kept at 1 — SQLite is single-writer. Set the Control Plane Service type to `LoadBalancer` or `NodePort` so LAN agents can reach it.
+
 ## Prerequisites
 
 - Kubernetes 1.24+ cluster

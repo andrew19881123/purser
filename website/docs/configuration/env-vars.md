@@ -19,6 +19,9 @@ Source: `go/controlplane/main.go` (`loadConfig()`)
 | `PURSER_CLUSTER_ID` | `default` | Cluster identifier echoed in join-token responses so an enrolling Agent knows which cluster it is joining. |
 | `PURSER_AGENT_PORT` | `0` | Port the Orchestrator dials on each node to reach `AgentService`. `0` uses the default `50151`. |
 | `PURSER_LICENSE_KEY` | (empty) | Enterprise license key. Verified **offline** against the embedded ed25519 public key — no phone-home. Absent = community edition (enterprise features disabled). A present-but-invalid key causes a fatal startup error. |
+| `PURSER_HF_TOKEN` | (empty) | HuggingFace API token used by `POST /api/v1/models/import` when the caller does not supply an `X-HF-Token` header. Required for private and gated models; leave empty for public-model-only access. |
+| `PURSER_OIDC_ISSUER` | (empty) | OIDC provider discovery URL. When set, the Control Plane enforces OIDC authentication on the admin UI and management REST API. Example: `https://login.microsoftonline.com/<tenant>/v2.0`. Must be paired with `PURSER_OIDC_CLIENT_ID`. |
+| `PURSER_OIDC_CLIENT_ID` | (empty) | Expected audience (client ID) claim in tokens issued by the OIDC provider. Required when `PURSER_OIDC_ISSUER` is set; startup fails if the issuer is set but the client ID is empty. |
 | `PURSER_PLANNER_ORDERING_THRESHOLD` | `10` | Fleet size at or below which the planner uses the exact Held-Karp algorithm to find the minimum-cost pipeline ordering. Above this threshold the planner switches to the nearest-neighbour + 2-opt heuristic. Held-Karp has O(2^N·N²) complexity and is feasible up to ~12 nodes; raise this value only on planners with abundant memory and CPU. Read once at startup; restart the process to apply a new value. |
 
 ### Reconciler tuning
@@ -72,6 +75,7 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` when `$HOME` is unset) | Directory where encrypted secret files (`*.enc`) and the auto-generated key file (`.secret_key`) are stored. Created with mode 0700 on first use. |
 | `PURSER_SECRET_KEY` | (unset — auto-generated) | 32-byte AES-256 encryption key, hex- or base64-encoded (64 hex chars or 44 base64 chars). When set it takes precedence over the key file. When unset, the key is loaded from `{PURSER_SECRET_STORE_DIR}/.secret_key` or freshly generated and saved there. Consumed directly by `EncryptedFileSecretStore`, not stored in `AgentConfig`. |
 | `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
+| `PURSER_MODEL_FETCH_MAX_RETRIES` | `3` | Number of additional HTTP fetch attempts after the first failure when downloading model weights (`HttpFetcher`). `0` means try once with no retries. Transient errors (5xx, network/timeout) are retried; 4xx errors fail immediately without retrying. |
 
 ### Engine version detection
 
@@ -112,11 +116,17 @@ Both variables are **required** — the gateway refuses to start with a clear er
 | `PURSER_GATEWAY_HOST` | (required) | Bind IP address (e.g. `0.0.0.0`). |
 | `PURSER_GATEWAY_PORT` | (required) | Bind TCP port (e.g. `8080`). |
 
+### Control-plane reporting
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_CONTROL_PLANE_URL` | (empty) | Control Plane base URL for usage reporting (e.g. `http://control-plane:8080`). When set, the gateway posts per-request token counts to `POST /api/v1/usage` after each inference call completes. When unset, usage recording is skipped (backward-compatible). |
+
 ### Authentication
 
 | Variable | Default | Description |
 |---|---|---|
-| `PURSER_GATEWAY_INTERNAL_TOKEN` | (none) | Shared secret for the management plane (`PUT/DELETE /api/v1/routes`). The Control Plane sends it in the `X-Purser-Internal-Token` header. When absent, route sync is disabled (fail-closed). Must match `PURSER_GATEWAY_TOKEN` on the Control Plane. |
+| `PURSER_GATEWAY_INTERNAL_TOKEN` | (none) | Shared secret for the management plane (route sync). The Control Plane sends it in the `X-Purser-Internal-Token` header. When absent, route sync is disabled (fail-closed). Must match `PURSER_GATEWAY_TOKEN` on the Control Plane. |
 | `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway runs in **OPEN DEV MODE** — any non-empty bearer token is accepted. **Always set this in production.** |
 
 ### Quota and rate limiting
@@ -162,14 +172,19 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ## Complete list by component
 
-### Control Plane env vars (14)
+### Control Plane env vars (17)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`
 
-### Agent env vars (19)
+### Agent env vars (20)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_MODEL_FETCH_MAX_RETRIES`
 
-### Gateway env vars (12)
+### Gateway env vars (13)
 
-`PURSER_GATEWAY_HOST`, `PURSER_GATEWAY_PORT`, `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_API_KEYS`, `PURSER_GATEWAY_TOKENS_PER_MIN`, `PURSER_GATEWAY_MAX_CONCURRENT`, `PURSER_GATEWAY_MAX_INFLIGHT`, `PURSER_GATEWAY_RETRY_AFTER_SECS`, `PURSER_GATEWAY_UPSTREAM_CONNECT_MS`, `PURSER_GATEWAY_UPSTREAM_TTFB_MS`, `PURSER_GATEWAY_UPSTREAM_IDLE_MS`, `RUST_LOG`
+`PURSER_GATEWAY_HOST`, `PURSER_GATEWAY_PORT`, `PURSER_CONTROL_PLANE_URL`, `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_API_KEYS`, `PURSER_GATEWAY_TOKENS_PER_MIN`, `PURSER_GATEWAY_MAX_CONCURRENT`, `PURSER_GATEWAY_MAX_INFLIGHT`, `PURSER_GATEWAY_RETRY_AFTER_SECS`, `PURSER_GATEWAY_UPSTREAM_CONNECT_MS`, `PURSER_GATEWAY_UPSTREAM_TTFB_MS`, `PURSER_GATEWAY_UPSTREAM_IDLE_MS`, `RUST_LOG`
+
+---
+
+!!! note "Helm chart mapping"
+    All env vars above can also be set via the Helm chart — see `deploy/helm/purser/values.yaml` for the mapping. Component-specific vars are best passed via `controlPlane.extraEnv`, `gateway.extraEnv`, or `ui.extraEnv`.
