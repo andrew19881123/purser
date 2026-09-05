@@ -36,6 +36,8 @@ export interface CreateApiKeyInput {
   name: string;
   team: string;
   monthlyQuota: number | null;
+  /** RBAC role; defaults to "admin" on the server if omitted. */
+  role?: 'admin' | 'viewer' | 'inference';
 }
 
 export interface PurserApi {

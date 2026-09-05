@@ -202,6 +202,14 @@ export const en = {
   'settings.created.title': 'Key created',
   'settings.created.warning': "Copy it now — the full secret is shown only once.",
   'settings.keys.empty': 'No API keys yet. Create one to let apps reach the Gateway.',
+  'settings.col.role': 'Role',
+  'settings.create.role': 'Role',
+  'settings.role.admin': 'Admin',
+  'settings.role.viewer': 'Viewer',
+  'settings.role.inference': 'Inference',
+  'settings.role.admin.hint': 'Full access to the control plane',
+  'settings.role.viewer.hint': 'Read-only access to the control plane',
+  'settings.role.inference.hint': 'Gateway inference only — cannot manage the cluster',
 } as const;
 
 export type StringKey = keyof typeof en;

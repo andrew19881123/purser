@@ -307,12 +307,20 @@ export interface JoinInfo {
 // Settings — API keys (managed by control plane, used as Bearer tokens on /v1).
 // ---------------------------------------------------------------------------
 
+/** RBAC role for an API key. */
+export type ApiKeyRole = 'admin' | 'viewer' | 'inference';
+
 export interface ApiKey {
   id: string;
   name: string;
   team: string;
   /** shown prefix only; the full secret is returned exactly once on creation */
   prefix: string;
+  /**
+   * RBAC role: "admin" = full CP access, "viewer" = GET-only on /api/v1,
+   * "inference" = gateway /v1 only. Defaults to "admin" for backward compat.
+   */
+  role: ApiKeyRole;
   createdAt: string;
   lastUsedAt: string | null;
   /** monthly request quota; null = unlimited */

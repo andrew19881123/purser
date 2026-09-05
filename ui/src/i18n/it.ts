@@ -190,4 +190,12 @@ export const it: Record<StringKey, string> = {
   'settings.created.title': 'Key creata',
   'settings.created.warning': 'Copiala ora — il segreto completo è mostrato una sola volta.',
   'settings.keys.empty': 'Nessuna API key. Creane una per far raggiungere il Gateway alle app.',
+  'settings.col.role': 'Ruolo',
+  'settings.create.role': 'Ruolo',
+  'settings.role.admin': 'Admin',
+  'settings.role.viewer': 'Viewer',
+  'settings.role.inference': 'Inferenza',
+  'settings.role.admin.hint': 'Accesso completo al piano di controllo',
+  'settings.role.viewer.hint': 'Accesso in sola lettura al piano di controllo',
+  'settings.role.inference.hint': 'Solo inferenza gateway — non può gestire il cluster',
 };

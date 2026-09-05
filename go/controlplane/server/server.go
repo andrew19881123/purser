@@ -88,21 +88,27 @@ type Config struct {
 	// license.FromEnv). It gates the enterprise endpoints. If nil, the server
 	// falls back to the community license (enterprise features off).
 	License *license.License
+	// InternalToken, if set, is a shared secret used by the gateway for
+	// route-sync calls (sent as Authorization: Bearer). Requests carrying this
+	// exact token bypass RBAC entirely so the gateway can always reach the CP.
+	InternalToken string
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
-	reg       registry.Registry
-	log       *slog.Logger
-	mux       *http.ServeMux
-	server    *http.Server
-	deployer  Deployer
-	metrics   MetricsSource
-	metricTO  time.Duration
-	planner   *planning.Planner
-	fleet     FleetManager
-	clusterID string
-	license   *license.License
+	reg           registry.Registry
+	log           *slog.Logger
+	mux           *http.ServeMux
+	handler       http.Handler // composed: rbacMiddleware(mux)
+	server        *http.Server
+	deployer      Deployer
+	metrics       MetricsSource
+	metricTO      time.Duration
+	planner       *planning.Planner
+	fleet         FleetManager
+	clusterID     string
+	license       *license.License
+	internalToken string
 }
 
 // New builds a Server backed by reg.
@@ -124,34 +130,150 @@ func New(reg registry.Registry, cfg Config) *Server {
 		lic = license.Community()
 	}
 	s := &Server{
-		reg:       reg,
-		log:       logger,
-		mux:       http.NewServeMux(),
-		deployer:  cfg.Deployer,
-		metrics:   cfg.Metrics,
-		metricTO:  interval,
-		planner:   cfg.Planner,
-		fleet:     cfg.Fleet,
-		clusterID: clusterID,
-		license:   lic,
+		reg:           reg,
+		log:           logger,
+		mux:           http.NewServeMux(),
+		deployer:      cfg.Deployer,
+		metrics:       cfg.Metrics,
+		metricTO:      interval,
+		planner:       cfg.Planner,
+		fleet:         cfg.Fleet,
+		clusterID:     clusterID,
+		license:       lic,
+		internalToken: cfg.InternalToken,
 	}
 	s.routes()
+	s.handler = s.rbacMiddleware(s.mux)
 	s.server = &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           s.mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
 }
 
 // Handler returns the composed http.Handler (useful for tests via httptest).
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // ListenAndServe starts serving and blocks until the server stops.
 func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
+
+// rbacPublicPaths are the paths that bypass RBAC regardless of the key
+// presented. These are always accessible (e.g. health check, API schema).
+var rbacPublicPaths = map[string]bool{
+	"/api/v1/cluster/health": true,
+	"/api/v1/openapi.json":   true,
+}
+
+// rbacMiddleware enforces role-based access control on every request based on
+// the API key's Role field. It runs after key lookup so the gate is cheap for
+// anonymous requests (pass-through) and only becomes O(keys) when a Bearer
+// token is present.
+//
+// Rules (in order):
+//  1. Public endpoints (GET /api/v1/cluster/health, /api/v1/openapi.json) → pass through.
+//  2. Authorization: Bearer matches s.internalToken → pass through (gateway route-sync).
+//  3. No Bearer token → pass through (handler enforces auth if required).
+//  4. Bearer token found but no matching key → pass through.
+//  5. Role "admin" → pass through.
+//  6. Role "viewer" → GET allowed; non-GET → 403.
+//  7. Role "inference" → any /api/v1/* path → 403 (inference keys are for the
+//     gateway only, not the CP management surface).
+func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Public GET endpoints always pass through.
+		if r.Method == http.MethodGet && rbacPublicPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. Extract Bearer token.
+		token := bearerToken(r)
+
+		// 2a. Internal token passes through unconditionally.
+		if s.internalToken != "" && token == s.internalToken {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. No token → pass through (anonymous; handler decides if auth is needed).
+		if token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 4. Look up the key by hash; pass through on any registry error or miss.
+		if s.reg == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		keys, err := s.reg.ListAPIKeys(r.Context())
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sum := sha256.Sum256([]byte(token))
+		hashHex := hex.EncodeToString(sum[:])
+		var matched *registry.APIKey
+		for _, k := range keys {
+			if k.KeyHash == hashHex {
+				matched = k
+				break
+			}
+		}
+		if matched == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 5–7. Enforce role.
+		switch matched.Role {
+		case "admin":
+			next.ServeHTTP(w, r)
+		case "viewer":
+			if r.Method != http.MethodGet {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has viewer role (read-only)",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		case "inference":
+			if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has inference role and cannot manage the cluster",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		default:
+			// Unknown role: conservative viewer behavior.
+			if r.Method != http.MethodGet {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has viewer role (read-only)",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+// Returns an empty string if the header is absent or malformed.
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
@@ -953,6 +1075,9 @@ type createAPIKeyRequest struct {
 	Name   string `json:"name"`
 	Tenant string `json:"tenant"`
 	Quota  int64  `json:"quota"`
+	// Role is the RBAC role for the key: "admin" (default), "viewer", or
+	// "inference". An empty role is treated as "admin" for backward compat.
+	Role string `json:"role,omitempty"`
 }
 
 // handleCreateAPIKey mints a new gateway API key. The plaintext key is returned
@@ -965,6 +1090,20 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Resolve and validate the role. Default "admin" for backward compat.
+	role := body.Role
+	if role == "" {
+		role = "admin"
+	}
+	switch role {
+	case "admin", "viewer", "inference":
+		// valid
+	default:
+		s.writeError(w, http.StatusBadRequest, "invalid_role", `role must be one of: admin, viewer, inference`)
+		return
+	}
+
 	secret := make([]byte, 24)
 	if _, err := rand.Read(secret); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "keygen_failed", err.Error())
@@ -978,6 +1117,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Name:    body.Name,
 		KeyHash: hex.EncodeToString(sum[:]),
 		Tenant:  body.Tenant,
+		Role:    role,
 		Quota:   body.Quota,
 		Enabled: true,
 	}
@@ -991,6 +1131,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"id":     id,
 		"name":   body.Name,
 		"tenant": body.Tenant,
+		"role":   role,
 		"key":    plaintext,
 	})
 }

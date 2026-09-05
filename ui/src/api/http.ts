@@ -470,6 +470,7 @@ export function createHttpApi(baseUrl: string): PurserApi {
             name: '',
             team: '',
             prefix: '',
+            role: 'admin' as const,
             createdAt: new Date().toISOString(),
             lastUsedAt: null,
             monthlyQuota: null,
