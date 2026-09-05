@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,20 +52,37 @@ type config struct {
 	// when the caller does not supply an X-HF-Token header. Read from
 	// PURSER_HF_TOKEN; leave unset for public-model-only access.
 	hfToken string
+
+	// TLS configuration for the management REST API.
+	// tlsCert / tlsKey are file paths to PEM cert/key (PURSER_TLS_CERT /
+	// PURSER_TLS_KEY). tlsAuto, when true, issues a self-signed cert via the
+	// internal PKI CA for "localhost" and the machine hostname (PURSER_TLS_AUTO).
+	tlsCert string
+	tlsKey  string
+	tlsAuto bool
+
+	// Rate limiting for the management REST API.
+	rateLimitRPS    float64 // PURSER_RATE_LIMIT_RPS    (default 100)
+	rateLimitKeyRPS float64 // PURSER_RATE_LIMIT_KEY_RPS (default 50)
 }
 
 func loadConfig() config {
 	c := config{
-		dbPath:        envOr("PURSER_DB", "purser-registry.db"),
-		addr:          envOr("PURSER_ADDR", ":8080"),
-		grpcAddr:      envOr("PURSER_GRPC_ADDR", ":9443"),
-		pkiDir:        envOr("PURSER_PKI_DIR", "pki-state"),
-		gatewayAddr:   envOr("PURSER_GATEWAY_ADDR", ""),
-		gatewayToken:  envOr("PURSER_GATEWAY_TOKEN", ""),
-		clusterID:     envOr("PURSER_CLUSTER_ID", "default"),
-		agentPort:     envInt("PURSER_AGENT_PORT", 0),
-		internalToken: envOr("PURSER_INTERNAL_TOKEN", ""),
-		hfToken:       envOr("PURSER_HF_TOKEN", ""),
+		dbPath:          envOr("PURSER_DB", "purser-registry.db"),
+		addr:            envOr("PURSER_ADDR", ":8080"),
+		grpcAddr:        envOr("PURSER_GRPC_ADDR", ":9443"),
+		pkiDir:          envOr("PURSER_PKI_DIR", "pki-state"),
+		gatewayAddr:     envOr("PURSER_GATEWAY_ADDR", ""),
+		gatewayToken:    envOr("PURSER_GATEWAY_TOKEN", ""),
+		clusterID:       envOr("PURSER_CLUSTER_ID", "default"),
+		agentPort:       envInt("PURSER_AGENT_PORT", 0),
+		internalToken:   envOr("PURSER_INTERNAL_TOKEN", ""),
+		hfToken:         envOr("PURSER_HF_TOKEN", ""),
+		tlsCert:         envOr("PURSER_TLS_CERT", ""),
+		tlsKey:          envOr("PURSER_TLS_KEY", ""),
+		tlsAuto:         envBool("PURSER_TLS_AUTO"),
+		rateLimitRPS:    envFloat("PURSER_RATE_LIMIT_RPS", 0),
+		rateLimitKeyRPS: envFloat("PURSER_RATE_LIMIT_KEY_RPS", 0),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -90,6 +108,20 @@ func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func envBool(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	return v == "true" || v == "1" || v == "yes"
+}
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return def
@@ -214,21 +246,54 @@ func run(logger *slog.Logger) error {
 		logger.Info("OIDC authentication disabled (set PURSER_OIDC_ISSUER to enable)")
 	}
 
+	// TLS setup for the management REST API.
+	// Priority: explicit cert/key files > auto mode via internal PKI > plain HTTP.
+	var tlsCertPEM, tlsKeyPEM []byte
+	tlsCert, tlsKey := cfg.tlsCert, cfg.tlsKey
+	if cfg.tlsAuto && tlsCert == "" {
+		// Issue a short-lived cert for "localhost" and the machine hostname from
+		// the internal PKI CA. The PEM bytes are passed directly to the server so
+		// no temporary files need to be written to disk.
+		hostname, _ := os.Hostname()
+		dnsNames := []string{"localhost"}
+		if hostname != "" && hostname != "localhost" {
+			dnsNames = append(dnsNames, hostname)
+		}
+		issued, err := ca.Issue(ctx, pki.CertRequest{
+			CommonName: "purser-management-api",
+			Role:       "management",
+			DNSNames:   dnsNames,
+		})
+		if err != nil {
+			return fmt.Errorf("TLS auto: issue management API cert: %w", err)
+		}
+		tlsCertPEM = issued.CertPEM
+		tlsKeyPEM = issued.KeyPEM
+		logger.Info("TLS auto: issued self-signed management API certificate",
+			"dns_names", dnsNames)
+	}
+
 	// Management HTTP API. The Planner turns fleet state into DeploymentPlans
 	// for plan-less deploys and the /models fit verdicts.
 	srv := server.New(reg, server.Config{
-		Addr:          cfg.addr,
-		Logger:        logger,
-		Deployer:      orch,
-		Metrics:       regServer.Metrics(),
-		Planner:       planning.New(reg),
-		Fleet:         mgr,
-		ClusterID:     cfg.clusterID,
-		License:       lic,
-		OIDC:          oidcCfg,
-		OIDCVerifier:  oidcVerifier,
-		InternalToken: cfg.internalToken,
-		HFToken:       cfg.hfToken,
+		Addr:            cfg.addr,
+		Logger:          logger,
+		Deployer:        orch,
+		Metrics:         regServer.Metrics(),
+		Planner:         planning.New(reg),
+		Fleet:           mgr,
+		ClusterID:       cfg.clusterID,
+		License:         lic,
+		OIDC:            oidcCfg,
+		OIDCVerifier:    oidcVerifier,
+		InternalToken:   cfg.internalToken,
+		HFToken:         cfg.hfToken,
+		TLSCert:         tlsCert,
+		TLSKey:          tlsKey,
+		TLSCertPEM:      tlsCertPEM,
+		TLSKeyPEM:       tlsKeyPEM,
+		RateLimitRPS:    cfg.rateLimitRPS,
+		RateLimitKeyRPS: cfg.rateLimitKeyRPS,
 	})
 
 	// Start the background OTEL infrastructure metrics collector (nodes ready/
