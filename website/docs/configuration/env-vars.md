@@ -51,6 +51,10 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_ENGINE_BACKEND` | `mock` | Engine backend name. Only `mock` is registered today; real GPU adapters register here without changing the service. Set `llamacpp` for the llama.cpp adapter. |
 | `PURSER_SEEDS` | (none) | Comma-separated extra discovery seed peers (`host:port`) in addition to mDNS LAN discovery. |
 | `RUST_LOG` | `info` | Log level for the agent (uses `tracing_subscriber`). Examples: `debug`, `purser_agent=debug,info`. |
+| `PURSER_SWIM_ENABLED` | `false` | Set `true`, `1`, or `yes` to enable the SWIM gossip membership layer (wraps `foca`). When disabled (the default) the existing mDNS + seed path runs unchanged. If the UDP bind fails while enabled, the agent logs a warning and falls back to mDNS + seeds. |
+| `PURSER_SWIM_BIND_ADDR` | `0.0.0.0:7946` | UDP bind address for the SWIM gossip layer. Only used when `PURSER_SWIM_ENABLED=true`. |
+| `PURSER_SWIM_SEED_ADDRS` | (empty) | Comma-separated `host:port` SWIM peers to announce to on startup. Complements `PURSER_SEEDS` (the mDNS + gRPC seed path); the two discovery mechanisms run in parallel when SWIM is enabled. |
+| `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
 
 ---
 
@@ -103,21 +107,15 @@ A value of `0` disables the corresponding limit.
 
 ## OpenTelemetry
 
-!!! note "OTel instrumentation status"
-    OpenTelemetry is listed as a Go module dependency in `go/controlplane/go.sum` (otel SDK v1.44.0) but is **not yet wired up** in the Control Plane or Gateway source code as of v0.1.1. Standard `OTEL_*` environment variables are **not** actively read by any Purser component in this release.
+OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go) and Gateway (Rust). All three variables below are actively read at startup. When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, both components stay on their built-in no-op providers — zero overhead, nothing phoned home.
 
-    This section is included for completeness and future planning. When OTel instrumentation lands, it will use the standard OpenTelemetry SDK environment variables listed below.
+| Variable | Default | Description |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP exporter base URL. Setting this activates trace and metric export. Control Plane exports over OTLP/HTTP; Gateway exports over OTLP/gRPC. Examples: `http://otel-collector:4318` (self-hosted), `https://abc12345.live.dynatrace.com/api/v2/otlp` (Dynatrace). |
+| `OTEL_SERVICE_NAME` | `purser-control-plane` / `purser-gateway` | Service name stamped on all spans and metrics. Defaults differ per component; set explicitly when running multiple instances. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | (empty) | Comma-separated `key=value` pairs added to OTLP requests for authentication. Example: `Authorization=Api-Token dt0c01.xxx` (Dynatrace), `Authorization=Basic <base64>` (Grafana Cloud). |
 
-Standard OTLP exporter variables (future — not yet active):
-
-| Variable | Description |
-|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP exporter endpoint. When set, enables OTel export. |
-| `OTEL_SERVICE_NAME` | Service name reported in spans and metrics. |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Headers for OTLP requests (e.g. API key for Grafana Cloud or Dynatrace). |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | Protocol: `grpc` (default) or `http/protobuf`. |
-
-See [OpenTelemetry configuration](otel.md) for more details on the planned integration.
+See [OpenTelemetry configuration](otel.md) for full details: emitted signals, metric names, the audit-log span-event bridge, and per-backend configuration examples.
 
 ---
 
@@ -127,9 +125,9 @@ See [OpenTelemetry configuration](otel.md) for more details on the planned integ
 
 `PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`
 
-### Agent env vars (12)
+### Agent env vars (16)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_SEEDS`, `RUST_LOG`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`
 
 ### Gateway env vars (12)
 
