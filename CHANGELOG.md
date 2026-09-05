@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> These changes are in the repository but not yet tagged or fully re-released.
+> The GHCR `purser-ui:0.1.0` image still serves the old mock-by-default build
+> until the image is rebuilt and republished. Given the security-correctness fix
+> to the gateway, the next tag is expected to be `0.1.1`.
+
+### Added
+
+- **Tamper-evident hash-chained audit log** (`go/controlplane/audit/`) — new
+  package with hash-chain engine and chain verifier. SQLite registry now persists
+  `seq`, `prev_hash`, and `hash` per row via an idempotent migration. Enterprise
+  feature, gated by `PURSER_LICENSE_KEY` with feature `"audit"`.
+- **`GET /api/v1/enterprise/audit-log`** now returns real stored entries plus a
+  chain-verification result (`{verified, length, break?}`) instead of the
+  previous empty placeholder.
+- **`DELETE /api/v1/models/{id}`** — removes a model from the catalog: 404 if
+  unknown, 409 if the model is in use by a non-terminal deployment, 204 on
+  success.
+- **`POST /api/v1/models/{id}/plan`** — read-only Planner dry-run; no
+  persist/deploy/audit side-effects; returns `{feasible: true, ...plan}` or
+  `{feasible: false, reason}`.
+- **`POST /api/v1/nodes/{id}/drain`** — cordons a node (marks it unschedulable);
+  does not live-migrate existing deployments.
+- **`DELETE /api/v1/nodes/{id}`** — soft-decommissions a node (state →
+  `DECOMMISSIONED` + cert revocation); 409 if the node hosts a non-terminal
+  deployment. Node restart (`POST /api/v1/nodes/{id}/restart`) is not
+  implemented; intentionally deferred pending design decision.
+- **UI defaults to real API** — the dashboard now targets the control-plane API
+  by default; mock mode is opt-in via `PURSER_UI_MOCK=1`. API base URL is
+  runtime-configurable via `PURSER_API_BASE_URL` (default `/api/v1`, same-origin)
+  set through `env.js` loaded before the bundle; nginx serves `env.js` with
+  `Cache-Control: no-store`. Helm chart wires the env at container start.
+- **`gofmt` gate** added to the Go CI job, covering `go/` and
+  `enterprise/license`.
+
+### Fixed
+
+- **[Security] Gateway TLS** — removed misleading `TlsConfig` and
+  `tls-configured: true` log line. The gateway serves plaintext HTTP with TLS
+  terminated at ingress/LB. The previous code implied active TLS termination in
+  the process when none was occurring.
+
+### Removed
+
+- **`GET /api/v1/nodes` stub** removed from the API Gateway — this route was
+  always empty on the gateway; node data lives in the control plane.
+
 ## [0.1.0] - 2026-09-04
 
 First public Community Edition release. Delivers the complete zero-config
