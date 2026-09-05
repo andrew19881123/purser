@@ -105,6 +105,12 @@ pub struct AgentConfig {
     /// base64, 32 bytes). If that env var is absent, the key is loaded from or
     /// auto-generated into `{secret_store_dir}/.secret_key`.
     pub secret_store_dir: PathBuf,
+
+    /// How many times [`HttpFetcher`](crate::modelcache::HttpFetcher) retries a
+    /// transient failure before giving up (0 = try once, no retries).
+    ///
+    /// Overridable via `PURSER_MODEL_FETCH_MAX_RETRIES`. Defaults to 3.
+    pub model_fetch_max_retries: u32,
 }
 
 impl Default for AgentConfig {
@@ -123,6 +129,7 @@ impl Default for AgentConfig {
             swim_bind_addr: SocketAddr::from(([0, 0, 0, 0], 7946)),
             swim_seed_addrs: Vec::new(),
             secret_store_dir: default_secret_store_dir(),
+            model_fetch_max_retries: 3,
         }
     }
 }
@@ -147,6 +154,7 @@ impl AgentConfig {
     /// - `PURSER_SECRET_STORE_DIR`          — directory for encrypted secret files
     /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
     ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
+    /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -193,6 +201,13 @@ impl AgentConfig {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+        }
+        if let Ok(retries) = std::env::var("PURSER_MODEL_FETCH_MAX_RETRIES") {
+            cfg.model_fetch_max_retries = retries
+                .parse()
+                .with_context(|| {
+                    format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}")
+                })?;
         }
 
         Ok(cfg)
