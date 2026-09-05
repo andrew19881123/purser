@@ -126,9 +126,11 @@ jobs:
       # expansion — the config at packaging/nfpm/purser-agent.yaml can
       # reference ${VERSION} once updated to use dynamic versioning.
       - name: Build .deb and .rpm packages
+        env:
+          VERSION: ${{ env.TAG != '' && env.TAG || inputs.tag }}
         run: |
-          TAG=${{ env.TAG }}
-          VERSION=${TAG#v}
+          # Strip leading 'v' from version tag (e.g. v0.2.0 -> 0.2.0)
+          export VERSION=${VERSION#v}
           mkdir -p dist
           nfpm pkg --config packaging/nfpm/purser-agent.yaml --packager deb --target dist/
           nfpm pkg --config packaging/nfpm/purser-agent.yaml --packager rpm --target dist/
