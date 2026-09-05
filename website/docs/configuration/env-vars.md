@@ -20,6 +20,19 @@ Source: `go/controlplane/main.go` (`loadConfig()`)
 | `PURSER_AGENT_PORT` | `0` | Port the Orchestrator dials on each node to reach `AgentService`. `0` uses the default `50151`. |
 | `PURSER_LICENSE_KEY` | (empty) | Enterprise license key. Verified **offline** against the embedded ed25519 public key — no phone-home. Absent = community edition (enterprise features disabled). A present-but-invalid key causes a fatal startup error. |
 
+### Reconciler tuning
+
+These variables tune the self-healing reconciler control loop. All values are
+parsed as Go `time.Duration` strings (e.g. `30s`, `2m`, `1h`). Unset or
+unparseable values fall back to the compiled defaults shown below.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_RECONCILER_INTERVAL` | `10s` | Interval between reconcile passes. |
+| `PURSER_RECONCILER_NODE_OFFLINE_AFTER` | `45s` | How long since the last heartbeat before a node is considered offline (NodeTimeout). |
+| `PURSER_RECONCILER_HYSTERESIS` | `30s` | Minimum dwell time a discrepancy must persist before the loop acts (time-based anti-churn). |
+| `PURSER_RECONCILER_ACTION_COOLDOWN` | `2m` | Minimum time between re-issuing the same corrective action (prevents hammering while a prior action takes effect). |
+
 ### Control Plane: Helm wiring
 
 The Helm chart wires these via `controlPlane.extraEnv` and from `values.yaml` fields:
@@ -49,6 +62,7 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_AGENT_ADVERTISED_ADDR` | (derived) | Explicit `host:port` this node's `AgentService` is reachable at as seen by the Control Plane. When absent, derived from `PURSER_AGENT_BIND` (primary local non-loopback IPv4 when bound to `0.0.0.0`). |
 | `PURSER_INFERENCE_ADVERTISED_ADDR` | (derived) | Explicit `host:port` where this node serves inference, as seen by the Gateway. When absent, derived from the advertised host plus `PURSER_INFERENCE_PORT`. |
 | `PURSER_ENGINE_BACKEND` | `mock` | Engine backend name. Only `mock` is registered today; real GPU adapters register here without changing the service. Set `llamacpp` for the llama.cpp adapter. |
+| `PURSER_LLAMACPP_BIN` | (unset) | Absolute path to the `llama-cli` (or `llama.cpp` server) binary. When set, the agent runs `$PURSER_LLAMACPP_BIN --version` at startup to populate the `llamacpp` entry in `engine_versions` on the node's `HardwareProfile`. If unset or the binary is not executable the version is reported as `"unknown"`. |
 | `PURSER_SEEDS` | (none) | Comma-separated extra discovery seed peers (`host:port`) in addition to mDNS LAN discovery. |
 | `RUST_LOG` | `info` | Log level for the agent (uses `tracing_subscriber`). Examples: `debug`, `purser_agent=debug,info`. |
 | `PURSER_SWIM_ENABLED` | `false` | Set `true`, `1`, or `yes` to enable the SWIM gossip membership layer (wraps `foca`). When disabled (the default) the existing mDNS + seed path runs unchanged. If the UDP bind fails while enabled, the agent logs a warning and falls back to mDNS + seeds. |
@@ -57,6 +71,30 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` when `$HOME` is unset) | Directory where encrypted secret files (`*.enc`) and the auto-generated key file (`.secret_key`) are stored. Created with mode 0700 on first use. |
 | `PURSER_SECRET_KEY` | (unset — auto-generated) | 32-byte AES-256 encryption key, hex- or base64-encoded (64 hex chars or 44 base64 chars). When set it takes precedence over the key file. When unset, the key is loaded from `{PURSER_SECRET_STORE_DIR}/.secret_key` or freshly generated and saved there. Consumed directly by `EncryptedFileSecretStore`, not stored in `AgentConfig`. |
 | `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
+
+### Engine version detection
+
+`HardwareProfile.engine_versions` is a map of _backend name → version string_
+sent to the control plane on every heartbeat. The agent populates it as follows:
+
+- **`mock`** — always `"built-in"` (the GPU-free in-process backend).
+- **`llamacpp`** — the first non-blank line of `$PURSER_LLAMACPP_BIN --version`
+  output (stdout + stderr combined). Falls back to `"unknown"` when
+  `PURSER_LLAMACPP_BIN` is unset, the path does not exist, or the binary cannot
+  be executed.
+- Any other registered backend — `"unknown"` until a version probe is added.
+
+### FP4 native detection
+
+When the agent is built with the `nvml` Cargo feature and an NVIDIA GPU is
+present, the probe reads the CUDA compute capability and sets
+`GpuInfo.fp4_native`:
+
+- **SM ≥ 10.0 (Blackwell and later):** `fp4_native = true` — hardware FP4
+  tensor cores are available.
+- **SM 8.9 (Ada Lovelace / RTX 4000 series):** `fp4_native = false` — hardware
+  FP8 is supported but not FP4.
+- **Older GPUs or no CUDA:** `fp4_native = false`.
 
 ---
 
@@ -123,46 +161,14 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ## Complete list by component
 
-### Control Plane env vars (9)
+### Control Plane env vars (13)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`
 
-### Agent env vars (18)
+### Agent env vars (19)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`
 
 ### Gateway env vars (12)
 
 `PURSER_GATEWAY_HOST`, `PURSER_GATEWAY_PORT`, `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_API_KEYS`, `PURSER_GATEWAY_TOKENS_PER_MIN`, `PURSER_GATEWAY_MAX_CONCURRENT`, `PURSER_GATEWAY_MAX_INFLIGHT`, `PURSER_GATEWAY_RETRY_AFTER_SECS`, `PURSER_GATEWAY_UPSTREAM_CONNECT_MS`, `PURSER_GATEWAY_UPSTREAM_TTFB_MS`, `PURSER_GATEWAY_UPSTREAM_IDLE_MS`, `RUST_LOG`
-
-# Environment Variables
-All Purser components are configured primarily through environment variables.
-Command-line flags of the same name are also accepted; flags take precedence
-over env vars.
-## Control Plane (`purser-controlplane`)
-| `PURSER_DB` | `purser-registry.db` | Path to the SQLite registry file. |
-| `PURSER_ADDR` | `:8080` | Management API listen address. |
-| `PURSER_GRPC_ADDR` | `:9443` | RegistrationService gRPC listen address. |
-| `PURSER_PKI_DIR` | `pki-state` | Directory for CA key/cert persistence. |
-| `PURSER_GATEWAY_ADDR` | _(empty)_ | Gateway base URL for route sync. |
-| `PURSER_GATEWAY_TOKEN` | _(empty)_ | Shared secret for Gateway route sync. |
-| `PURSER_CLUSTER_ID` | `default` | Cluster identifier echoed in join tokens. |
-| `PURSER_AGENT_PORT` | `0` (→ 50151) | AgentService port the orchestrator dials on each node. |
-| `PURSER_LICENSE_KEY` | _(empty)_ | Enterprise license key; absent = community edition. |
-### Reconciler tuning
-These variables tune the self-healing reconciler control loop. All values are
-parsed as Go `time.Duration` strings (e.g. `30s`, `2m`, `1h`). Unset or
-unparseable values fall back to the compiled defaults shown below.
-| `PURSER_RECONCILER_INTERVAL` | `10s` | Interval between reconcile passes. |
-| `PURSER_RECONCILER_NODE_OFFLINE_AFTER` | `45s` | How long since the last heartbeat before a node is considered offline (NodeTimeout). |
-| `PURSER_RECONCILER_HYSTERESIS` | `30s` | Minimum dwell time a discrepancy must persist before the loop acts (time-based anti-churn). |
-| `PURSER_RECONCILER_ACTION_COOLDOWN` | `2m` | Minimum time between re-issuing the same corrective action (prevents hammering while a prior action takes effect). |
-## Gateway (`purser-gateway`)
-| `PURSER_GATEWAY_ADDR` | `:8443` | Gateway listen address. |
-| `PURSER_GATEWAY_TLS_CERT` | _(empty)_ | Path to the TLS certificate file. |
-| `PURSER_GATEWAY_TLS_KEY` | _(empty)_ | Path to the TLS private key file. |
-## Agent (`purser-agent`)
-| `PURSER_AGENT_ADDR` | `:50151` | AgentService gRPC listen address. |
-| `PURSER_CONTROL_PLANE_ADDR` | _(required)_ | Control-plane RegistrationService address for join/heartbeat. |
-| `PURSER_AGENT_JOIN_TOKEN` | _(required)_ | Join token issued by the control plane. |
-

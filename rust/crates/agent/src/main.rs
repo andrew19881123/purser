@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         Supervisor::with_state_machine(backend, RestartPolicy::default(), Arc::clone(&machine))
     };
 
-    let probe = Arc::new(DefaultProbe::new(node_id.clone()));
+    let probe = Arc::new(DefaultProbe::with_backends(node_id.clone(), registry.names()));
     let svc = AgentSvc::new(
         Arc::clone(&probe) as Arc<dyn HardwareProbe>,
         Arc::clone(&config),
