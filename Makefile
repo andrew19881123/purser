@@ -32,7 +32,7 @@ NFPM  := $(GOBIN)/nfpm
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-agent
+.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-agent dev
 
 all: gen build
 
@@ -131,3 +131,16 @@ demo-agent:
 	PURSER_CONTROL_PLANE_ADDR=http://localhost:9443 \
 	PURSER_JOIN_TOKEN=$$TOKEN \
 	./bin/purser-agent
+
+## dev: Start local development stack (mock engine, no GPU required)
+dev: build
+	@echo "Starting Purser development stack (mock engine)..."
+	@mkdir -p /tmp/purser-dev bin
+	@cd go/controlplane && CGO_ENABLED=0 go build -o ../../bin/control-plane . 2>/dev/null || true
+	@echo "Control Plane: http://localhost:8080"
+	PURSER_DB=/tmp/purser-dev/registry.db \
+	PURSER_ADDR=:8080 \
+	PURSER_GRPC_ADDR=:9443 \
+	PURSER_PKI_DIR=/tmp/purser-dev/pki \
+	PURSER_ENGINE_BACKEND=mock \
+	./bin/control-plane

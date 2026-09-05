@@ -252,9 +252,47 @@ for chunk in response:
 
 ---
 
+---
+
+## Development setup
+
+Want to hack on Purser itself? No GPU or Kubernetes needed.
+
+### GitHub Codespaces / VS Code Dev Containers
+
+Open the repo in a [GitHub Codespace](https://github.com/features/codespaces) or VS Code Dev Container — the `.devcontainer/devcontainer.json` at the repository root provisions Rust 1.98.1, Go 1.27.1, Node 22, and Docker-in-Docker automatically. After the container starts, the post-create command runs `make setup` and appends `source ./env.sh` to your shell profile, so the project-local toolchain is on `PATH` immediately.
+
+### Local development with `make dev`
+
+If you prefer to work locally, `make dev` builds the control plane and starts it with an in-memory SQLite database and the mock engine — no GPU, no real nodes, instant feedback:
+
+```bash
+make setup          # installs project-local Rust / Go / buf into .toolchain/ (once)
+source ./env.sh     # puts .toolchain/bin on PATH
+make dev            # builds control-plane and starts it on :8080
+```
+
+The control plane listens at `http://localhost:8080`. To run the dashboard alongside it:
+
+```bash
+cd ui && npm install && npm run dev   # separate terminal — serves on :5173
+```
+
+Ports forwarded by the devcontainer:
+
+| Port  | Service                        |
+|-------|-------------------------------|
+| 8080  | Control Plane REST API         |
+| 9443  | RegistrationService (gRPC)     |
+| 50151 | Agent (per-node daemon)        |
+| 8000  | MkDocs docs preview            |
+
+---
+
 ## Next steps
 
 - [Full Kubernetes install guide](../install/kubernetes.md) — values, networking models, persistence
 - [Environment variables reference](../configuration/env-vars.md) — all knobs, exhaustively documented
 - [Architecture](architecture.md) — two-plane design and request flow
 - [Enterprise features](../enterprise/overview.md) — audit log, HA, RBAC/SSO
+- [Contributing guide](https://github.com/andrew19881123/purser/blob/main/CONTRIBUTING.md) — good first issues and conventions
