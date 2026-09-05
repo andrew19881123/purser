@@ -275,7 +275,7 @@ export const it: Record<StringKey, string> = {
   'join.subtitle': 'Genera un token di join o scarica un bundle pre-configurato per registrare i nodi.',
   'join.token.label': 'Token di join',
   'join.bundle.title': 'Scarica il bundle di enrollment',
-  'join.bundle.desc': 'Scarica un file .env pronto all'uso. Posizionalo in /etc/purser/agent.env su ogni nodo e riavvia l'agent — nessuna copia manuale del token necessaria.',
+  'join.bundle.desc': "Scarica un file .env pronto all'uso. Posizionalo in /etc/purser/agent.env su ogni nodo e riavvia l'agent — nessuna copia manuale del token necessaria.",
   'join.bundle.ttl': 'Durata del bundle',
   'join.bundle.download': 'Scarica bundle di enrollment',
   'join.bundle.downloading': 'Download in corso…',

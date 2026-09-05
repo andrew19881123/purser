@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/registry/importer"
 	"github.com/purser/purser/go/controlplane/server"
 )
@@ -182,19 +180,6 @@ func TestSageMakerClient_ExtractsS3URI(t *testing.T) {
 	}
 }
 
-// newTestReg opens an in-memory SQLite registry for the server integration tests.
-func newTestReg(t *testing.T) registry.Registry {
-	t.Helper()
-	reg, err := registry.Open(filepath.Join(t.TempDir(), "registry.db"))
-	if err != nil {
-		t.Fatalf("open registry: %v", err)
-	}
-	if err := reg.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { reg.Close() })
-	return reg
-}
 
 // TestHandleImport_SageMaker is a full server integration test: it starts a mock
 // SageMaker API, configures the Purser server via env vars, POSTs to
