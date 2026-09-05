@@ -190,4 +190,20 @@ export const it: Record<StringKey, string> = {
   'settings.created.title': 'Key creata',
   'settings.created.warning': 'Copiala ora — il segreto completo è mostrato una sola volta.',
   'settings.keys.empty': 'Nessuna API key. Creane una per far raggiungere il Gateway alle app.',
+
+  // join token / enrollment bundle
+  'join.title': 'Registrazione nodi',
+  'join.subtitle': 'Genera un token di join o scarica un bundle pre-configurato per registrare i nodi.',
+  'join.token.label': 'Token di join',
+  'join.bundle.title': 'Scarica il bundle di enrollment',
+  'join.bundle.desc': 'Scarica un file .env pronto all'uso. Posizionalo in /etc/purser/agent.env su ogni nodo e riavvia l'agent — nessuna copia manuale del token necessaria.',
+  'join.bundle.ttl': 'Durata del bundle',
+  'join.bundle.download': 'Scarica bundle di enrollment',
+  'join.bundle.downloading': 'Download in corso…',
+  'join.bundle.error': 'Impossibile scaricare il bundle di enrollment. Verifica che il control plane sia raggiungibile.',
+  'join.bundle.tooltip': 'Salva questo file in /etc/purser/agent.env su ogni nodo',
+  'join.ttl.1h': '1 ora',
+  'join.ttl.24h': '24 ore',
+  'join.ttl.7d': '7 giorni',
+  'join.ttl.30d': '30 giorni',
 };
