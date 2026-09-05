@@ -55,6 +55,14 @@ type MetricsSource interface {
 	Snapshot(ctx context.Context) (any, error)
 }
 
+// NodeMetricsGetter fetches the most recent live hardware-metrics sample for a
+// single node. It is satisfied by *fleet.LiveMetrics (via its Get method) and
+// by test doubles. When wired, handleMetricsSSE enumerates every registry node
+// and zero-fills entries for nodes that have not yet sent a heartbeat.
+type NodeMetricsGetter interface {
+	Get(nodeID string) (fleet.NodeMetrics, bool)
+}
+
 // FleetManager is the fleet-lifecycle surface the API needs: minting cluster
 // join tokens (node enrollment) and transitioning a node's lifecycle state
 // (drain, decommission). It is satisfied by *fleet.Manager but declared
@@ -141,8 +149,14 @@ type Config struct {
 	// Deployer, if set, backs the deploy/teardown endpoints.
 	Deployer Deployer
 	// Metrics, if set, backs the live SSE metrics endpoint; otherwise a
-	// registry-derived summary is emitted.
+	// registry-derived summary is emitted. Superseded by NodeMetrics when both
+	// are set.
 	Metrics MetricsSource
+	// NodeMetrics, if set, backs the live SSE metrics endpoint with per-node
+	// hardware data from agent heartbeats. The server enumerates every registry
+	// node and zero-fills metrics for nodes that have not yet reported.
+	// Takes priority over Metrics when both are configured.
+	NodeMetrics NodeMetricsGetter
 	// MetricsInterval is the SSE emit cadence (default 2s).
 	MetricsInterval time.Duration
 	// Planner, if set, produces DeploymentPlans from the current fleet (backs
@@ -184,6 +198,7 @@ type Server struct {
 	server        *http.Server
 	deployer      Deployer
 	metrics       MetricsSource
+	nodeMetrics   NodeMetricsGetter
 	metricTO      time.Duration
 	planner       *planning.Planner
 	fleet         FleetManager
@@ -228,6 +243,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		mux:           http.NewServeMux(),
 		deployer:      cfg.Deployer,
 		metrics:       cfg.Metrics,
+		nodeMetrics:   cfg.NodeMetrics,
 		metricTO:      interval,
 		planner:       cfg.Planner,
 		fleet:         cfg.Fleet,
@@ -1486,12 +1502,22 @@ func (s *Server) handleMetricsSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// metricsSnapshot returns the live metrics from the configured MetricsSource, or
-// a registry-derived node-state summary if none is configured.
+// metricsSnapshot builds the SSE payload for one tick.
+//
+// Priority:
+//  1. NodeMetricsGetter (real hardware data) — enumerates every registry node
+//     and merges cached heartbeat metrics; nodes that have not yet reported
+//     receive zero-filled metrics (honest, no hidden gaps).
+//  2. MetricsSource (legacy interface) — delegates to Snapshot().
+//  3. Fallback — plain registry state summary (no hardware data).
 func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
+	if s.nodeMetrics != nil {
+		return s.metricsSnapshotFromCache(ctx)
+	}
 	if s.metrics != nil {
 		return s.metrics.Snapshot(ctx)
 	}
+	// Fallback: plain node-state summary — no hardware metrics.
 	nodes, err := s.reg.ListNodes(ctx)
 	if err != nil {
 		return nil, err
@@ -1504,6 +1530,56 @@ func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
 		"total_nodes": len(nodes),
 		"by_state":    byState,
 		"at":          time.Now().UTC(),
+	}, nil
+}
+
+// metricsWire is the per-node hardware-metrics payload inside each SSE frame.
+type metricsWire struct {
+	PrefillTokS         float64 `json:"prefill_tok_s"`
+	DecodeTokS          float64 `json:"decode_tok_s"`
+	RAMUsedGB           float64 `json:"ram_used_gb"`
+	VRAMUsedGB          float64 `json:"vram_used_gb"`
+	QueueDepth          uint32  `json:"queue_depth"`
+	AcceptedTokensRatio float64 `json:"accepted_tokens_ratio"`
+}
+
+// nodeWire is one node entry inside each SSE frame.
+type nodeWire struct {
+	NodeID  string      `json:"node_id"`
+	State   string      `json:"state"`
+	Metrics metricsWire `json:"metrics"`
+}
+
+// metricsSnapshotFromCache builds the real-data SSE payload by joining the
+// full registry node list against cached heartbeat metrics. Nodes that have
+// not yet reported receive zero-filled metrics so the UI always sees every
+// known node.
+func (s *Server) metricsSnapshotFromCache(ctx context.Context) (any, error) {
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]nodeWire, 0, len(nodes))
+	var aggDecode float64
+	for _, n := range nodes {
+		nw := nodeWire{NodeID: n.ID, State: n.State}
+		if m, ok := s.nodeMetrics.Get(n.ID); ok {
+			nw.Metrics = metricsWire{
+				PrefillTokS:         m.PrefillTps,
+				DecodeTokS:          m.DecodeTps,
+				RAMUsedGB:           m.RAMUsedGB,
+				VRAMUsedGB:          m.VRAMUsedGB,
+				QueueDepth:          m.QueueDepth,
+				AcceptedTokensRatio: m.AcceptedTokensRatio,
+			}
+			aggDecode += m.DecodeTps
+		}
+		out = append(out, nw)
+	}
+	return map[string]any{
+		"at":                     time.Now().UTC().Format(time.RFC3339),
+		"aggregate_decode_tok_s": aggDecode,
+		"nodes":                  out,
 	}, nil
 }
 
