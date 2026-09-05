@@ -806,12 +806,17 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "encode_spec_failed", err.Error())
 		return
 	}
+	// Type defaults to "llm". The ModelSpec proto does not carry a model-type
+	// field yet, so the field is set here as a constant default. Future callers
+	// that need to register embedding models can supply a pre-built
+	// registry.Model directly via the store, or extend the proto.
 	m := &registry.Model{
 		ID:           id,
 		Family:       spec.GetFamily(),
 		Architecture: spec.GetArchitecture(),
 		ParamsTotalB: spec.GetParamsTotalB(),
 		Engine:       spec.GetEngine(),
+		Type:         "llm",
 		Spec:         blob,
 	}
 	if err := s.reg.CreateModel(r.Context(), m); err != nil {

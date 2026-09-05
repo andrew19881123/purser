@@ -73,6 +73,33 @@ async fn spawn_mock_host() -> String {
     format!("http://{addr}")
 }
 
+/// A mock embedding server that returns a canned 128-dim float32 embedding.
+async fn spawn_mock_embed_host() -> String {
+    let router = Router::new()
+        .route("/v1/embeddings", post(mock_embeddings));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn mock_embeddings(_body: Bytes) -> Response {
+    let embedding: Vec<f32> = (0..128).map(|i| (i as f32) / 128.0).collect();
+    let body = json!({
+        "object": "list",
+        "data": [{"object": "embedding", "embedding": embedding, "index": 0}],
+        "model": "mock-embed",
+        "usage": {"prompt_tokens": 5, "total_tokens": 5}
+    });
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn mock_inference(body: Bytes) -> Response {
     let v: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
     let marker = v["messages"][0]["content"]
@@ -626,6 +653,61 @@ async fn concurrent_tenants_never_see_each_others_output() {
     assert!(
         !text_b.contains("SECRET-ALPHA"),
         "ISOLATION VIOLATION: tenant B saw tenant A's content: {text_b}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// embeddings
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn embeddings_valid_model_returns_200_with_expected_shape() {
+    let host = spawn_mock_embed_host().await;
+    let state = AppState::with_mock();
+    state
+        .insert_route(MOCK_MODEL, ModelRoute::active(&host, "dep-embed", "fp32"))
+        .await;
+
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "input": "hello embeddings",
+        "encoding_format": "float"
+    });
+    let response = app(state)
+        .oneshot(post_json("/v1/embeddings", Some("client-key"), &payload))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["object"], "list", "outer object must be 'list'");
+    assert_eq!(
+        body["data"][0]["object"], "embedding",
+        "data[0].object must be 'embedding'"
+    );
+    let embedding = body["data"][0]["embedding"].as_array().expect("embedding array");
+    assert_eq!(embedding.len(), 128, "expected 128-dim vector from mock host");
+    assert!(
+        body["usage"]["prompt_tokens"].as_u64().is_some(),
+        "usage.prompt_tokens must be present"
+    );
+}
+
+#[tokio::test]
+async fn embeddings_host_down_is_503() {
+    // AppState::with_mock() registers MOCK_MODEL pointing at a closed port.
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "input": "test"
+    });
+    let response = app(AppState::with_mock())
+        .oneshot(post_json("/v1/embeddings", Some("client-key"), &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "node_unavailable"
     );
 }
 

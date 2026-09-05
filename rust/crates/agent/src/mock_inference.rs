@@ -68,6 +68,7 @@ impl MockInferenceServer {
         let app = Router::new()
             .route("/v1/chat/completions", post(chat_completions))
             .route("/v1/completions", post(completions))
+            .route("/v1/embeddings", post(embeddings))
             .route("/v1/models", get(models))
             .route("/health", get(health))
             .with_state(AppState { model: model_ref });
@@ -162,6 +163,29 @@ async fn chat_completions(State(state): State<AppState>, body: Bytes) -> Respons
         }))
         .into_response()
     }
+}
+
+/// `POST /v1/embeddings` — return a random 128-dim unit-norm float32 vector.
+///
+/// Satisfies the OpenAI embeddings wire format so the gateway's proxy path can
+/// be tested end-to-end without a real embedding model.
+async fn embeddings(State(state): State<AppState>, body: Bytes) -> Json<Value> {
+    let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let model = requested_model(&req, &state.model);
+    let embedding = random_unit_embedding(128);
+    Json(json!({
+        "object": "list",
+        "data": [{
+            "object": "embedding",
+            "embedding": embedding,
+            "index": 0
+        }],
+        "model": model,
+        "usage": {
+            "prompt_tokens": 5,
+            "total_tokens": 5
+        }
+    }))
 }
 
 async fn completions(State(state): State<AppState>, body: Bytes) -> Response {
@@ -260,6 +284,19 @@ fn chat_chunk(id: &str, created: u64, model: &str, delta: Value, finish: Option<
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     })
     .to_string()
+}
+
+/// Generate a random 128-dimensional embedding vector normalised to unit L2
+/// norm. Uses `fastrand` for speed and determinism within a single run; the
+/// values are random across runs (no seed) so tests must check norm ≈ 1.0
+/// rather than exact values.
+pub fn random_unit_embedding(dims: usize) -> Vec<f32> {
+    let mut v: Vec<f32> = (0..dims).map(|_| fastrand::f32() * 2.0 - 1.0).collect();
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        v.iter_mut().for_each(|x| *x /= norm);
+    }
+    v
 }
 
 /// The canned assistant reply. Mentions the served model so tests (and humans)
@@ -396,5 +433,52 @@ mod tests {
         // After shutdown the port is released: a fresh connect should fail.
         let reconnect = TcpStream::connect(addr).await;
         assert!(reconnect.is_err(), "server should no longer be listening");
+    }
+
+    /// POST /v1/embeddings returns a 128-dim unit-norm embedding vector.
+    #[tokio::test]
+    async fn embeddings_returns_unit_norm_vector() {
+        let model = "purser/mock-embed";
+        let mut server =
+            MockInferenceServer::start(SocketAddr::from(([127, 0, 0, 1], 0)), model.to_string())
+                .await
+                .expect("start server");
+        let addr = server.addr();
+
+        let resp = http_request(
+            addr,
+            "POST",
+            "/v1/embeddings",
+            r#"{"model":"purser/mock-embed","input":"hello world"}"#,
+        )
+        .await;
+
+        assert!(resp.contains("200 OK"), "expected 200: {resp}");
+        assert!(resp.contains("\"object\":\"list\""), "missing outer object: {resp}");
+        assert!(resp.contains("\"object\":\"embedding\""), "missing embedding object: {resp}");
+
+        // Parse the JSON body from the raw HTTP response (skip headers).
+        let body_start = resp.find("\r\n\r\n").expect("headers end") + 4;
+        let body = &resp[body_start..];
+        let json: serde_json::Value =
+            serde_json::from_str(body).expect("valid JSON body");
+
+        let embedding = json["data"][0]["embedding"]
+            .as_array()
+            .expect("embedding array");
+        assert_eq!(embedding.len(), 128, "expected 128-dim vector");
+
+        // Verify unit norm: sum of squares should be ≈ 1.0.
+        let sq_sum: f64 = embedding
+            .iter()
+            .map(|v| v.as_f64().expect("f64 value"))
+            .map(|x| x * x)
+            .sum();
+        assert!(
+            (sq_sum - 1.0).abs() < 1e-5,
+            "expected unit norm, got ||v||² = {sq_sum}"
+        );
+
+        server.shutdown().await;
     }
 }
