@@ -60,6 +60,10 @@ jobs:
       - name: test
         working-directory: go/${{ matrix.module }}
         run: go test ./...
+      - name: gofmt
+        run: |
+          files=$(gofmt -l go enterprise/license)
+          [ -z "$files" ] || { echo "gofmt needs to be run on:"; echo "$files"; exit 1; }
 
   ui:
     name: ui
