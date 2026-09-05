@@ -63,6 +63,10 @@ type Link struct {
 
 // Model is a catalog entry. Spec carries the full purserv1.ModelSpec as JSON
 // (architecture, quantizations, draft info, ...).
+// Source carries an optional importer.ObjectSource encoded as JSON, populated
+// when the model was imported from an object-storage URI (s3://, gs://, az://).
+// The agent reads DownloadURL from Source to fetch the model weights at deploy
+// time; the control plane only stores and returns the pre-signed URL.
 type Model struct {
 	ID           string          `json:"id"`
 	Family       string          `json:"family"`
@@ -70,6 +74,7 @@ type Model struct {
 	ParamsTotalB float64         `json:"params_total_b"`
 	Engine       string          `json:"engine"`
 	Spec         json.RawMessage `json:"spec,omitempty"`
+	Source       json.RawMessage `json:"source,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }

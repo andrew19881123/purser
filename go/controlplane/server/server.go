@@ -26,6 +26,7 @@ import (
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
+	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	plannerplan "github.com/purser/purser/go/planner/plan"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -160,6 +161,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
+	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
@@ -1139,6 +1141,100 @@ func (s *Server) metricsSnapshot(ctx context.Context) (any, error) {
 		"by_state":    byState,
 		"at":          time.Now().UTC(),
 	}, nil
+}
+
+// importModelRequest is the body of POST /api/v1/models/import.
+// name, family, and size_gb provide the catalog metadata that object storage
+// cannot carry automatically (unlike HuggingFace, which embeds it in the repo).
+// When name is absent the last path component of the object key is used.
+type importModelRequest struct {
+	Source string  `json:"source"`  // "s3", "gcs", or "azure" — informational; scheme is inferred from URI
+	URI    string  `json:"uri"`     // e.g. s3://my-bucket/llama-3.1-8b.gguf
+	Name   string  `json:"name"`    // model ID; required or derived from URI key basename
+	Family string  `json:"family"`  // e.g. "llama"
+	SizeGB float64 `json:"size_gb"` // optional weight for the planner
+}
+
+// handleImportModel registers a model imported from an object-storage URI
+// (s3://, gs://, az://). It resolves the URI to an HTTPS download URL
+// (pre-signed when credentials are present, public otherwise) and stores
+// the result in Model.Source so the agent can fetch the weights at deploy time.
+//
+// POST /api/v1/models/import
+//
+//	{
+//	  "source": "s3",
+//	  "uri":    "s3://my-bucket/llama-3.1-8b/model.gguf",
+//	  "name":   "llama-3.1-8b",
+//	  "family": "llama",
+//	  "size_gb": 4.8
+//	}
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	var req importModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.URI == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "uri is required")
+		return
+	}
+
+	objSrc, err := importer.ParseObjectURI(req.URI)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_uri", err.Error())
+		return
+	}
+
+	// Derive the model ID from the request name; fall back to the key's
+	// last path segment (best-effort, not authoritative metadata).
+	id := req.Name
+	if id == "" {
+		if objSrc.Key != "" {
+			parts := strings.Split(objSrc.Key, "/")
+			id = parts[len(parts)-1]
+		}
+		if id == "" {
+			id = objSrc.Bucket + "-" + objSrc.Type
+		}
+	}
+
+	// Reject duplicates before attempting the insert.
+	if _, err := s.reg.GetModel(r.Context(), id); err == nil {
+		s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+id)
+		return
+	} else if !errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	sourceBlob, err := json.Marshal(objSrc)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     id,
+		Family: req.Family,
+		Source: sourceBlob,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+id)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "model.imported", Target: id,
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id":     id,
+		"source_type":  objSrc.Type,
+		"download_url": objSrc.DownloadURL,
+	})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {

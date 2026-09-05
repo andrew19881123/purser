@@ -70,6 +70,8 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"audit_log", "seq", "INTEGER"},
 		{"audit_log", "prev_hash", "TEXT"},
 		{"audit_log", "hash", "TEXT"},
+		// Object-storage source blob for models imported from s3://, gs://, az://.
+		{"models", "source", "TEXT NOT NULL DEFAULT '{}'"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -324,30 +326,32 @@ func (r *SQLiteRegistry) CreateModel(ctx context.Context, m *Model) error {
 	}
 	m.UpdatedAt = now
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO models (id, family, architecture, params_total_b, engine, spec, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO models (id, family, architecture, params_total_b, engine, spec, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Family, m.Architecture, m.ParamsTotalB, m.Engine,
-		jsonOrEmpty(m.Spec), fmtTime(m.CreatedAt), fmtTime(m.UpdatedAt))
+		jsonOrEmpty(m.Spec), jsonOrEmpty(m.Source), fmtTime(m.CreatedAt), fmtTime(m.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("registry: create model %q: %w", m.ID, err)
 	}
 	return nil
 }
 
-const modelCols = `id, family, architecture, params_total_b, engine, spec, created_at, updated_at`
+const modelCols = `id, family, architecture, params_total_b, engine, spec, source, created_at, updated_at`
 
 func scanModel(s interface{ Scan(...any) error }) (*Model, error) {
 	var (
 		m       Model
 		spec    string
+		source  string
 		created sql.NullString
 		updated sql.NullString
 	)
 	if err := s.Scan(&m.ID, &m.Family, &m.Architecture, &m.ParamsTotalB, &m.Engine,
-		&spec, &created, &updated); err != nil {
+		&spec, &source, &created, &updated); err != nil {
 		return nil, err
 	}
 	m.Spec = json.RawMessage(spec)
+	m.Source = json.RawMessage(source)
 	m.CreatedAt = parseTime(created)
 	m.UpdatedAt = parseTime(updated)
 	return &m, nil
@@ -385,9 +389,9 @@ func (r *SQLiteRegistry) ListModels(ctx context.Context) ([]*Model, error) {
 func (r *SQLiteRegistry) UpdateModel(ctx context.Context, m *Model) error {
 	m.UpdatedAt = nowUTC()
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE models SET family=?, architecture=?, params_total_b=?, engine=?, spec=?, updated_at=?
+		UPDATE models SET family=?, architecture=?, params_total_b=?, engine=?, spec=?, source=?, updated_at=?
 		WHERE id=?`,
-		m.Family, m.Architecture, m.ParamsTotalB, m.Engine, jsonOrEmpty(m.Spec), fmtTime(m.UpdatedAt), m.ID)
+		m.Family, m.Architecture, m.ParamsTotalB, m.Engine, jsonOrEmpty(m.Spec), jsonOrEmpty(m.Source), fmtTime(m.UpdatedAt), m.ID)
 	if err != nil {
 		return fmt.Errorf("registry: update model %q: %w", m.ID, err)
 	}

@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS models (
     params_total_b REAL NOT NULL DEFAULT 0,
     engine         TEXT NOT NULL DEFAULT '',
     spec           TEXT NOT NULL DEFAULT '{}',
+    -- source holds an optional importer.ObjectSource JSON blob set when the
+    -- model was imported from an object-storage URI (s3://, gs://, az://).
+    -- Added additively for existing databases by Migrate (see ensureColumn).
+    source         TEXT NOT NULL DEFAULT '{}',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
 );

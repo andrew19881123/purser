@@ -43,6 +43,10 @@ license-signing.key
 
 # --- Internal solution-design & strategy docs (kept local, not published) ---
 docs/
+# Post-mortems and decision docs ARE versioned (contributor knowledge)
+!docs/postmortems/
+# Exception: published website documentation is tracked in website/
+!website/docs/
 
 # --- Misc ---
 *.tmp
