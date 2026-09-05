@@ -72,6 +72,9 @@ type Link struct {
 // The default is "llm". The Planner treats all models identically regardless of
 // Type (it is informational only at this stage); the field exists so the catalog
 // and the UI can label and filter models by their primary capability.
+//
+// Source carries the import provenance (e.g. HuggingFace Hub coordinates) as a
+// JSON blob; it is omitted for models registered directly via POST /api/v1/models.
 type Model struct {
 	ID           string          `json:"id"`
 	Family       string          `json:"family"`
@@ -80,8 +83,11 @@ type Model struct {
 	Engine       string          `json:"engine"`
 	// Type distinguishes the model's primary serving mode: "llm" or "embedding".
 	// Defaults to "llm" when not supplied by the caller.
-	Type      string          `json:"type,omitempty"`
-	Spec      json.RawMessage `json:"spec,omitempty"`
+	Type   string          `json:"type,omitempty"`
+	Spec   json.RawMessage `json:"spec,omitempty"`
+	// Source is the import provenance stored as an opaque JSON blob. The shape
+	// depends on the import source type (e.g. {"type":"huggingface","repo":"..."}).
+	Source    json.RawMessage `json:"source,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }

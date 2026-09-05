@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS models (
     params_total_b REAL NOT NULL DEFAULT 0,
     engine         TEXT NOT NULL DEFAULT '',
     spec           TEXT NOT NULL DEFAULT '{}',
+    -- source carries import provenance (e.g. HuggingFace Hub coordinates) as
+    -- a JSON blob. Added additively for existing databases by Migrate (see
+    -- ensureColumn). Empty for models registered directly.
+    source         TEXT NOT NULL DEFAULT '{}',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
 );

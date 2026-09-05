@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/registry"
+	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	plannerplan "github.com/purser/purser/go/planner/plan"
 	"go.opentelemetry.io/otel"
@@ -195,6 +197,14 @@ type Config struct {
 	// bypass OIDC verification so the gateway can perform route-sync without a
 	// human token.
 	InternalToken string
+	// HFToken is the HuggingFace API token used by POST /api/v1/models/import
+	// when the caller does not supply an X-HF-Token header. Read from
+	// PURSER_HF_TOKEN at startup. Leave empty for public-model-only access.
+	HFToken string
+	// HFBaseURL overrides the HuggingFace API base URL used by the import
+	// handler. Leave empty to use the default (https://huggingface.co). Useful
+	// in tests that point the server at an httptest mock.
+	HFBaseURL string
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
@@ -214,6 +224,8 @@ type Server struct {
 	license       *license.License
 	oidcVerifier  TokenVerifier // nil = OIDC disabled
 	internalToken string        // gateway exemption secret
+	hfToken       string
+	hfBaseURL     string
 
 	// handler is the mux wrapped with OTEL (outer) and OIDC (inner) middleware.
 	// Returned by Handler() and used as http.Server.Handler so all test paths
@@ -263,6 +275,8 @@ func New(reg registry.Registry, cfg Config) *Server {
 		publicAddr:    publicAddr,
 		license:       lic,
 		internalToken: cfg.InternalToken,
+		hfToken:       cfg.HFToken,
+		hfBaseURL:     cfg.HFBaseURL,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -384,6 +398,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
+	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
@@ -845,6 +860,149 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "model.created", Target: id})
 	s.writeJSON(w, http.StatusCreated, map[string]any{"model_id": id})
+}
+
+// importRequest is the body of POST /api/v1/models/import.
+type importRequest struct {
+	Source          string `json:"source"`
+	Repo            string `json:"repo"`
+	Revision        string `json:"revision"`
+	FilenamePattern string `json:"filename_pattern"`
+}
+
+// hfSourceBlob is the JSON shape stored in Model.Source for HuggingFace
+// imports. It is kept small on purpose — it is the import provenance, not the
+// full model spec.
+type hfSourceBlob struct {
+	Type           string `json:"type"`
+	Repo           string `json:"repo"`
+	Revision       string `json:"revision"`
+	Filename       string `json:"filename"`
+	SizeBytesTotal int64  `json:"size_bytes_total"`
+}
+
+// handleImportModel auto-populates a Model spec from HuggingFace Hub metadata
+// and registers it in the catalog.
+//
+// The HuggingFace API token is resolved in precedence order:
+//  1. X-HF-Token request header (caller-supplied, e.g. CI workflows);
+//  2. PURSER_HF_TOKEN server env var (operator-configured default).
+//
+// Error mapping:
+//   - HF API 404 → 404 not_found
+//   - HF API 401/403 → 401 hf_auth_required
+//   - No matching GGUF files → 400 no_matching_files
+//   - Network/decode failure → 502 Bad Gateway
+//   - Model already exists → 409 model_exists (mirrors handleCreateModel)
+func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
+	var body importRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if body.Source != "huggingface" {
+		s.writeError(w, http.StatusBadRequest, "unsupported_source",
+			"unsupported import source: "+body.Source+"; supported: huggingface")
+		return
+	}
+	if body.Repo == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "repo is required")
+		return
+	}
+	if body.Revision == "" {
+		body.Revision = "main"
+	}
+
+	// Resolve HF token: header takes precedence over server env var.
+	token := r.Header.Get("X-HF-Token")
+	if token == "" {
+		token = s.hfToken
+	}
+
+	hfc := importer.NewHFClient(token)
+	if s.hfBaseURL != "" {
+		hfc.BaseURL = s.hfBaseURL
+	}
+
+	meta, err := hfc.FetchMetadata(r.Context(), body.Repo, body.Revision, body.FilenamePattern)
+	if err != nil {
+		if importer.IsNotFound(err) {
+			s.writeError(w, http.StatusNotFound, "not_found",
+				"HuggingFace repo not found: "+body.Repo)
+			return
+		}
+		if importer.IsAuthRequired(err) {
+			s.writeError(w, http.StatusUnauthorized, "hf_auth_required",
+				"private/gated model requires PURSER_HF_TOKEN: "+body.Repo)
+			return
+		}
+		s.writeError(w, http.StatusBadGateway, "hf_fetch_failed",
+			"HuggingFace API error: "+err.Error())
+		return
+	}
+
+	if len(meta.GGUFFiles) == 0 {
+		pattern := body.FilenamePattern
+		if pattern == "" {
+			pattern = "*.gguf"
+		}
+		s.writeError(w, http.StatusBadRequest, "no_matching_files",
+			"no "+pattern+" files found in repo "+body.Repo)
+		return
+	}
+
+	// Best match: first GGUF file in the list. Compute total size over all
+	// matching files (useful when multiple quantisations are downloaded).
+	bestFile := meta.GGUFFiles[0].Name
+	var sizeBytesTotal int64
+	for _, f := range meta.GGUFFiles {
+		sizeBytesTotal += f.Size
+	}
+
+	// Model ID = last path component of the repo name (e.g. "Llama-3.1-8B-Instruct").
+	modelID := path.Base(meta.ModelID)
+
+	// Check for duplicates (clean 409 before the store's PK constraint).
+	if _, err := s.reg.GetModel(r.Context(), modelID); err == nil {
+		s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+		return
+	} else if !errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+
+	sourceBlob := hfSourceBlob{
+		Type:           "huggingface",
+		Repo:           body.Repo,
+		Revision:       body.Revision,
+		Filename:       bestFile,
+		SizeBytesTotal: sizeBytesTotal,
+	}
+	sourceJSON, err := json.Marshal(sourceBlob)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	m := &registry.Model{
+		ID:     modelID,
+		Family: meta.Family,
+		Source: sourceJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists", "model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor:  "api",
+		Action: "model.imported",
+		Target: modelID,
+	})
+	s.writeJSON(w, http.StatusCreated, m)
 }
 
 // deploymentTerminal reports whether a deployment in the given state has

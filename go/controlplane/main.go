@@ -47,6 +47,10 @@ type config struct {
 	clusterID     string
 	agentPort     int
 	internalToken string
+	// hfToken is the HuggingFace API token used by POST /api/v1/models/import
+	// when the caller does not supply an X-HF-Token header. Read from
+	// PURSER_HF_TOKEN; leave unset for public-model-only access.
+	hfToken string
 }
 
 func loadConfig() config {
@@ -60,6 +64,7 @@ func loadConfig() config {
 		clusterID:     envOr("PURSER_CLUSTER_ID", "default"),
 		agentPort:     envInt("PURSER_AGENT_PORT", 0),
 		internalToken: envOr("PURSER_INTERNAL_TOKEN", ""),
+		hfToken:       envOr("PURSER_HF_TOKEN", ""),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -223,6 +228,7 @@ func run(logger *slog.Logger) error {
 		OIDC:          oidcCfg,
 		OIDCVerifier:  oidcVerifier,
 		InternalToken: cfg.internalToken,
+		HFToken:       cfg.hfToken,
 	})
 
 	// Start the background OTEL infrastructure metrics collector (nodes ready/
