@@ -103,6 +103,9 @@ pub struct AppState {
     pub http: HttpClient,
     /// Prometheus render handle for `GET /metrics`.
     pub metrics: PrometheusHandle,
+    /// Optional Control-Plane base URL for fire-and-forget usage reporting.
+    /// When `None`, usage recording is skipped (backward-compatible).
+    pub control_plane_url: Option<Arc<String>>,
 }
 
 impl AppState {
@@ -120,7 +123,14 @@ impl AppState {
             limiter: Arc::new(Limiter::new()),
             http,
             metrics: prometheus_handle(),
+            control_plane_url: None,
         }
+    }
+
+    /// Set the Control-Plane URL for usage reporting (builder style).
+    pub fn with_control_plane_url(mut self, url: impl Into<String>) -> Self {
+        self.control_plane_url = Some(Arc::new(url.into()));
+        self
     }
 
     /// Empty state — no models served, open dev auth, no management secret.

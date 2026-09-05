@@ -35,6 +35,63 @@ use crate::openai::{gen_id, unix_now, ModelList, ModelObject};
 use crate::state::{AppState, OWNED_BY};
 use crate::upstream::{count_sse_tokens, json_completion_tokens};
 
+// ---------------------------------------------------------------------------
+// Usage reporting helpers
+// ---------------------------------------------------------------------------
+
+/// Estimate input tokens from the `messages` array in the request body by
+/// counting whitespace-split words in each message's `content` field and
+/// dividing by 4 (≈ 4 chars/token). Falls back to a whole-body estimate on
+/// parse failure.
+fn estimate_input_tokens(body: &[u8]) -> u64 {
+    let fallback = approx_prompt_tokens(body) / 4;
+    let json: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return fallback,
+    };
+    let messages = match json.get("messages").and_then(|m| m.as_array()) {
+        Some(arr) => arr,
+        None => return fallback,
+    };
+    let mut word_count: u64 = 0;
+    for msg in messages {
+        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+            word_count += content.split_whitespace().count() as u64;
+        }
+    }
+    word_count / 4
+}
+
+/// Fire-and-forget: POST token usage to the Control Plane.
+/// Errors are logged at debug level and otherwise ignored so they never
+/// affect the inference response path.
+fn spawn_usage_report(
+    client: reqwest::Client,
+    cp_url: Arc<String>,
+    internal_token: Option<String>,
+    api_key_id: String,
+    model_id: String,
+    input_tokens: u64,
+    output_tokens: u64,
+) {
+    tokio::spawn(async move {
+        let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "api_key_id": api_key_id,
+            "model_id":   model_id,
+            "input_tokens":  input_tokens,
+            "output_tokens": output_tokens,
+        });
+        let mut builder = client.post(&url).json(&body);
+        if let Some(tok) = internal_token.as_deref() {
+            builder = builder.header("X-Purser-Internal-Token", tok);
+        }
+        if let Err(e) = builder.send().await {
+            tracing::debug!(error = %e, "usage report to control plane failed (fire-and-forget)");
+        }
+    });
+}
+
 /// Routes under `/v1`.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -119,6 +176,13 @@ async fn proxy_inference(
         .limiter
         .acquire(&api_key.id, &state.quota, prompt_tokens)?;
 
+    // Estimate input tokens for usage accounting (messages content ÷ 4).
+    let input_tokens_for_usage = estimate_input_tokens(&body);
+
+    // Capture usage-reporting context before moving `body` into the proxy.
+    let cp_url = state.control_plane_url.clone();
+    let cp_token = state.auth.internal_token.clone();
+
     let url = format!("{}{}", route.endpoint.trim_end_matches('/'), upstream_path);
     let start = Instant::now();
 
@@ -164,6 +228,9 @@ async fn proxy_inference(
             session_id,
             start,
             prompt_tokens,
+            input_tokens_for_usage,
+            cp_url,
+            cp_token,
             status,
             upstream_ct,
             resp,
@@ -176,6 +243,9 @@ async fn proxy_inference(
             &model,
             start,
             prompt_tokens,
+            input_tokens_for_usage,
+            cp_url,
+            cp_token,
             status,
             upstream_ct,
             resp,
@@ -196,6 +266,9 @@ fn stream_response(
     session_id: String,
     start: Instant,
     prompt_tokens: u64,
+    input_tokens_for_usage: u64,
+    cp_url: Option<Arc<String>>,
+    cp_token: Option<String>,
     status: reqwest::StatusCode,
     upstream_ct: Option<String>,
     resp: reqwest::Response,
@@ -203,6 +276,7 @@ fn stream_response(
 ) -> Response {
     let idle = state.http.idle;
     let limiter = Arc::clone(&state.limiter);
+    let http_client = state.http.client.clone();
     let key_id = api_key.id.clone();
     let tenant = api_key.tenant.clone();
     let model = model.to_owned();
@@ -247,6 +321,18 @@ fn stream_response(
             prompt_tokens,
             out_tokens,
         );
+        // Fire-and-forget usage report to the Control Plane.
+        if let Some(url) = cp_url {
+            spawn_usage_report(
+                http_client,
+                url,
+                cp_token,
+                key_id.clone(),
+                model.clone(),
+                input_tokens_for_usage,
+                out_tokens,
+            );
+        }
     };
 
     let content_type = upstream_ct.unwrap_or_else(|| "text/event-stream".to_string());
@@ -266,6 +352,9 @@ async fn buffered_response(
     model: &str,
     start: Instant,
     prompt_tokens: u64,
+    input_tokens_for_usage: u64,
+    cp_url: Option<Arc<String>>,
+    cp_token: Option<String>,
     status: reqwest::StatusCode,
     upstream_ct: Option<String>,
     resp: reqwest::Response,
@@ -313,6 +402,18 @@ async fn buffered_response(
         prompt_tokens,
         out_tokens,
     );
+    // Fire-and-forget usage report to the Control Plane.
+    if let Some(url) = cp_url {
+        spawn_usage_report(
+            state.http.client.clone(),
+            url,
+            cp_token,
+            api_key.id.clone(),
+            model.to_owned(),
+            input_tokens_for_usage,
+            out_tokens,
+        );
+    }
     drop(guard);
 
     let content_type = upstream_ct.unwrap_or_else(|| "application/json".to_string());

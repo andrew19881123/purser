@@ -35,26 +35,28 @@ import (
 
 // config holds runtime configuration, resolved from flags with env fallbacks.
 type config struct {
-	dbPath       string
-	addr         string
-	grpcAddr     string
-	pkiDir       string
-	gatewayAddr  string
-	gatewayToken string
-	clusterID    string
-	agentPort    int
+	dbPath        string
+	addr          string
+	grpcAddr      string
+	pkiDir        string
+	gatewayAddr   string
+	gatewayToken  string
+	clusterID     string
+	agentPort     int
+	internalToken string
 }
 
 func loadConfig() config {
 	c := config{
-		dbPath:       envOr("PURSER_DB", "purser-registry.db"),
-		addr:         envOr("PURSER_ADDR", ":8080"),
-		grpcAddr:     envOr("PURSER_GRPC_ADDR", ":9443"),
-		pkiDir:       envOr("PURSER_PKI_DIR", "pki-state"),
-		gatewayAddr:  envOr("PURSER_GATEWAY_ADDR", ""),
-		gatewayToken: envOr("PURSER_GATEWAY_TOKEN", ""),
-		clusterID:    envOr("PURSER_CLUSTER_ID", "default"),
-		agentPort:    envInt("PURSER_AGENT_PORT", 0),
+		dbPath:        envOr("PURSER_DB", "purser-registry.db"),
+		addr:          envOr("PURSER_ADDR", ":8080"),
+		grpcAddr:      envOr("PURSER_GRPC_ADDR", ":9443"),
+		pkiDir:        envOr("PURSER_PKI_DIR", "pki-state"),
+		gatewayAddr:   envOr("PURSER_GATEWAY_ADDR", ""),
+		gatewayToken:  envOr("PURSER_GATEWAY_TOKEN", ""),
+		clusterID:     envOr("PURSER_CLUSTER_ID", "default"),
+		agentPort:     envInt("PURSER_AGENT_PORT", 0),
+		internalToken: envOr("PURSER_INTERNAL_TOKEN", ""),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -64,6 +66,7 @@ func loadConfig() config {
 	flag.StringVar(&c.gatewayToken, "gateway-token", c.gatewayToken, "shared secret for Gateway route sync (env PURSER_GATEWAY_TOKEN)")
 	flag.StringVar(&c.clusterID, "cluster-id", c.clusterID, "cluster identifier echoed in join tokens (env PURSER_CLUSTER_ID)")
 	flag.IntVar(&c.agentPort, "agent-port", c.agentPort, "AgentService port the orchestrator dials on each node; 0 = default 50151 (env PURSER_AGENT_PORT)")
+	flag.StringVar(&c.internalToken, "internal-token", c.internalToken, "shared secret for gateway usage callbacks (env PURSER_INTERNAL_TOKEN)")
 	flag.Parse()
 	return c
 }
@@ -171,14 +174,15 @@ func run(logger *slog.Logger) error {
 	// Management HTTP API. The Planner turns fleet state into DeploymentPlans
 	// for plan-less deploys and the /models fit verdicts.
 	srv := server.New(reg, server.Config{
-		Addr:      cfg.addr,
-		Logger:    logger,
-		Deployer:  orch,
-		Metrics:   regServer.Metrics(),
-		Planner:   planning.New(reg),
-		Fleet:     mgr,
-		ClusterID: cfg.clusterID,
-		License:   lic,
+		Addr:          cfg.addr,
+		Logger:        logger,
+		Deployer:      orch,
+		Metrics:       regServer.Metrics(),
+		Planner:       planning.New(reg),
+		Fleet:         mgr,
+		ClusterID:     cfg.clusterID,
+		License:       lic,
+		InternalToken: cfg.internalToken,
 	})
 
 	errCh := make(chan error, 2)
