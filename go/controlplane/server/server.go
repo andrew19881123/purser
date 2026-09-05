@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -18,13 +19,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/time/rate"
 
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
@@ -209,6 +213,28 @@ type Config struct {
 	// constructing a client from environment variables at request time.
 	// Primarily useful for testing with a pre-configured mock client.
 	VertexAI *importer.VertexAIClient
+
+	// TLSCert is the path to a PEM-encoded TLS certificate file. When both
+	// TLSCert and TLSKey are non-empty, ListenAndServe serves HTTPS.
+	TLSCert string
+	// TLSKey is the path to a PEM-encoded TLS private key file. Required
+	// when TLSCert is set.
+	TLSKey string
+	// TLSCertPEM / TLSKeyPEM hold the raw PEM bytes for the server certificate
+	// and key.  When non-nil they take precedence over TLSCert/TLSKey file
+	// paths.  The auto-TLS path in main.go issues a cert from the internal PKI
+	// CA and passes the PEM bytes here instead of writing temporary disk files.
+	TLSCertPEM []byte
+	TLSKeyPEM  []byte
+
+	// RateLimitRPS is the per-source-IP rate limit in requests per second.
+	// 0 (the zero-value) maps to the default of 100 RPS.
+	// Set to -1 to disable per-IP rate limiting entirely.
+	RateLimitRPS float64
+	// RateLimitKeyRPS is the per-API-key rate limit in requests per second.
+	// 0 (the zero-value) maps to the default of 50 RPS.
+	// Set to -1 to disable per-key rate limiting entirely.
+	RateLimitKeyRPS float64
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
@@ -232,9 +258,20 @@ type Server struct {
 	hfBaseURL     string
 	vertexai      *importer.VertexAIClient
 
-	// handler is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC
-	// (inner) middleware. Returned by Handler() and used as http.Server.Handler
-	// so all test paths go through the same middleware chain.
+	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
+	tlsCert    string
+	tlsKey     string
+	tlsEnabled bool // true when TLS is active via either mode
+
+	// Rate limiting state. Lazy-initialised on first use via sync.Map.
+	rateLimitRPS    float64  // per-IP; 0 = disabled
+	rateLimitKeyRPS float64  // per-key; 0 = disabled
+	ipLimiters      sync.Map // IP string → *rate.Limiter
+	keyLimiters     sync.Map // token-SHA256 hex → *rate.Limiter
+
+	// handler is the mux wrapped with OTEL (outer), OIDC (middle), rate-limit,
+	// and RBAC (inner) middleware. Returned by Handler() and used as
+	// http.Server.Handler so all test paths go through the same middleware chain.
 	handler http.Handler
 
 	// OTEL infrastructure gauge instruments. All three are no-ops unless a real
@@ -266,23 +303,37 @@ func New(reg registry.Registry, cfg Config) *Server {
 	if lic == nil {
 		lic = license.Community()
 	}
+	// Resolve rate limit RPS values: 0 (zero-value) → defaults.
+	rlRPS := cfg.RateLimitRPS
+	if rlRPS == 0 {
+		rlRPS = 100
+	}
+	rlKeyRPS := cfg.RateLimitKeyRPS
+	if rlKeyRPS == 0 {
+		rlKeyRPS = 50
+	}
+
 	s := &Server{
-		reg:           reg,
-		log:           logger,
-		mux:           http.NewServeMux(),
-		deployer:      cfg.Deployer,
-		metrics:       cfg.Metrics,
-		nodeMetrics:   cfg.NodeMetrics,
-		metricTO:      interval,
-		planner:       cfg.Planner,
-		fleet:         cfg.Fleet,
-		clusterID:     clusterID,
-		publicAddr:    publicAddr,
-		license:       lic,
-		internalToken: cfg.InternalToken,
-		hfToken:       cfg.HFToken,
-		hfBaseURL:     cfg.HFBaseURL,
-		vertexai:      cfg.VertexAI,
+		reg:             reg,
+		log:             logger,
+		mux:             http.NewServeMux(),
+		deployer:        cfg.Deployer,
+		metrics:         cfg.Metrics,
+		nodeMetrics:     cfg.NodeMetrics,
+		metricTO:        interval,
+		planner:         cfg.Planner,
+		fleet:           cfg.Fleet,
+		clusterID:       clusterID,
+		publicAddr:      publicAddr,
+		license:         lic,
+		internalToken:   cfg.InternalToken,
+		hfToken:         cfg.HFToken,
+		hfBaseURL:       cfg.HFBaseURL,
+		vertexai:        cfg.VertexAI,
+		tlsCert:         cfg.TLSCert,
+		tlsKey:          cfg.TLSKey,
+		rateLimitRPS:    rlRPS,
+		rateLimitKeyRPS: rlKeyRPS,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -321,15 +372,34 @@ func New(reg registry.Registry, cfg Config) *Server {
 		metric.WithUnit("{node}"))
 
 	// Wrap the mux: OTEL (outermost, for distributed tracing) →
-	// OIDC (human-user authentication) → RBAC (API key role enforcement) →
-	// mux. When no TracerProvider/OIDCVerifier is configured those layers are
-	// no-ops.
-	s.handler = otelMiddleware(s.oidcMiddleware(s.rbacMiddleware(s.mux)))
-	s.server = &http.Server{
+	// OIDC (human-user authentication) → rate-limit → RBAC (API key role
+	// enforcement) → mux. When no TracerProvider/OIDCVerifier is configured
+	// those layers are transparent no-ops.
+	s.handler = otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux))))
+
+	// Build the underlying http.Server. For in-memory TLS (auto mode) the PEM
+	// bytes are pre-parsed into a tls.Certificate and attached via TLSConfig so
+	// ListenAndServeTLS("", "") can use them without writing to disk.
+	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if len(cfg.TLSCertPEM) > 0 && len(cfg.TLSKeyPEM) > 0 {
+		cert, err := tls.X509KeyPair(cfg.TLSCertPEM, cfg.TLSKeyPEM)
+		if err != nil {
+			// Misconfiguration is fatal at construction time, not at serve time.
+			panic("purser: TLS auto-cert is invalid: " + err.Error())
+		}
+		httpSrv.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		s.tlsEnabled = true
+	} else if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		s.tlsEnabled = true
+	}
+	s.server = httpSrv
 	return s
 }
 
@@ -339,7 +409,19 @@ func New(reg registry.Registry, cfg Config) *Server {
 func (s *Server) Handler() http.Handler { return s.handler }
 
 // ListenAndServe starts serving and blocks until the server stops.
-func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
+// When TLS is configured (via TLSCert/TLSKey file paths or pre-loaded PEM in
+// TLSCertPEM/TLSKeyPEM) it calls the underlying ListenAndServeTLS so the
+// management API is served over HTTPS.
+func (s *Server) ListenAndServe() error {
+	if s.tlsEnabled {
+		s.log.Info("management API serving HTTPS", "addr", s.server.Addr)
+		// For file-path mode pass the paths; for in-memory mode the TLSConfig
+		// already has the certificate so "" is correct for both arguments.
+		return s.server.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+	}
+	s.log.Info("management API serving HTTP (no TLS)", "addr", s.server.Addr)
+	return s.server.ListenAndServe()
+}
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
@@ -509,6 +591,88 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+// rateLimitExempt reports whether the request is exempt from rate limiting.
+// GET /api/v1/cluster/health and GET /api/v1/openapi.json are always allowed
+// through so that monitoring systems and tooling do not get throttled.
+func rateLimitExempt(r *http.Request) bool {
+	return r.Method == http.MethodGet && rbacPublicPaths[r.URL.Path]
+}
+
+// rateLimitMiddleware enforces two independent token-bucket limits:
+//
+//  1. Per source-IP: controlled by s.rateLimitRPS. Prevents accidental CI/CD
+//     hammering from a single machine. Negative value disables it.
+//  2. Per API-key bearer token: controlled by s.rateLimitKeyRPS. Applies
+//     whenever the request carries a Bearer token that is not the internal
+//     gateway token. Negative value disables it.
+//
+// On limit exceeded the middleware writes 429 Too Many Requests with a
+// "Retry-After: 1" header and does NOT call the next handler.
+//
+// GET /api/v1/cluster/health and GET /api/v1/openapi.json are always exempt
+// (monitoring / health-check endpoints must not be throttled).
+func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rateLimitExempt(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// --- Per-IP limit ---
+		if s.rateLimitRPS > 0 {
+			ip, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				// Fallback: use RemoteAddr verbatim (handles bare IPs in tests).
+				ip = r.RemoteAddr
+			}
+			limiter := s.getOrCreateLimiter(&s.ipLimiters, ip, s.rateLimitRPS)
+			if !limiter.Allow() {
+				w.Header().Set("Retry-After", "1")
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"error":   "rate_limit_exceeded",
+					"message": "too many requests; slow down and retry",
+				})
+				return
+			}
+		}
+
+		// --- Per-API-key limit ---
+		if s.rateLimitKeyRPS > 0 {
+			tok := bearerToken(r)
+			// Only apply when there is a bearer token AND it is not the internal
+			// gateway token (those are machine-to-machine, high-frequency by design).
+			if tok != "" && (s.internalToken == "" || tok != s.internalToken) {
+				sum := sha256.Sum256([]byte(tok))
+				keyHash := hex.EncodeToString(sum[:])
+				limiter := s.getOrCreateLimiter(&s.keyLimiters, keyHash, s.rateLimitKeyRPS)
+				if !limiter.Allow() {
+					w.Header().Set("Retry-After", "1")
+					s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+						"error":   "rate_limit_exceeded",
+						"message": "API key rate limit exceeded; slow down and retry",
+					})
+					return
+				}
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// getOrCreateLimiter returns the existing *rate.Limiter for key from m, or
+// lazily creates one using rps as both the steady-state rate and the initial
+// burst (burst = max(1, int(rps))). sync.Map.LoadOrStore is used so concurrent
+// first-requests for the same key always share one limiter.
+func (s *Server) getOrCreateLimiter(m *sync.Map, key string, rps float64) *rate.Limiter {
+	burst := int(rps)
+	if burst < 1 {
+		burst = 1
+	}
+	v, _ := m.LoadOrStore(key, rate.NewLimiter(rate.Limit(rps), burst))
+	return v.(*rate.Limiter)
 }
 
 func (s *Server) routes() {

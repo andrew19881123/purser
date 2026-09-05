@@ -232,6 +232,64 @@ helm uninstall purser
 kubectl delete pvc -l app.kubernetes.io/instance=purser
 ```
 
+## TLS termination options
+
+The management REST API (`/api/v1`) and the operator dashboard can be secured with TLS. Three patterns are available for Kubernetes deployments:
+
+### Option A: Ingress TLS (recommended for production)
+
+Let the Ingress controller terminate TLS. The Control Plane pod itself stays on plain HTTP and is only reachable cluster-internally:
+
+```bash
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+  --set ingress.enabled=true \
+  --set ingress.host=purser.example.com \
+  --set ingress.className=nginx \
+  --set "ingress.annotations.cert-manager\.io/cluster-issuer=letsencrypt-prod" \
+  --set ingress.tls[0].secretName=purser-tls \
+  --set ingress.tls[0].hosts[0]=purser.example.com
+```
+
+See [Networking models — Model 3: Ingress](#model-3-ingress-single-hostname) above for the full routing table.
+
+### Option B: Internal PKI auto-TLS (`PURSER_TLS_AUTO`)
+
+The Control Plane issues a self-signed certificate for itself from the internal PKI CA at startup. No cert-manager or external CA required. The certificate is held in memory and renewed on pod restart.
+
+```yaml
+controlPlane:
+  extraEnv:
+    - name: PURSER_TLS_AUTO
+      value: "true"
+```
+
+Useful for: air-gapped clusters, development namespaces, and any environment where the management API is not exposed outside the cluster (e.g. accessed only via `kubectl port-forward`).
+
+### Option C: Explicit cert/key (`PURSER_TLS_CERT` / `PURSER_TLS_KEY`)
+
+Mount a TLS certificate and private key from a Kubernetes Secret and point the Control Plane at the mounted files:
+
+```yaml
+controlPlane:
+  extraEnv:
+    - name: PURSER_TLS_CERT
+      value: /tls/tls.crt
+    - name: PURSER_TLS_KEY
+      value: /tls/tls.key
+  # Mount the Secret as a volume (outside the Helm chart — use extraVolumes /
+  # extraVolumeMounts if your chart version supports them, or patch the Deployment).
+```
+
+Create the Secret from cert-manager or from your own CA:
+
+```bash
+kubectl create secret tls purser-mgmt-tls \
+  --cert=server.crt --key=server.key
+```
+
+!!! note "Rate limiting"
+    The management API has a built-in per-IP and per-API-key rate limiter (100 RPS and 50 RPS by default). Tune via `PURSER_RATE_LIMIT_RPS` and `PURSER_RATE_LIMIT_KEY_RPS` in `controlPlane.extraEnv`. See [Environment Variables](../configuration/env-vars.md#rate-limiting-for-the-management-api) for details.
+
 ## Enterprise options
 
 - **License key**: set `license.key` to enable enterprise features. The key is stored in a Kubernetes Secret and injected as `PURSER_LICENSE_KEY` into the Control Plane pod. See [Enterprise: Open-Core Model](../enterprise/overview.md).
