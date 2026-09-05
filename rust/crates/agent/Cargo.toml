@@ -41,7 +41,7 @@ tempfile = "3.27.0"
 # mDNS/DNS-SD zero-config LAN discovery (`_purser._tcp`). On by default: the
 # seed-list discoverer is always available as a fallback, but LAN discovery is
 # part of the intended out-of-the-box behaviour.
-default = ["mdns"]
+default = ["mdns", "http-fetch"]
 # Real accelerator discovery via NVML. OFF by default: it dlopens
 # libnvidia-ml at runtime, which is absent on CPU-only build/CI hosts. Enable
 # with `--features nvml` on nodes that actually have NVIDIA GPUs.
