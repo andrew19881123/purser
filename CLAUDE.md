@@ -73,6 +73,20 @@ feat(scope): ...   fix(scope): ...   docs:   test:   refactor:   chore:   ci:
 
 Always sign-off (`git commit -s`) and add `Co-Authored-By: Claude <noreply@anthropic.com>`.
 
+### TDD — applies to subagents too
+
+Every subagent implementing a feature **must** write tests as part of the work, not
+as an afterthought. The brief must state this explicitly and the DoD must include a
+passing test run. The preferred order:
+
+1. Write the failing test first (`test(scope): add failing tests for X`).
+2. Implement until tests pass (`feat(scope): implement X`).
+
+When a single atomic commit is more practical (common for subagents with tight
+timeouts), tests and implementation land together — but tests must cover: the happy
+path, the primary error paths (404/409/422/500 as applicable), and at least one
+edge case. A green build without tests is **not** a completed epic.
+
 ---
 
 ## Working with Docker / GHCR
@@ -89,6 +103,16 @@ announcing the one-line `helm install` command. See `docs/postmortems/ghcr_visib
 
 **Every feature epic includes a docs update in `website/docs/`.** No separate
 docs-only epic at the end of a release cycle.
+
+- If the feature is **new**: create the relevant page(s) under `website/docs/`
+  (configuration, API reference, enterprise guide, or integration — whichever fits).
+- If the feature **extends something existing**: update the existing page in the same
+  commit as the code. Do not leave a page describing v0.1 behaviour when v0.2 has
+  changed it.
+- **Subagent brief rule**: every subagent brief must explicitly name the `website/docs/`
+  file(s) to create or update as part of the DoD. If the brief omits this, the docs
+  will not be written — do not assume the agent will figure it out.
+
 `website/docs/` is public; `docs/` is internal (git-ignored). Use the correct tree.
 `!website/docs/` exception is already in `.gitignore` — do not remove it.
 
