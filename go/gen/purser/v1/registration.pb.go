@@ -164,19 +164,106 @@ func (x *JoinReply) GetCaCert() []byte {
 	return nil
 }
 
+// Real-time resource telemetry from a running agent node, reported on every
+// heartbeat. All percentage fields are in the range 0–100.
+type NodeMetrics struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	CpuUtilizationPct   float32                `protobuf:"fixed32,1,opt,name=cpu_utilization_pct,json=cpuUtilizationPct,proto3" json:"cpu_utilization_pct,omitempty"` // 0–100
+	GpuUtilizationPct   float32                `protobuf:"fixed32,2,opt,name=gpu_utilization_pct,json=gpuUtilizationPct,proto3" json:"gpu_utilization_pct,omitempty"` // 0–100; 0 if no GPU present
+	MemoryUsedGb        float32                `protobuf:"fixed32,3,opt,name=memory_used_gb,json=memoryUsedGb,proto3" json:"memory_used_gb,omitempty"`
+	MemBandwidthUtilPct float32                `protobuf:"fixed32,4,opt,name=mem_bandwidth_util_pct,json=memBandwidthUtilPct,proto3" json:"mem_bandwidth_util_pct,omitempty"` // 0–100; fraction of peak measured bandwidth in use
+	TokensPerSecond     float32                `protobuf:"fixed32,5,opt,name=tokens_per_second,json=tokensPerSecond,proto3" json:"tokens_per_second,omitempty"`               // current tok/s estimate; 0 if not serving
+	InferencePortAlive  bool                   `protobuf:"varint,6,opt,name=inference_port_alive,json=inferencePortAlive,proto3" json:"inference_port_alive,omitempty"`       // true if the inference HTTP port is responding
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *NodeMetrics) Reset() {
+	*x = NodeMetrics{}
+	mi := &file_purser_v1_registration_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeMetrics) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeMetrics) ProtoMessage() {}
+
+func (x *NodeMetrics) ProtoReflect() protoreflect.Message {
+	mi := &file_purser_v1_registration_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeMetrics.ProtoReflect.Descriptor instead.
+func (*NodeMetrics) Descriptor() ([]byte, []int) {
+	return file_purser_v1_registration_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *NodeMetrics) GetCpuUtilizationPct() float32 {
+	if x != nil {
+		return x.CpuUtilizationPct
+	}
+	return 0
+}
+
+func (x *NodeMetrics) GetGpuUtilizationPct() float32 {
+	if x != nil {
+		return x.GpuUtilizationPct
+	}
+	return 0
+}
+
+func (x *NodeMetrics) GetMemoryUsedGb() float32 {
+	if x != nil {
+		return x.MemoryUsedGb
+	}
+	return 0
+}
+
+func (x *NodeMetrics) GetMemBandwidthUtilPct() float32 {
+	if x != nil {
+		return x.MemBandwidthUtilPct
+	}
+	return 0
+}
+
+func (x *NodeMetrics) GetTokensPerSecond() float32 {
+	if x != nil {
+		return x.TokensPerSecond
+	}
+	return 0
+}
+
+func (x *NodeMetrics) GetInferencePortAlive() bool {
+	if x != nil {
+		return x.InferencePortAlive
+	}
+	return false
+}
+
 type Heartbeat struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	State         NodeState              `protobuf:"varint,2,opt,name=state,proto3,enum=purser.v1.NodeState" json:"state,omitempty"`
 	Metrics       *EngineMetrics         `protobuf:"bytes,3,opt,name=metrics,proto3" json:"metrics,omitempty"`
 	Ts            *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=ts,proto3" json:"ts,omitempty"`
+	NodeMetrics   *NodeMetrics           `protobuf:"bytes,5,opt,name=node_metrics,json=nodeMetrics,proto3,oneof" json:"node_metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_purser_v1_registration_proto_msgTypes[2]
+	mi := &file_purser_v1_registration_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -188,7 +275,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_purser_v1_registration_proto_msgTypes[2]
+	mi := &file_purser_v1_registration_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -201,7 +288,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_purser_v1_registration_proto_rawDescGZIP(), []int{2}
+	return file_purser_v1_registration_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Heartbeat) GetNodeId() string {
@@ -232,6 +319,13 @@ func (x *Heartbeat) GetTs() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Heartbeat) GetNodeMetrics() *NodeMetrics {
+	if x != nil {
+		return x.NodeMetrics
+	}
+	return nil
+}
+
 type Ack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -240,7 +334,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_purser_v1_registration_proto_msgTypes[3]
+	mi := &file_purser_v1_registration_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -252,7 +346,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_purser_v1_registration_proto_msgTypes[3]
+	mi := &file_purser_v1_registration_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -265,7 +359,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_purser_v1_registration_proto_rawDescGZIP(), []int{3}
+	return file_purser_v1_registration_proto_rawDescGZIP(), []int{4}
 }
 
 var File_purser_v1_registration_proto protoreflect.FileDescriptor
@@ -283,12 +377,21 @@ const file_purser_v1_registration_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1f\n" +
 	"\vclient_cert\x18\x02 \x01(\fR\n" +
 	"clientCert\x12\x17\n" +
-	"\aca_cert\x18\x03 \x01(\fR\x06caCert\"\xb0\x01\n" +
+	"\aca_cert\x18\x03 \x01(\fR\x06caCert\"\xa6\x02\n" +
+	"\vNodeMetrics\x12.\n" +
+	"\x13cpu_utilization_pct\x18\x01 \x01(\x02R\x11cpuUtilizationPct\x12.\n" +
+	"\x13gpu_utilization_pct\x18\x02 \x01(\x02R\x11gpuUtilizationPct\x12$\n" +
+	"\x0ememory_used_gb\x18\x03 \x01(\x02R\fmemoryUsedGb\x123\n" +
+	"\x16mem_bandwidth_util_pct\x18\x04 \x01(\x02R\x13memBandwidthUtilPct\x12*\n" +
+	"\x11tokens_per_second\x18\x05 \x01(\x02R\x0ftokensPerSecond\x120\n" +
+	"\x14inference_port_alive\x18\x06 \x01(\bR\x12inferencePortAlive\"\x81\x02\n" +
 	"\tHeartbeat\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12*\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x14.purser.v1.NodeStateR\x05state\x122\n" +
 	"\ametrics\x18\x03 \x01(\v2\x18.purser.v1.EngineMetricsR\ametrics\x12*\n" +
-	"\x02ts\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\"\x05\n" +
+	"\x02ts\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12>\n" +
+	"\fnode_metrics\x18\x05 \x01(\v2\x16.purser.v1.NodeMetricsH\x00R\vnodeMetrics\x88\x01\x01B\x0f\n" +
+	"\r_node_metrics\"\x05\n" +
 	"\x03Ack2\x80\x01\n" +
 	"\x13RegistrationService\x124\n" +
 	"\x04Join\x12\x16.purser.v1.JoinRequest\x1a\x14.purser.v1.JoinReply\x123\n" +
@@ -306,31 +409,33 @@ func file_purser_v1_registration_proto_rawDescGZIP() []byte {
 	return file_purser_v1_registration_proto_rawDescData
 }
 
-var file_purser_v1_registration_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_purser_v1_registration_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_purser_v1_registration_proto_goTypes = []any{
 	(*JoinRequest)(nil),           // 0: purser.v1.JoinRequest
 	(*JoinReply)(nil),             // 1: purser.v1.JoinReply
-	(*Heartbeat)(nil),             // 2: purser.v1.Heartbeat
-	(*Ack)(nil),                   // 3: purser.v1.Ack
-	(*HardwareProfile)(nil),       // 4: purser.v1.HardwareProfile
-	(NodeState)(0),                // 5: purser.v1.NodeState
-	(*EngineMetrics)(nil),         // 6: purser.v1.EngineMetrics
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*NodeMetrics)(nil),           // 2: purser.v1.NodeMetrics
+	(*Heartbeat)(nil),             // 3: purser.v1.Heartbeat
+	(*Ack)(nil),                   // 4: purser.v1.Ack
+	(*HardwareProfile)(nil),       // 5: purser.v1.HardwareProfile
+	(NodeState)(0),                // 6: purser.v1.NodeState
+	(*EngineMetrics)(nil),         // 7: purser.v1.EngineMetrics
+	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
 }
 var file_purser_v1_registration_proto_depIdxs = []int32{
-	4, // 0: purser.v1.JoinRequest.hardware_profile:type_name -> purser.v1.HardwareProfile
-	5, // 1: purser.v1.Heartbeat.state:type_name -> purser.v1.NodeState
-	6, // 2: purser.v1.Heartbeat.metrics:type_name -> purser.v1.EngineMetrics
-	7, // 3: purser.v1.Heartbeat.ts:type_name -> google.protobuf.Timestamp
-	0, // 4: purser.v1.RegistrationService.Join:input_type -> purser.v1.JoinRequest
-	2, // 5: purser.v1.RegistrationService.Heartbeat:input_type -> purser.v1.Heartbeat
-	1, // 6: purser.v1.RegistrationService.Join:output_type -> purser.v1.JoinReply
-	3, // 7: purser.v1.RegistrationService.Heartbeat:output_type -> purser.v1.Ack
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	5, // 0: purser.v1.JoinRequest.hardware_profile:type_name -> purser.v1.HardwareProfile
+	6, // 1: purser.v1.Heartbeat.state:type_name -> purser.v1.NodeState
+	7, // 2: purser.v1.Heartbeat.metrics:type_name -> purser.v1.EngineMetrics
+	8, // 3: purser.v1.Heartbeat.ts:type_name -> google.protobuf.Timestamp
+	2, // 4: purser.v1.Heartbeat.node_metrics:type_name -> purser.v1.NodeMetrics
+	0, // 5: purser.v1.RegistrationService.Join:input_type -> purser.v1.JoinRequest
+	3, // 6: purser.v1.RegistrationService.Heartbeat:input_type -> purser.v1.Heartbeat
+	1, // 7: purser.v1.RegistrationService.Join:output_type -> purser.v1.JoinReply
+	4, // 8: purser.v1.RegistrationService.Heartbeat:output_type -> purser.v1.Ack
+	7, // [7:9] is the sub-list for method output_type
+	5, // [5:7] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_purser_v1_registration_proto_init() }
@@ -339,13 +444,14 @@ func file_purser_v1_registration_proto_init() {
 		return
 	}
 	file_purser_v1_common_proto_init()
+	file_purser_v1_registration_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_purser_v1_registration_proto_rawDesc), len(file_purser_v1_registration_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
