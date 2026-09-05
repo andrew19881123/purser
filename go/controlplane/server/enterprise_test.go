@@ -64,6 +64,125 @@ func get(t *testing.T, srv *server.Server, path string) *httptest.ResponseRecord
 	return rec
 }
 
+func post(t *testing.T, srv *server.Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// newLicensedAuditServer builds a server entitled to the "audit" feature and
+// returns it alongside the concrete registry, so a test can both drive the API
+// and reach the DB directly to simulate tampering.
+func newLicensedAuditServer(t *testing.T) (*server.Server, *registry.SQLiteRegistry) {
+	t.Helper()
+	now := time.Now().UTC()
+	lic := signedLicense(t, license.Payload{
+		Licensee: "Acme Corp",
+		Features: []string{"audit"},
+		Issued:   now.Add(-time.Hour),
+		Expires:  now.Add(time.Hour),
+	})
+	dbPath := filepath.Join(t.TempDir(), "registry.db")
+	reg, err := registry.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open registry: %v", err)
+	}
+	if err := reg.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	return server.New(reg, server.Config{Addr: ":0", License: lic}), reg
+}
+
+// auditLogBody is the decoded shape of the tamper-evident audit-log endpoint.
+type auditLogBody struct {
+	Feature  string `json:"feature"`
+	Licensee string `json:"licensee"`
+	Entries  []struct {
+		Seq    uint64 `json:"seq"`
+		Action string `json:"action"`
+		Hash   string `json:"hash"`
+	} `json:"entries"`
+	Chain struct {
+		Verified bool `json:"verified"`
+		Length   int  `json:"length"`
+		Break    *struct {
+			Index int    `json:"index"`
+			Seq   uint64 `json:"seq"`
+			Kind  string `json:"kind"`
+			Msg   string `json:"msg"`
+		} `json:"break"`
+	} `json:"chain"`
+}
+
+func TestAuditLogChainVerifiedAndTamperDetected(t *testing.T) {
+	srv, reg := newLicensedAuditServer(t)
+
+	// Emit several events through a normal API path: each POST mints an API key
+	// and appends an "apikey.created" event through the hash chain.
+	for i := 0; i < 3; i++ {
+		if rec := post(t, srv, "/api/v1/apikeys"); rec.Code != http.StatusCreated {
+			t.Fatalf("create apikey %d = %d; body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Untampered: 200, entries present in ascending seq, chain verified.
+	rec := get(t, srv, "/api/v1/enterprise/audit-log")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit-log = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body auditLogBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v; raw=%s", err, rec.Body.String())
+	}
+	if body.Feature != "audit" || body.Licensee != "Acme Corp" {
+		t.Errorf("feature/licensee = %q/%q, want audit/Acme Corp", body.Feature, body.Licensee)
+	}
+	if len(body.Entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(body.Entries))
+	}
+	if !body.Chain.Verified || body.Chain.Length != 3 || body.Chain.Break != nil {
+		t.Fatalf("chain = %+v, want verified=true length=3 no break", body.Chain)
+	}
+	for i, e := range body.Entries {
+		if e.Seq != uint64(i+1) {
+			t.Errorf("entries[%d].seq = %d, want %d (ascending)", i, e.Seq, i+1)
+		}
+		if e.Action != "apikey.created" {
+			t.Errorf("entries[%d].action = %q, want apikey.created", i, e.Action)
+		}
+		if e.Hash == "" {
+			t.Errorf("entries[%d].hash empty", i)
+		}
+	}
+
+	// Tamper: mutate a stored row's content WITHOUT recomputing its hash.
+	if _, err := reg.DB().ExecContext(context.Background(),
+		`UPDATE audit_log SET actor = ? WHERE seq = ?`, "mallory", 2); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+
+	rec = get(t, srv, "/api/v1/enterprise/audit-log")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit-log (post-tamper) = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body = auditLogBody{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Chain.Verified {
+		t.Fatalf("chain.verified = true after tamper, want false; chain=%+v", body.Chain)
+	}
+	if body.Chain.Break == nil {
+		t.Fatalf("chain.break missing after tamper")
+	}
+	if body.Chain.Break.Index != 1 || body.Chain.Break.Kind != "hash" || body.Chain.Break.Seq != 2 {
+		t.Errorf("break = %+v, want index=1 seq=2 kind=hash", *body.Chain.Break)
+	}
+}
+
 func TestEnterpriseStatusCommunity(t *testing.T) {
 	// nil license => community fallback.
 	srv := newEnterpriseServer(t, nil)
