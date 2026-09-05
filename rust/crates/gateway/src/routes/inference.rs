@@ -27,6 +27,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::auth::ApiKey;
 use crate::error::ApiError;
@@ -110,8 +111,25 @@ async fn proxy_inference(
     let model = routed.model;
     let want_stream = routed.stream;
 
-    // Resolve the host (404 if unknown, 503 if draining).
+    // Resolve the host (503 if not deployed or draining).
     let route = state.resolve_active(&model).await?;
+
+    // Per-model concurrency gate: reject immediately if the model's in-flight
+    // slot limit is reached (429 Too Many Requests + Retry-After: 5).
+    let queue_permit = state.queue.try_acquire(&model).map_err(|pos| {
+        tracing::warn!(
+            model = %model,
+            queue_position = pos,
+            "per-model queue full; shedding request with 429"
+        );
+        ApiError::RateLimited {
+            message: format!(
+                "Model '{model}' request queue is full; retry after a short delay."
+            ),
+            retry_after_secs: 5,
+            queue_position: Some(pos),
+        }
+    })?;
 
     // Admission: quota / rate-limit / backpressure (429 on rejection).
     let prompt_tokens = approx_prompt_tokens(&body);
@@ -168,6 +186,7 @@ async fn proxy_inference(
             upstream_ct,
             resp,
             guard,
+            queue_permit,
         ))
     } else {
         buffered_response(
@@ -180,14 +199,15 @@ async fn proxy_inference(
             upstream_ct,
             resp,
             guard,
+            queue_permit,
         )
         .await
     }
 }
 
 /// Pipe the host's SSE stream to the client with minimal buffering. The
-/// admission `guard` is moved into the stream so the concurrency slot is held
-/// until the last token is delivered.
+/// admission `guard` and the per-model `queue_permit` are moved into the
+/// stream so both concurrency slots are held until the last token is delivered.
 #[allow(clippy::too_many_arguments)]
 fn stream_response(
     state: &AppState,
@@ -200,6 +220,7 @@ fn stream_response(
     upstream_ct: Option<String>,
     resp: reqwest::Response,
     guard: crate::quota::RequestGuard,
+    queue_permit: OwnedSemaphorePermit,
 ) -> Response {
     let idle = state.http.idle;
     let limiter = Arc::clone(&state.limiter);
@@ -209,8 +230,9 @@ fn stream_response(
     let upstream = resp.bytes_stream();
 
     let body_stream = async_stream::stream! {
-        // Held for the whole stream; dropped at the end → releases the slot.
+        // Both held for the whole stream; dropped at the end → releases slots.
         let _guard = guard;
+        let _queue_permit = queue_permit;
         tokio::pin!(upstream);
         let mut out_tokens: u64 = 0;
 
@@ -270,6 +292,8 @@ async fn buffered_response(
     upstream_ct: Option<String>,
     resp: reqwest::Response,
     guard: crate::quota::RequestGuard,
+    // Held for the duration of the buffered response; released on return.
+    _queue_permit: OwnedSemaphorePermit,
 ) -> Result<Response, ApiError> {
     let bytes = match tokio::time::timeout(state.http.idle, resp.bytes()).await {
         Err(_elapsed) => {

@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
 use crate::error::ApiError;
 
 /// Environment overrides for the quota knobs.
@@ -27,6 +29,8 @@ pub const ENV_TOKENS_PER_MIN: &str = "PURSER_GATEWAY_TOKENS_PER_MIN";
 pub const ENV_MAX_CONCURRENT: &str = "PURSER_GATEWAY_MAX_CONCURRENT";
 pub const ENV_MAX_INFLIGHT: &str = "PURSER_GATEWAY_MAX_INFLIGHT";
 pub const ENV_RETRY_AFTER: &str = "PURSER_GATEWAY_RETRY_AFTER_SECS";
+/// Maximum in-flight requests per model before new requests are shed with 429.
+pub const ENV_MAX_QUEUE_DEPTH: &str = "PURSER_GATEWAY_MAX_QUEUE_DEPTH";
 
 /// Tunable quota/limit thresholds. `0` disables the corresponding limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +43,10 @@ pub struct QuotaConfig {
     pub max_inflight: u32,
     /// `Retry-After` value (seconds) advertised on `429`.
     pub retry_after_secs: u64,
+    /// Per-model in-flight ceiling. When all permits are held, new requests for
+    /// that model are immediately rejected with 429 + `Retry-After: 5` +
+    /// `X-Queue-Position`. `0` means unlimited.
+    pub max_queue_depth: usize,
 }
 
 impl Default for QuotaConfig {
@@ -50,6 +58,7 @@ impl Default for QuotaConfig {
             max_concurrent: 32,
             max_inflight: 512,
             retry_after_secs: 2,
+            max_queue_depth: 20,
         }
     }
 }
@@ -63,6 +72,7 @@ impl QuotaConfig {
             max_concurrent: env_u64(ENV_MAX_CONCURRENT, d.max_concurrent as u64) as u32,
             max_inflight: env_u64(ENV_MAX_INFLIGHT, d.max_inflight as u64) as u32,
             retry_after_secs: env_u64(ENV_RETRY_AFTER, d.retry_after_secs),
+            max_queue_depth: env_u64(ENV_MAX_QUEUE_DEPTH, d.max_queue_depth as u64) as usize,
         }
     }
 }
@@ -161,6 +171,7 @@ impl Limiter {
                 message: "Gateway is saturated (backpressure). Retry after a short delay."
                     .to_string(),
                 retry_after_secs: quota.retry_after_secs,
+                queue_position: None,
             });
         }
 
@@ -182,6 +193,7 @@ impl Limiter {
                         quota.max_concurrent
                     ),
                     retry_after_secs: quota.retry_after_secs,
+                    queue_position: None,
                 })
             } else if quota.tokens_per_min > 0 && !ks.bucket.try_take(prompt_tokens.max(1) as f64) {
                 Err(ApiError::RateLimited {
@@ -190,6 +202,7 @@ impl Limiter {
                         quota.tokens_per_min
                     ),
                     retry_after_secs: quota.retry_after_secs,
+                    queue_position: None,
                 })
             } else {
                 ks.concurrent += 1;
@@ -244,5 +257,61 @@ pub struct RequestGuard {
 impl Drop for RequestGuard {
     fn drop(&mut self) {
         self.limiter.release(&self.key_id);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-model concurrency gate (Semaphore-based queue limiter)
+// ---------------------------------------------------------------------------
+
+/// Per-model in-flight concurrency gate.
+///
+/// Each model gets a [`Semaphore`] with `max_depth` permits. When all permits
+/// are held (i.e. `max_depth` requests are being processed for that model),
+/// new arrivals are immediately rejected — the caller returns `429
+/// Too Many Requests` with `Retry-After: 5` and `X-Queue-Position: <n>`.
+///
+/// This is intentionally a *try-acquire* (non-blocking) gate, not a waiting
+/// queue: it protects a slow/overloaded deployment host from being overwhelmed
+/// by a thundering herd, but does not buffer callers (buffers hide latency).
+pub struct ModelQueueSemaphores {
+    max_depth: usize,
+    semaphores: Mutex<HashMap<String, Arc<Semaphore>>>,
+}
+
+impl ModelQueueSemaphores {
+    /// Create a new limiter. `max_depth = 0` means every request is rejected
+    /// immediately (useful for testing).
+    pub fn new(max_depth: usize) -> Self {
+        Self {
+            max_depth,
+            semaphores: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Try to acquire a per-model slot for `model`.
+    ///
+    /// Returns `Ok(permit)` when a slot is available. The permit **must be
+    /// held** until the upstream request completes — dropping it releases the
+    /// slot. For streaming responses move it into the body stream alongside the
+    /// quota [`RequestGuard`].
+    ///
+    /// Returns `Err(queue_position)` when the semaphore is exhausted. The
+    /// returned value is the notional queue position of the rejected request
+    /// (i.e. `max_depth + 1` when all slots are in use), suitable for the
+    /// `X-Queue-Position` response header.
+    pub fn try_acquire(&self, model: &str) -> Result<OwnedSemaphorePermit, usize> {
+        let sem = {
+            let mut map = self
+                .semaphores
+                .lock()
+                .expect("model queue semaphore mutex poisoned");
+            map.entry(model.to_string())
+                .or_insert_with(|| Arc::new(Semaphore::new(self.max_depth)))
+                .clone()
+        };
+        let in_flight = self.max_depth.saturating_sub(sem.available_permits());
+        sem.try_acquire_owned()
+            .map_err(|_| in_flight.saturating_add(1))
     }
 }
