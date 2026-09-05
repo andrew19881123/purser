@@ -169,6 +169,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
 	s.mux.HandleFunc("GET /api/v1/cluster/health", s.handleClusterHealth)
 	s.mux.HandleFunc("POST /api/v1/apikeys", s.handleCreateAPIKey)
+	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
+	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
 
 	// Enterprise (open-core) endpoints. Public code, gated at runtime by a
@@ -991,6 +993,39 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"tenant": body.Tenant,
 		"key":    plaintext,
 	})
+}
+
+// handleListAPIKeys returns all API keys. The plaintext key and its SHA-256
+// hash are never returned — only metadata (id, name, tenant, quota, enabled,
+// created_at, updated_at). The KeyHash field on registry.APIKey carries
+// json:"-" so it is excluded from marshalling automatically.
+func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := s.reg.ListAPIKeys(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_apikeys_failed", err.Error())
+		return
+	}
+	if keys == nil {
+		keys = []*registry.APIKey{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"apikeys": keys})
+}
+
+// handleDeleteAPIKey revokes (permanently removes) an API key by ID.
+// Returns 404 if the key does not exist, 204 No Content on success.
+// Emits an apikey.deleted audit event on success.
+func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.reg.DeleteAPIKey(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "api key not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "delete_apikey_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "apikey.deleted", Target: id})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // joinTokenRequest is the optional body of POST /join-token.
