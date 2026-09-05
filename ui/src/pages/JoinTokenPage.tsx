@@ -2,165 +2,156 @@ import { useState } from 'react';
 import {
   Button,
   Card,
-  CodeBlock,
   CopyButton,
   ErrorState,
-  Field,
+  LoadingBlock,
   PageHeader,
-  useFieldId,
 } from '../components/ui';
-import { useCreateJoinToken } from '../hooks/queries';
+import { IconRefresh } from '../components/icons';
+import { useJoinInfo, useRotateToken } from '../hooks/queries';
 import { useT } from '../i18n';
-import { timeUntil } from '../lib/format';
-import { errorMessage } from '../lib/errors';
 import { config } from '../api/config';
-import type { JoinTokenResult } from '../api/types';
+import { relativeTime } from '../lib/format';
+import { errorMessage } from '../lib/errors';
 
-// ---------------------------------------------------------------------------
-// Infer the control-plane address that the agent should connect to.
-// When the API base is an absolute URL (e.g. set via PURSER_API_BASE_URL),
-// extract its origin; otherwise fall back to the current window origin so
-// the UI works from any same-origin deployment without extra configuration.
-// ---------------------------------------------------------------------------
-function inferControlPlaneAddr(): string {
-  const base = config.apiBase;
-  if (base.startsWith('http')) {
-    try {
-      return new URL(base).origin;
-    } catch {
-      // fall through to window.location
-    }
-  }
-  return typeof window !== 'undefined' ? window.location.origin : '';
+// TTL choices for the enrollment bundle. Seconds are forwarded verbatim to
+// GET /api/v1/enrollment-bundle?ttl_seconds=<value>.
+interface TtlOption {
+  labelKey: 'join.ttl.1h' | 'join.ttl.24h' | 'join.ttl.7d' | 'join.ttl.30d';
+  seconds: number;
 }
 
-function buildEnvBlock(result: JoinTokenResult): string {
-  const addr = inferControlPlaneAddr();
-  return [
-    `PURSER_CONTROL_PLANE_ADDR=${addr}`,
-    `PURSER_JOIN_TOKEN=${result.token}`,
-    `PURSER_CLUSTER_ID=${result.clusterId}`,
-  ].join('\n');
-}
+const TTL_OPTIONS: TtlOption[] = [
+  { labelKey: 'join.ttl.1h', seconds: 3600 },
+  { labelKey: 'join.ttl.24h', seconds: 86400 },
+  { labelKey: 'join.ttl.7d', seconds: 604800 },
+  { labelKey: 'join.ttl.30d', seconds: 2592000 },
+];
 
-const INSTALL_SNIPPET = `\
-# Debian / Ubuntu — replace VERSION with your release (e.g. 0.2.0)
-sudo apt install ./purser-agent_VERSION_amd64.deb
-
-# Populate the agent configuration with the values above
-sudo tee /etc/purser/agent.env > /dev/null <<'EOF'
-PURSER_CONTROL_PLANE_ADDR=<paste from above>
-PURSER_JOIN_TOKEN=<paste from above>
-PURSER_CLUSTER_ID=<paste from above>
-EOF
-
-# Enable and start the agent service
-sudo systemctl enable --now purser-agent`;
+type BundleStatus = 'idle' | 'loading' | 'error';
 
 export function JoinTokenPage() {
   const t = useT();
-  const createToken = useCreateJoinToken();
-  const [ttl, setTtl] = useState(86400); // 24 h default
-  const [result, setResult] = useState<JoinTokenResult | null>(null);
-  const ttlId = useFieldId('ttl');
+  const { data: join, isLoading, isError, error, refetch } = useJoinInfo();
+  const rotate = useRotateToken();
+  const [ttl, setTtl] = useState<number>(86400);
+  const [bundleStatus, setBundleStatus] = useState<BundleStatus>('idle');
 
-  const ttlOptions = [
-    { value: 3600, label: t('jointoken.ttl.1h') },
-    { value: 28800, label: t('jointoken.ttl.8h') },
-    { value: 86400, label: t('jointoken.ttl.24h') },
-    { value: 604800, label: t('jointoken.ttl.7d') },
-  ];
-
-  const generate = () => {
-    createToken.mutate(ttl, {
-      onSuccess: (data) => {
-        setResult(data);
-        // Scroll the result card into view on small viewports.
-        window.setTimeout(
-          () => document.getElementById('join-token-result')?.scrollIntoView({ behavior: 'smooth' }),
-          50,
-        );
-      },
-    });
+  const downloadBundle = async () => {
+    setBundleStatus('loading');
+    try {
+      const res = await fetch(
+        `${config.apiBase}/enrollment-bundle?ttl_seconds=${ttl}`,
+        { credentials: 'same-origin' },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'purser-enrollment.env';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBundleStatus('idle');
+    } catch {
+      setBundleStatus('error');
+    }
   };
 
-  const envBlock = result ? buildEnvBlock(result) : '';
+  const expired = join ? new Date(join.expiresAt).getTime() < Date.now() : false;
 
   return (
     <div className="page">
-      <PageHeader title={t('jointoken.title')} subtitle={t('jointoken.subtitle')} />
+      <PageHeader title={t('join.title')} subtitle={t('join.subtitle')} />
 
-      <Card title={t('jointoken.form.title')}>
-        <Field label={t('jointoken.ttl.label')} htmlFor={ttlId}>
-          <select
-            id={ttlId}
-            className="select"
-            value={ttl}
-            onChange={(e) => setTtl(Number(e.target.value))}
+      {/* --- Join token card ------------------------------------------------ */}
+      <Card
+        title={t('join.token.label')}
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => rotate.mutate()}
+            disabled={rotate.isPending}
           >
-            {ttlOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <div style={{ marginTop: 'var(--space-4)' }}>
-          <Button variant="primary" onClick={generate} disabled={createToken.isPending}>
-            {t('jointoken.action.generate')}
+            <IconRefresh />
+            <span>{t('onboarding.token.rotate')}</span>
           </Button>
-        </div>
-        {createToken.isError && (
-          <div style={{ marginTop: 'var(--space-3)' }}>
-            <ErrorState message={errorMessage(createToken.error, t, 'error.jointoken')} />
-          </div>
+        }
+      >
+        {isLoading && <LoadingBlock />}
+        {isError && (
+          <ErrorState
+            message={errorMessage(error, t, 'error.join')}
+            onRetry={() => refetch()}
+          />
+        )}
+        {join && (
+          <>
+            <div className="token-row">
+              <code className="token" aria-label={t('join.token.label')}>
+                {join.joinToken}
+              </code>
+              <CopyButton value={join.joinToken} />
+            </div>
+            <p className={`token-expiry${expired ? ' token-expiry--danger' : ''}`}>
+              {expired
+                ? t('onboarding.token.expired')
+                : t('onboarding.token.expires', { when: relativeTime(join.expiresAt) })}
+            </p>
+          </>
         )}
       </Card>
 
-      {result && (
-        <div id="join-token-result">
-        <Card title={t('jointoken.result.title')}>
-          <div className="notice notice--warning" role="alert">
-            {t('jointoken.result.warning')}
-          </div>
+      {/* --- Enrollment bundle card ----------------------------------------- */}
+      <Card title={t('join.bundle.title')}>
+        <p className="prose">{t('join.bundle.desc')}</p>
 
-          <p className="field__label" style={{ marginTop: 'var(--space-4)' }}>
-            {t('jointoken.result.token')}
-          </p>
-          <div className="token-row">
-            <code className="token" aria-label={t('jointoken.result.token')}>
-              {result.token}
-            </code>
-            <CopyButton value={result.token} />
-          </div>
-          <p className="token-expiry">
-            {t('jointoken.result.expires', { when: timeUntil(result.expiresAt) })}
-          </p>
+        <div className="bundle-row">
+          <label className="field__label" htmlFor="bundle-ttl">
+            {t('join.bundle.ttl')}
+          </label>
+          <select
+            id="bundle-ttl"
+            className="select"
+            value={ttl}
+            onChange={(e) => setTtl(Number(e.target.value))}
+            disabled={bundleStatus === 'loading'}
+          >
+            {TTL_OPTIONS.map((o) => (
+              <option key={o.seconds} value={o.seconds}>
+                {t(o.labelKey)}
+              </option>
+            ))}
+          </select>
 
-          <p className="field__label" style={{ marginTop: 'var(--space-4)' }}>
-            {t('jointoken.result.env.label')}
-          </p>
-          <p className="muted" style={{ marginBottom: 'var(--space-2)' }}>
-            {t('jointoken.result.env.hint')}
-          </p>
-          <CodeBlock code={envBlock} ariaLabel={t('jointoken.result.env.label')} />
-
-          <details style={{ marginTop: 'var(--space-4)' }}>
-            <summary
-              style={{ cursor: 'pointer', userSelect: 'none', color: 'var(--accent)', fontWeight: 500 }}
+          <div
+            className="bundle-btn-wrap"
+            title={t('join.bundle.tooltip')}
+            aria-label={t('join.bundle.tooltip')}
+          >
+            <Button
+              variant="primary"
+              onClick={() => void downloadBundle()}
+              disabled={bundleStatus === 'loading'}
             >
-              {t('jointoken.result.instructions.title')}
-            </summary>
-            <div style={{ marginTop: 'var(--space-3)' }}>
-              <CodeBlock
-                code={INSTALL_SNIPPET}
-                ariaLabel={t('jointoken.result.instructions.title')}
-              />
-            </div>
-          </details>
-        </Card>
+              {bundleStatus === 'loading'
+                ? t('join.bundle.downloading')
+                : t('join.bundle.download')}
+            </Button>
+          </div>
         </div>
-      )}
+
+        {bundleStatus === 'error' && (
+          <ErrorState
+            message={t('join.bundle.error')}
+            onRetry={() => setBundleStatus('idle')}
+          />
+        )}
+      </Card>
     </div>
   );
 }

@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -168,6 +169,12 @@ type Config struct {
 	// ClusterID is echoed in join-token responses so an enrolling agent knows
 	// which cluster it is joining. Defaults to "default".
 	ClusterID string
+	// PublicAddr is the control-plane address that enrolling nodes should dial
+	// (e.g. "http://10.0.0.1:8080"). It is emitted verbatim in the enrollment
+	// bundle so an operator can override it for external nodes. If unset, Addr
+	// is used as a best-effort fallback (which may be a bind address like
+	// ":8080" that is not reachable from external machines).
+	PublicAddr string
 	// License is the verified license resolved at startup (see
 	// license.FromEnv). It gates the enterprise endpoints. If nil, the server
 	// falls back to the community license (enterprise features off).
@@ -203,6 +210,7 @@ type Server struct {
 	planner       *planning.Planner
 	fleet         FleetManager
 	clusterID     string
+	publicAddr    string
 	license       *license.License
 	oidcVerifier  TokenVerifier // nil = OIDC disabled
 	internalToken string        // gateway exemption secret
@@ -233,6 +241,10 @@ func New(reg registry.Registry, cfg Config) *Server {
 	if clusterID == "" {
 		clusterID = "default"
 	}
+	publicAddr := cfg.PublicAddr
+	if publicAddr == "" {
+		publicAddr = cfg.Addr
+	}
 	lic := cfg.License
 	if lic == nil {
 		lic = license.Community()
@@ -248,6 +260,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		planner:       cfg.Planner,
 		fleet:         cfg.Fleet,
 		clusterID:     clusterID,
+		publicAddr:    publicAddr,
 		license:       lic,
 		internalToken: cfg.InternalToken,
 	}
@@ -376,6 +389,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
+	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
 	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
 	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
@@ -1457,6 +1471,61 @@ func (s *Server) handleJoinToken(w http.ResponseWriter, r *http.Request) {
 		"expires_at": tok.ExpiresAt.UTC().Format(time.RFC3339),
 		"cluster_id": s.clusterID,
 	})
+}
+
+// handleEnrollmentBundle generates a pre-compiled .env file containing the
+// three variables an agent needs to auto-enroll. The bundle is suitable for
+// direct placement at /etc/purser/agent.env on target nodes — operators do not
+// need to copy individual values.
+//
+// Query parameters:
+//
+//	ttl_seconds — token lifetime; <= 0 falls back to the fleet default (1h).
+//
+// Response: text/plain with a comment header (generation time, expiry) and the
+// three env vars:
+//
+//	PURSER_CONTROL_PLANE_ADDR — s.publicAddr (overridable via PURSER_PUBLIC_ADDR)
+//	PURSER_CLUSTER_ID         — s.clusterID
+//	PURSER_JOIN_TOKEN         — freshly minted single-use token
+func (s *Server) handleEnrollmentBundle(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		s.writeError(w, http.StatusNotImplemented, "no_fleet", "fleet manager not configured")
+		return
+	}
+	var ttl time.Duration // 0 => fleet default (1h)
+	if qs := r.URL.Query().Get("ttl_seconds"); qs != "" {
+		if secs, err := strconv.ParseInt(qs, 10, 64); err == nil && secs > 0 {
+			ttl = time.Duration(secs) * time.Second
+		}
+	}
+	tok, err := s.fleet.GenerateJoinToken(r.Context(), ttl)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "join_token_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "enrollment_bundle.created", Target: s.clusterID})
+
+	now := time.Now().UTC()
+	expires := tok.ExpiresAt.UTC()
+	bundle := fmt.Sprintf(
+		"# Purser Agent Enrollment Bundle\n"+
+			"# Generated: %s\n"+
+			"# Expires:   %s\n"+
+			"# Copy this file to /etc/purser/agent.env on each node you want to enroll.\n"+
+			"\n"+
+			"PURSER_CONTROL_PLANE_ADDR=%s\n"+
+			"PURSER_CLUSTER_ID=%s\n"+
+			"PURSER_JOIN_TOKEN=%s\n",
+		now.Format(time.RFC3339),
+		expires.Format(time.RFC3339),
+		s.publicAddr,
+		s.clusterID,
+		tok.Token,
+	)
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = fmt.Fprint(w, bundle)
 }
 
 // handleMetricsSSE streams live cluster metrics as Server-Sent Events. It emits

@@ -223,6 +223,22 @@ export const en = {
   'settings.created.title': 'Key created',
   'settings.created.warning': "Copy it now — the full secret is shown only once.",
   'settings.keys.empty': 'No API keys yet. Create one to let apps reach the Gateway.',
+
+  // join token / enrollment bundle
+  'join.title': 'Node enrollment',
+  'join.subtitle': 'Generate a join token or download a pre-configured agent bundle to enroll nodes.',
+  'join.token.label': 'Join token',
+  'join.bundle.title': 'Download enrollment bundle',
+  'join.bundle.desc': 'Download a ready-to-use .env file. Place it at /etc/purser/agent.env on each node and restart the agent — no manual token copy required.',
+  'join.bundle.ttl': 'Bundle lifetime',
+  'join.bundle.download': 'Download Enrollment Bundle',
+  'join.bundle.downloading': 'Downloading…',
+  'join.bundle.error': 'Could not download the enrollment bundle. Check the control plane is reachable.',
+  'join.bundle.tooltip': 'Save this file to /etc/purser/agent.env on each node',
+  'join.ttl.1h': '1 hour',
+  'join.ttl.24h': '24 hours',
+  'join.ttl.7d': '7 days',
+  'join.ttl.30d': '30 days',
 } as const;
 
 export type StringKey = keyof typeof en;
