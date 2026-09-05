@@ -61,6 +61,23 @@ const (
 	// rate to get a prefill rate (design 08 §11). CALIBRATABLE — the true ratio
 	// depends on batch size, sequence length and the compute/bandwidth roofline.
 	prefillComputeMultiple = 8.0
+
+	// kvSsdOffloadFactor is the fraction of a node's free SSD space that
+	// KV-cache SSD offload (Tutti-style) contributes to the effective KV-cache
+	// memory pool. 0.50 is a conservative first estimate — SSD bandwidth is
+	// substantially lower than VRAM bandwidth, so only a fraction of nominal
+	// SSD capacity is practically usable at decode speed without stalling the
+	// pipeline. CALIBRATABLE — measure with actual SSD-offload throughput
+	// benchmarks and the latency penalty at decode (design 08 §10, fase2).
+	kvSsdOffloadFactor = 0.50
+
+	// kvSsdOffloadMaxMultiplier caps the total KV-cache SSD contribution: the
+	// SSD-augmented effective memory cannot exceed this multiple of the node's
+	// VRAM (or available RAM for unified/CPU nodes). Prevents unrealistically
+	// high headroom estimates when a node has a very large (but slow) SSD.
+	// CALIBRATABLE — raise only when measured SSD offload sustains high,
+	// stable throughput at the chosen tier (design 08 §10, fase2).
+	kvSsdOffloadMaxMultiplier = 2.0
 )
 
 // Plan is the planner entry point (design 08 §3): given the fleet state
@@ -473,9 +490,12 @@ func constraintSuggestions(c Constraints) []string {
 // and multi-node estimates consistent and inherits its memory-bandwidth model,
 // the MBU factor, and the unknown-bandwidth fallback — so this never returns a
 // zero rate for a node that merely failed to report its bandwidth.
+//
+// The node is passed through to estimatePerformance so that engine capability
+// fields (KVSSDOffload, PrefixCachingFactor) can refine the estimate (P7).
 func estimateSingleNode(n Node, model ModelSpec, quant Quantization, headroom float64) PerfEstimate {
 	bottleneck := computeTime(n, model, quant, 0, model.Layers)
-	return estimatePerformance(bottleneck, headroom, model)
+	return estimatePerformance(bottleneck, headroom, model, n)
 }
 
 // estimatePerformance turns a pipeline bottleneck (seconds per decoded token at
@@ -497,11 +517,22 @@ func estimateSingleNode(n Node, model ModelSpec, quant Quantization, headroom fl
 //  3. Prefill: compute-bound and batched, so far higher throughput than the
 //     memory-bound decode — a prefillComputeMultiple multiple of the decode rate.
 //
+// The engine capabilities in n further refine the estimate (P7):
+//   - n.PrefixCachingFactor > 0: a fraction of input tokens are KV-cache hits
+//     and need no attention recompute; the effective prefill throughput scales by
+//     1/(1-factor) — fewer tokens to process per request.
+//   - n.KVSSDOffload && n.DiskFreeGB > 0: cold KV-cache blocks can spill to SSD,
+//     expanding the effective memory available for the KV pool; HeadroomGB is
+//     raised by kvSsdOffloadFactor × DiskFreeGB, capped at
+//     kvSsdOffloadMaxMultiplier × VRAM (or available RAM for unified/CPU nodes).
+//
+// A zero-value Node (no capabilities) reproduces the original behaviour exactly.
+//
 // The result is deliberately a RANGE, never a single number: the coefficients
 // are coarse and not yet calibrated, so the point estimate is widened by
 // ±perfBandFraction to make that uncertainty explicit in the UI (design 08 §11,
 // §15). Every coefficient above is a named, CALIBRATABLE constant.
-func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec) PerfEstimate {
+func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec, n Node) PerfEstimate {
 	decode := 0.0
 	if bottleneckSecPerTok > 0 && memBandwidthUtilFraction > 0 {
 		// Realised time = peak-bandwidth time / MBU; decode rate is its inverse.
@@ -517,12 +548,47 @@ func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec)
 	// memory-bound decode; a rough multiple as a placeholder point estimate.
 	prefill := decode * prefillComputeMultiple
 
+	// TODO: add prefix_caching_factor to NodeCapabilities proto (fase2 follow-up);
+	// currently populated only when callers set Node.PrefixCachingFactor directly.
+	//
+	// Apply prefix-caching speedup: cache hits skip KV recompute, so only the
+	// fraction (1-factor) of tokens require full attention at prefill. The
+	// effective prefill throughput scales by 1/(1-factor). Guard: factor must be
+	// strictly in (0, 1) to avoid division-by-zero and sign inversion.
+	if n.PrefixCachingFactor > 0 && n.PrefixCachingFactor < 1 {
+		prefill /= (1 - n.PrefixCachingFactor)
+	}
+
+	// TODO: add kv_ssd_offload to NodeCapabilities proto (fase2 follow-up);
+	// currently populated only when callers set Node.KVSSDOffload directly.
+	// Node.DiskFreeGB is already populated from HardwareProfile.disk_free_gb.
+	//
+	// Apply KV SSD offload: free disk space usable as overflow KV storage
+	// expands the effective memory pool, raising reported headroom. The
+	// contribution is capped at kvSsdOffloadMaxMultiplier × (V)RAM so that a
+	// node with a very large (but slow) SSD does not produce misleadingly high
+	// estimates.
+	effectiveHeadroom := headroom
+	if n.KVSSDOffload && n.DiskFreeGB > 0 {
+		ssdContrib := kvSsdOffloadFactor * n.DiskFreeGB
+		// Determine the cap base: discrete VRAM for GPU nodes; available RAM
+		// for unified-memory or CPU-only nodes.
+		capBase := n.VRAMGB
+		if capBase <= 0 {
+			capBase = n.RAMAvailableGB
+		}
+		if maxSSD := kvSsdOffloadMaxMultiplier * capBase; ssdContrib > maxSSD {
+			ssdContrib = maxSSD
+		}
+		effectiveHeadroom += ssdContrib
+	}
+
 	return PerfEstimate{
 		DecodeTokSMin:  decode * (1 - perfBandFraction),
 		DecodeTokSMax:  decode * (1 + perfBandFraction),
 		PrefillTokSMin: prefill * (1 - perfBandFraction),
 		PrefillTokSMax: prefill * (1 + perfBandFraction),
-		HeadroomGB:     headroom,
+		HeadroomGB:     effectiveHeadroom,
 	}
 }
 

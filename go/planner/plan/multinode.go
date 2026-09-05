@@ -59,7 +59,7 @@ func multiNodePlan(
 	headroom := minStageHeadroom(assignments, nodeByID, model, quant)
 
 	orderMethod := "exact (Held-Karp)"
-	if len(order) > HeldKarpMaxNodes {
+	if len(order) > orderingThreshold {
 		orderMethod = "heuristic (nearest-neighbour + 2-opt)"
 	}
 
@@ -199,6 +199,11 @@ func variance(xs []float64) float64 {
 // inter-stage communication, so it is the pipeline's per-token pace; the shared
 // estimatePerformance converts it into a min/max band and applies the
 // speculative-decoding factor when the model ships a draft.
+//
+// Engine capabilities (KVSSDOffload, PrefixCachingFactor) are per-node; for
+// multi-node plans the bottleneck node is not tracked at this level, so a
+// zero-value Node is passed as a conservative estimate. A future enhancement
+// would plumb the bottleneck node's capabilities through here.
 func estimateMultiNode(bottleneck, headroom float64, model ModelSpec) PerfEstimate {
-	return estimatePerformance(bottleneck, headroom, model)
+	return estimatePerformance(bottleneck, headroom, model, Node{})
 }
