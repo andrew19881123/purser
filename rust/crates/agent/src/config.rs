@@ -27,10 +27,13 @@ pub struct AgentConfig {
     /// Socket address `AgentService` (gRPC) binds to.
     pub bind_addr: SocketAddr,
 
-    /// Address of the control plane's `RegistrationService`, used to enroll and
-    /// heartbeat. `None` until provisioning wires it in.
-    ///
-    /// TODO(phase2): consumed by discovery/enrollment (see `discovery.rs`).
+    /// Address of the control plane's `RegistrationService`, used to enroll
+    /// and heartbeat. When set, the agent connects here at startup to call
+    /// `RegistrationService::Join`, then streams periodic `Heartbeat` RPCs.
+    /// Also seeded into the peer-discovery path so LAN neighbors can be found
+    /// via the control plane's address. When absent, the agent serves
+    /// `AgentService` without registering with any control plane. Overridable
+    /// via `PURSER_CONTROL_PLANE_ADDR`.
     pub control_plane_addr: Option<String>,
 
     /// Logical cluster this node belongs to.
@@ -40,9 +43,12 @@ pub struct AgentConfig {
     /// during `RegistrationService::Join`.
     pub node_id: Option<String>,
 
-    /// One-time join token used to enroll into the cluster.
-    ///
-    /// TODO(phase2): used by the enrollment flow (see `discovery.rs`).
+    /// One-time join token used to authenticate the node during
+    /// `RegistrationService::Join`. Sent verbatim to the control plane so it
+    /// can verify the node is authorized to enroll. After enrollment succeeds
+    /// the certificate issued by the control plane is stored in the secret
+    /// store and the token is no longer needed. Overridable via
+    /// `PURSER_JOIN_TOKEN`.
     pub join_token: Option<String>,
 
     /// Cadence at which `Health` streams `HealthReport`s.
@@ -367,9 +373,6 @@ mod tests {
 
     #[test]
     fn swim_bind_addr_env_is_parsed() {
-        // Isolate env-var test: since tests may run in parallel we use a
-        // unique key per test (see PURSER_SWIM_BIND_ADDR in from_env).
-        // We test parse logic directly via the public AgentConfig mutator.
         let mut cfg = AgentConfig::default();
         let addr: SocketAddr = "127.0.0.1:9876".parse().unwrap();
         cfg.swim_bind_addr = addr;
@@ -378,8 +381,37 @@ mod tests {
 
     #[test]
     fn swim_enabled_flag_is_read() {
-        // Verify the config struct default is opt-out.
         let cfg = AgentConfig::default();
         assert!(!cfg.swim_enabled, "SWIM must be opt-in (default disabled)");
+    }
+
+    // ------------------------------------------------------------------
+    // Enrollment config (T2-8 — fields were already consumed, stale TODOs removed)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn from_env_reads_control_plane_addr_and_join_token() {
+        const CP_VAR: &str = "PURSER_CONTROL_PLANE_ADDR";
+        const TOK_VAR: &str = "PURSER_JOIN_TOKEN";
+
+        let prev_cp = std::env::var(CP_VAR).ok();
+        let prev_tok = std::env::var(TOK_VAR).ok();
+
+        std::env::set_var(CP_VAR, "http://cp.test:9443");
+        std::env::set_var(TOK_VAR, "tok-abc123");
+
+        let cfg = AgentConfig::from_env().unwrap();
+
+        match prev_cp {
+            Some(v) => std::env::set_var(CP_VAR, v),
+            None => std::env::remove_var(CP_VAR),
+        }
+        match prev_tok {
+            Some(v) => std::env::set_var(TOK_VAR, v),
+            None => std::env::remove_var(TOK_VAR),
+        }
+
+        assert_eq!(cfg.control_plane_addr.as_deref(), Some("http://cp.test:9443"));
+        assert_eq!(cfg.join_token.as_deref(), Some("tok-abc123"));
     }
 }
