@@ -1012,6 +1012,12 @@ type importRequest struct {
 	Model string `json:"model,omitempty"`
 	// VertexVersion selects a specific Vertex AI model version. Empty means latest.
 	VertexVersion string `json:"vertex_version,omitempty"`
+	// Azure ML fields
+	// Workspace is an optional per-request override for the Azure ML workspace
+	// name. When empty, the server falls back to PURSER_AZURE_ML_WORKSPACE.
+	Workspace string `json:"workspace,omitempty"`
+	// AzureVersion selects a specific Azure ML model version. Empty means latest.
+	AzureVersion string `json:"azure_version,omitempty"`
 }
 
 // hfSourceBlob is the JSON shape stored in Model.Source for HuggingFace
@@ -1032,6 +1038,7 @@ type hfSourceBlob struct {
 //   - "s3", "gcs", "azure" — resolves the object-storage URI to a download URL.
 //   - "sagemaker" — lists approved packages from an AWS SageMaker model group.
 //   - "vertexai" — imports from GCP Vertex AI Model Registry.
+//   - "azureml" — imports from an Azure ML workspace.
 //
 // POST /api/v1/models/import
 func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
@@ -1049,9 +1056,11 @@ func (s *Server) handleImportModel(w http.ResponseWriter, r *http.Request) {
 		s.handleImportSageMaker(w, r, body)
 	case "vertexai":
 		s.handleImportVertexAI(w, r, body)
+	case "azureml":
+		s.handleImportAzureML(w, r, body)
 	default:
 		s.writeError(w, http.StatusBadRequest, "unknown_source",
-			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure, sagemaker, vertexai")
+			"unknown import source: "+body.Source+"; supported: huggingface, s3, gcs, azure, sagemaker, vertexai, azureml")
 	}
 }
 
@@ -2355,6 +2364,91 @@ func (s *Server) handleImportVertexAI(w http.ResponseWriter, r *http.Request, bo
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"model_id": modelID,
 		"source":   source,
+	})
+}
+
+// handleImportAzureML imports a model from an Azure ML workspace.
+//
+// It authenticates via OAuth2 client credentials, lists the requested model's
+// versions, selects the latest Production version (or latest overall), and
+// creates a catalog entry with the source metadata stored in Spec.
+func (s *Server) handleImportAzureML(w http.ResponseWriter, r *http.Request, body importRequest) {
+	if body.Model == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "model name is required")
+		return
+	}
+
+	client, err := importer.NewAzureMLClient(body.Workspace)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	versions, err := client.ListModelVersions(r.Context(), body.Model)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, "azureml_error",
+			"list model versions: "+err.Error())
+		return
+	}
+
+	var selected importer.AzureMLModelVersion
+	if body.AzureVersion != "" {
+		found := false
+		for _, v := range versions {
+			if v.Version == body.AzureVersion {
+				selected = v
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, "version_not_found",
+				"version not found in workspace: "+body.AzureVersion)
+			return
+		}
+	} else {
+		v, ok := importer.LatestVersion(versions)
+		if !ok {
+			s.writeError(w, http.StatusNotFound, "no_versions",
+				"no versions found for model: "+body.Model)
+			return
+		}
+		selected = v
+	}
+
+	src := map[string]any{
+		"type":         "azureml",
+		"workspace":    client.Workspace,
+		"model":        body.Model,
+		"version":      selected.Version,
+		"artifact_uri": selected.ArtifactURI,
+	}
+	srcJSON, err := json.Marshal(src)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "encode_source_failed", err.Error())
+		return
+	}
+
+	modelID := body.Model
+	m := &registry.Model{
+		ID:   modelID,
+		Spec: srcJSON,
+	}
+	if err := s.reg.CreateModel(r.Context(), m); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			s.writeError(w, http.StatusConflict, "model_exists",
+				"model already exists: "+modelID)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
+		return
+	}
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+		Actor: "api", Action: "model.imported", Target: modelID,
+	})
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"model_id": modelID,
+		"source":   src,
 	})
 }
 
