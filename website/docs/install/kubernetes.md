@@ -56,6 +56,19 @@ helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
 
 `--set controlPlane.service.type=LoadBalancer` is required when Agents run outside the cluster — it exposes the gRPC RegistrationService (`:9443`) and REST API (`:8080`) to the LAN. With the default `ClusterIP`, Agents cannot reach the Control Plane.
 
+## Verify chart signature
+
+The Helm chart OCI artefact is signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signatures using the GitHub Actions OIDC identity. Verify the chart before installing:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp="https://github.com/andrew19881123/purser/.github/workflows/release.yml@refs/tags/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  oci://ghcr.io/andrew19881123/charts/purser:<VERSION>
+```
+
+Replace `<VERSION>` with the numeric chart version (e.g. `0.3.0`). A successful verification prints the certificate chain and digest — no key management required. Verification uses the Sigstore transparency log (Rekor) to confirm the signature was produced by the official release workflow.
+
 ## Install from source
 
 To customize the chart or install without OCI:
