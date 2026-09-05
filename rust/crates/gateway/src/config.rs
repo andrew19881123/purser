@@ -14,6 +14,10 @@ use std::net::{IpAddr, SocketAddr};
 pub const ENV_HOST: &str = "PURSER_GATEWAY_HOST";
 /// Environment variable holding the bind TCP port (e.g. `8080`).
 pub const ENV_PORT: &str = "PURSER_GATEWAY_PORT";
+/// Environment variable holding the Control-Plane base URL for usage reporting
+/// (e.g. `http://control-plane:8080`). When unset, usage recording is skipped
+/// (backward-compatible).
+pub const ENV_CONTROL_PLANE_URL: &str = "PURSER_CONTROL_PLANE_URL";
 
 /// Fully-resolved gateway configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]

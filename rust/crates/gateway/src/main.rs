@@ -54,7 +54,14 @@ async fn main() -> ExitCode {
     }
 
     // The routing table is populated by the Control Plane at runtime.
-    let state = AppState::from_parts(ModelRegistry::new(), auth, quota, http);
+    let mut state = AppState::from_parts(ModelRegistry::new(), auth, quota, http);
+    if let Ok(cp_url) = std::env::var(purser_gateway::config::ENV_CONTROL_PLANE_URL) {
+        let cp_url = cp_url.trim().to_string();
+        if !cp_url.is_empty() {
+            tracing::info!(url = %cp_url, "usage reporting enabled: will POST to control plane");
+            state = state.with_control_plane_url(cp_url);
+        }
+    }
     let router = app(state);
 
     let addr = config.socket_addr();

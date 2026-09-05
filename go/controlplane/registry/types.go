@@ -137,6 +137,23 @@ type AuditEntry struct {
 	Hash      string          `json:"hash"`
 }
 
+// KeyUsageSummary is the aggregate token usage for a single API key.
+type KeyUsageSummary struct {
+	APIKeyID      string `json:"api_key_id"`
+	TotalRequests int64  `json:"total_requests"`
+	InputTokens   int64  `json:"input_tokens"`
+	OutputTokens  int64  `json:"output_tokens"`
+}
+
+// TenantUsage is aggregate token usage grouped by tenant, returned by
+// GetUsageSummary.
+type TenantUsage struct {
+	Tenant        string `json:"tenant"`
+	TotalRequests int64  `json:"total_requests"`
+	InputTokens   int64  `json:"input_tokens"`
+	OutputTokens  int64  `json:"output_tokens"`
+}
+
 // Cert tracks a certificate issued by the internal CA (see package pki).
 type Cert struct {
 	Serial    string    `json:"serial"`

@@ -386,6 +386,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
 
+	// Usage accounting endpoints.
+	s.mux.HandleFunc("POST /api/v1/usage", s.handleRecordUsage)
+	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/usage", s.handleGetKeyUsage)
+	s.mux.HandleFunc("GET /api/v1/usage/summary", s.handleUsageSummary)
+
 	// Enterprise (open-core) endpoints. Public code, gated at runtime by a
 	// valid, offline-verified license key (see enterprise/license).
 	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
@@ -1581,6 +1586,86 @@ func (s *Server) metricsSnapshotFromCache(ctx context.Context) (any, error) {
 		"aggregate_decode_tok_s": aggDecode,
 		"nodes":                  out,
 	}, nil
+}
+
+// --- Usage accounting handlers ---------------------------------------------
+
+// usageRequest is the body of POST /api/v1/usage.
+type usageRequest struct {
+	APIKeyID     string `json:"api_key_id"`
+	ModelID      string `json:"model_id"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+}
+
+// handleRecordUsage is the internal gateway callback for usage accounting.
+// When InternalToken is set, the caller must present the same value in
+// X-Purser-Internal-Token; if not set, the endpoint is open (dev/single-node).
+func (s *Server) handleRecordUsage(w http.ResponseWriter, r *http.Request) {
+	if s.internalToken != "" {
+		if tok := r.Header.Get("X-Purser-Internal-Token"); tok != s.internalToken {
+			s.writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing internal token")
+			return
+		}
+	}
+	var body usageRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if body.APIKeyID == "" || body.ModelID == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "api_key_id and model_id are required")
+		return
+	}
+	if err := s.reg.RecordUsage(r.Context(), body.APIKeyID, body.ModelID, body.InputTokens, body.OutputTokens); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "record_usage_failed", err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleGetKeyUsage returns the aggregate token usage for a single API key.
+// Returns 404 if the key does not exist.
+func (s *Server) handleGetKeyUsage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.reg.GetAPIKey(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "api key not found")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "get_apikey_failed", err.Error())
+		return
+	}
+	summary, err := s.reg.GetKeyUsage(r.Context(), id)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "get_key_usage_failed", err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, summary)
+}
+
+// handleUsageSummary returns per-tenant token usage, optionally filtered by a
+// ?since=<RFC3339> query parameter. Tenants with no usage in the window are
+// omitted. An absent since means "all time".
+func (s *Server) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
+	var since time.Time
+	if q := r.URL.Query().Get("since"); q != "" {
+		t, err := time.Parse(time.RFC3339, q)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "bad_request", "invalid since: must be RFC3339, got "+q)
+			return
+		}
+		since = t
+	}
+	tenants, err := s.reg.GetUsageSummary(r.Context(), since)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "get_usage_summary_failed", err.Error())
+		return
+	}
+	if tenants == nil {
+		tenants = []registry.TenantUsage{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, body any) {

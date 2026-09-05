@@ -915,6 +915,69 @@ func (r *SQLiteRegistry) ListAudit(ctx context.Context, limit int) ([]*AuditEntr
 	return out, rows.Err()
 }
 
+// --- Usage log -------------------------------------------------------------
+
+// RecordUsage inserts one usage_log row for a completed inference request.
+func (r *SQLiteRegistry) RecordUsage(ctx context.Context, apiKeyID, modelID string, inputTokens, outputTokens int64) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO usage_log (api_key_id, model_id, input_tokens, output_tokens, request_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		apiKeyID, modelID, inputTokens, outputTokens, fmtTime(nowUTC()))
+	if err != nil {
+		return fmt.Errorf("registry: record usage: %w", err)
+	}
+	return nil
+}
+
+// GetKeyUsage returns aggregate token usage (count + sums) for a single API key.
+// All sums default to 0 for a key with no recorded requests.
+func (r *SQLiteRegistry) GetKeyUsage(ctx context.Context, apiKeyID string) (*KeyUsageSummary, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
+		FROM usage_log WHERE api_key_id = ?`, apiKeyID)
+	s := &KeyUsageSummary{APIKeyID: apiKeyID}
+	if err := row.Scan(&s.TotalRequests, &s.InputTokens, &s.OutputTokens); err != nil {
+		return nil, fmt.Errorf("registry: get key usage %q: %w", apiKeyID, err)
+	}
+	return s, nil
+}
+
+// GetUsageSummary returns per-tenant token usage since since (zero = all time).
+// Rows are ordered by tenant name. Tenants that have no usage records are omitted.
+func (r *SQLiteRegistry) GetUsageSummary(ctx context.Context, since time.Time) ([]TenantUsage, error) {
+	const base = `
+		SELECT k.tenant, COUNT(*) AS total_requests,
+			   COALESCE(SUM(u.input_tokens), 0), COALESCE(SUM(u.output_tokens), 0)
+		FROM usage_log u
+		JOIN api_keys k ON k.id = u.api_key_id
+		%s
+		GROUP BY k.tenant
+		ORDER BY k.tenant`
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if since.IsZero() {
+		rows, err = r.db.QueryContext(ctx, fmt.Sprintf(base, ""))
+	} else {
+		rows, err = r.db.QueryContext(ctx, fmt.Sprintf(base, "WHERE u.request_at >= ?"), fmtTime(since))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("registry: get usage summary: %w", err)
+	}
+	defer rows.Close()
+	var out []TenantUsage
+	for rows.Next() {
+		var tu TenantUsage
+		if err := rows.Scan(&tu.Tenant, &tu.TotalRequests, &tu.InputTokens, &tu.OutputTokens); err != nil {
+			return nil, fmt.Errorf("registry: get usage summary: %w", err)
+		}
+		out = append(out, tu)
+	}
+	return out, rows.Err()
+}
+
 // --- shared helpers --------------------------------------------------------
 
 func boolToInt(b bool) int {

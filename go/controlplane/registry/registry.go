@@ -1,6 +1,9 @@
 package registry
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Registry is the storage abstraction for all persistent control-plane state.
 //
@@ -73,4 +76,13 @@ type Registry interface {
 	// ListAudit returns the most recent entries, newest first, capped at
 	// limit (limit <= 0 means "a sane default").
 	ListAudit(ctx context.Context, limit int) ([]*AuditEntry, error)
+
+	// --- Usage log ---------------------------------------------------------
+	// RecordUsage records one inference request's token usage.
+	RecordUsage(ctx context.Context, apiKeyID, modelID string, inputTokens, outputTokens int64) error
+	// GetKeyUsage returns aggregate token usage for a single API key.
+	GetKeyUsage(ctx context.Context, apiKeyID string) (*KeyUsageSummary, error)
+	// GetUsageSummary returns usage grouped by tenant since the given time.
+	// A zero since means "all time".
+	GetUsageSummary(ctx context.Context, since time.Time) ([]TenantUsage, error)
 }

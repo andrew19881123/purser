@@ -118,3 +118,15 @@ CREATE TABLE IF NOT EXISTS certs (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_certs_state ON certs (state);
+
+-- usage_log: per-request token accounting for chargeback/billing.
+CREATE TABLE IF NOT EXISTS usage_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id    TEXT NOT NULL,
+    model_id      TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    request_at    TEXT NOT NULL  -- RFC3339
+);
+CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log (api_key_id);
+CREATE INDEX IF NOT EXISTS idx_usage_log_request_at ON usage_log (request_at);
