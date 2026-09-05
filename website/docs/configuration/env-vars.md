@@ -1,0 +1,136 @@
+# Environment Variables Reference
+
+This page exhaustively documents every environment variable read by each Purser component at startup. All values are extracted directly from the source code.
+
+---
+
+## Control Plane
+
+Source: `go/controlplane/main.go` (`loadConfig()`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_DB` | `purser-registry.db` | Path to the SQLite registry file. Under Kubernetes, this lives on the PVC at `/data/purser-registry.db`. Under systemd, set to `/var/lib/purser/purser-registry.db`. |
+| `PURSER_ADDR` | `:8080` | Management REST API listen address (`/api/v1` + Dashboard backend). |
+| `PURSER_GRPC_ADDR` | `:9443` | RegistrationService gRPC listen address (Agent `Join` / `Heartbeat`, mTLS). |
+| `PURSER_PKI_DIR` | `pki-state` | Directory for the internal CA key and certificate persistence. Under Kubernetes, set to `/data/pki-state`. |
+| `PURSER_GATEWAY_ADDR` | (empty) | Gateway base URL the Orchestrator pushes route updates to (e.g. `http://gateway:8080`). When empty, route sync is a no-op. |
+| `PURSER_GATEWAY_TOKEN` | (empty) | Shared secret sent by the Control Plane to the Gateway in the `X-Purser-Internal-Token` header for route sync. Must match `PURSER_GATEWAY_INTERNAL_TOKEN` on the Gateway. |
+| `PURSER_CLUSTER_ID` | `default` | Cluster identifier echoed in join-token responses so an enrolling Agent knows which cluster it is joining. |
+| `PURSER_AGENT_PORT` | `0` | Port the Orchestrator dials on each node to reach `AgentService`. `0` uses the default `50151`. |
+| `PURSER_LICENSE_KEY` | (empty) | Enterprise license key. Verified **offline** against the embedded ed25519 public key — no phone-home. Absent = community edition (enterprise features disabled). A present-but-invalid key causes a fatal startup error. |
+
+### Control Plane: Helm wiring
+
+The Helm chart wires these via `controlPlane.extraEnv` and from `values.yaml` fields:
+
+| Helm value | Maps to env var |
+|---|---|
+| `controlPlane.clusterId` | `PURSER_CLUSTER_ID` |
+| `controlPlane.agentPort` | `PURSER_AGENT_PORT` |
+| `license.key` | `PURSER_LICENSE_KEY` (via a Kubernetes Secret) |
+| `gateway.internalToken` | `PURSER_GATEWAY_TOKEN` (via a Kubernetes Secret, shared with the Gateway) |
+
+---
+
+## Agent
+
+Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/crates/agent/src/main.rs`
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_AGENT_BIND` | `0.0.0.0:50151` | Socket address `AgentService` (gRPC) binds to. **Security:** bind on a trusted-subnet interface only — the inference engine worker is not sandboxed. |
+| `PURSER_CONTROL_PLANE_ADDR` | (none) | Control Plane `RegistrationService` gRPC address for enrollment and heartbeat (e.g. `http://cp.internal:9443`). When absent, the agent serves `AgentService` but does not enroll. |
+| `PURSER_CLUSTER_ID` | `default` | Logical cluster this node belongs to. Must match the Control Plane's `PURSER_CLUSTER_ID`. |
+| `PURSER_NODE_ID` | (none) | Stable node identity. Normally assigned by the Control Plane at `Join`. Setting this pre-assigns an identity; the node boots in `ENROLLED` state. |
+| `PURSER_JOIN_TOKEN` | (none) | One-time join token issued by the Control Plane (`POST /api/v1/join-token`). Required for enrollment. |
+| `PURSER_HEALTH_INTERVAL_SECS` | `5` | Heartbeat cadence in seconds. Minimum effective value is 1. |
+| `PURSER_INFERENCE_PORT` | `8000` | Port the local inference engine serves the OpenAI-compatible API on. Must match the Control Plane's `DefaultInferencePort` (the advertised host endpoint). |
+| `PURSER_AGENT_ADVERTISED_ADDR` | (derived) | Explicit `host:port` this node's `AgentService` is reachable at as seen by the Control Plane. When absent, derived from `PURSER_AGENT_BIND` (primary local non-loopback IPv4 when bound to `0.0.0.0`). |
+| `PURSER_INFERENCE_ADVERTISED_ADDR` | (derived) | Explicit `host:port` where this node serves inference, as seen by the Gateway. When absent, derived from the advertised host plus `PURSER_INFERENCE_PORT`. |
+| `PURSER_ENGINE_BACKEND` | `mock` | Engine backend name. Only `mock` is registered today; real GPU adapters register here without changing the service. Set `llamacpp` for the llama.cpp adapter. |
+| `PURSER_SEEDS` | (none) | Comma-separated extra discovery seed peers (`host:port`) in addition to mDNS LAN discovery. |
+| `RUST_LOG` | `info` | Log level for the agent (uses `tracing_subscriber`). Examples: `debug`, `purser_agent=debug,info`. |
+
+---
+
+## Gateway
+
+Source: `rust/crates/gateway/src/config.rs`, `auth.rs`, `quota.rs`, `upstream.rs`
+
+### Bind address (required)
+
+Both variables are **required** — the gateway refuses to start with a clear error if either is missing.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_GATEWAY_HOST` | (required) | Bind IP address (e.g. `0.0.0.0`). |
+| `PURSER_GATEWAY_PORT` | (required) | Bind TCP port (e.g. `8080`). |
+
+### Authentication
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_GATEWAY_INTERNAL_TOKEN` | (none) | Shared secret for the management plane (`PUT/DELETE /api/v1/routes`). The Control Plane sends it in the `X-Purser-Internal-Token` header. When absent, route sync is disabled (fail-closed). Must match `PURSER_GATEWAY_TOKEN` on the Control Plane. |
+| `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway runs in **OPEN DEV MODE** — any non-empty bearer token is accepted. **Always set this in production.** |
+
+### Quota and rate limiting
+
+A value of `0` disables the corresponding limit.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_GATEWAY_TOKENS_PER_MIN` | `60000` | Per-key token-bucket capacity and per-minute refill. Prompt tokens charged up front; completion tokens charged as they stream. Exhaustion returns `429`. |
+| `PURSER_GATEWAY_MAX_CONCURRENT` | `32` | Maximum concurrent in-flight requests per API key. |
+| `PURSER_GATEWAY_MAX_INFLIGHT` | `512` | Global in-flight ceiling across all keys (backpressure). Crossing it returns `429` with `Retry-After`. |
+| `PURSER_GATEWAY_RETRY_AFTER_SECS` | `2` | Value of the `Retry-After` header on `429` responses. |
+
+### Upstream timeouts
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_GATEWAY_UPSTREAM_CONNECT_MS` | `2000` | Connect timeout to the deployment host (milliseconds). Connect failure returns `503`. |
+| `PURSER_GATEWAY_UPSTREAM_TTFB_MS` | `30000` | Time-to-first-byte timeout (milliseconds). Exceeded before response head = `504`. |
+| `PURSER_GATEWAY_UPSTREAM_IDLE_MS` | `30000` | Idle timeout between streamed chunks (milliseconds). The stream is terminated with a trailing error frame if no chunk arrives in time. |
+
+### Logging
+
+| Variable | Default | Description |
+|---|---|---|
+| `RUST_LOG` | `info` | Log level for the gateway. Structured JSON output. |
+
+---
+
+## OpenTelemetry
+
+!!! note "OTel instrumentation status"
+    OpenTelemetry is listed as a Go module dependency in `go/controlplane/go.sum` (otel SDK v1.44.0) but is **not yet wired up** in the Control Plane or Gateway source code as of v0.1.1. Standard `OTEL_*` environment variables are **not** actively read by any Purser component in this release.
+
+    This section is included for completeness and future planning. When OTel instrumentation lands, it will use the standard OpenTelemetry SDK environment variables listed below.
+
+Standard OTLP exporter variables (future — not yet active):
+
+| Variable | Description |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP exporter endpoint. When set, enables OTel export. |
+| `OTEL_SERVICE_NAME` | Service name reported in spans and metrics. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers for OTLP requests (e.g. API key for Grafana Cloud or Dynatrace). |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Protocol: `grpc` (default) or `http/protobuf`. |
+
+See [OpenTelemetry configuration](otel.md) for more details on the planned integration.
+
+---
+
+## Complete list by component
+
+### Control Plane env vars (9)
+
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`
+
+### Agent env vars (12)
+
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_SEEDS`, `RUST_LOG`
+
+### Gateway env vars (12)
+
+`PURSER_GATEWAY_HOST`, `PURSER_GATEWAY_PORT`, `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_API_KEYS`, `PURSER_GATEWAY_TOKENS_PER_MIN`, `PURSER_GATEWAY_MAX_CONCURRENT`, `PURSER_GATEWAY_MAX_INFLIGHT`, `PURSER_GATEWAY_RETRY_AFTER_SECS`, `PURSER_GATEWAY_UPSTREAM_CONNECT_MS`, `PURSER_GATEWAY_UPSTREAM_TTFB_MS`, `PURSER_GATEWAY_UPSTREAM_IDLE_MS`, `RUST_LOG`
