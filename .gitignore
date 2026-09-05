@@ -43,6 +43,8 @@ license-signing.key
 
 # --- Internal solution-design & strategy docs (kept local, not published) ---
 docs/
+# Exception: website/docs/ is the public-facing documentation and IS committed.
+!website/docs/
 
 # --- Misc ---
 *.tmp

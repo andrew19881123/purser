@@ -63,15 +63,27 @@ type Link struct {
 
 // Model is a catalog entry. Spec carries the full purserv1.ModelSpec as JSON
 // (architecture, quantizations, draft info, ...).
+//
+// Convention for the Type field:
+//
+//   - "llm"       — autoregressive language model (chat/completions endpoints).
+//   - "embedding" — encoder model served via the /v1/embeddings endpoint.
+//
+// The default is "llm". The Planner treats all models identically regardless of
+// Type (it is informational only at this stage); the field exists so the catalog
+// and the UI can label and filter models by their primary capability.
 type Model struct {
 	ID           string          `json:"id"`
 	Family       string          `json:"family"`
 	Architecture string          `json:"architecture"`
 	ParamsTotalB float64         `json:"params_total_b"`
 	Engine       string          `json:"engine"`
-	Spec         json.RawMessage `json:"spec,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// Type distinguishes the model's primary serving mode: "llm" or "embedding".
+	// Defaults to "llm" when not supplied by the caller.
+	Type      string          `json:"type,omitempty"`
+	Spec      json.RawMessage `json:"spec,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // Plan is a DeploymentPlan produced by the planner. Plan carries the full

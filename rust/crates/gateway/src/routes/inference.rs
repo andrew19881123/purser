@@ -40,6 +40,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/completions", post(completions))
+        .route("/embeddings", post(embeddings))
         .route("/models", get(models))
 }
 
@@ -70,6 +71,30 @@ async fn completions(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     proxy_inference(&state, &api_key, body, "/v1/completions").await
+}
+
+/// `POST /v1/embeddings` — OpenAI-compatible embedding inference.
+///
+/// Authenticated and quota-checked identically to the chat/completions path.
+/// Embeddings are always buffered (no SSE): the upstream's JSON response is
+/// read to completion and relayed to the client.
+///
+/// Expected request shape:
+/// ```json
+/// {"model": "my-embed-model", "input": "text" | ["text", ...], "encoding_format": "float"}
+/// ```
+///
+/// Expected response shape (mirroring the upstream):
+/// ```json
+/// {"object":"list","data":[{"object":"embedding","embedding":[...],"index":0}],
+///  "model":"my-embed-model","usage":{"prompt_tokens":5,"total_tokens":5}}
+/// ```
+async fn embeddings(
+    State(state): State<AppState>,
+    api_key: ApiKey,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    proxy_inference(&state, &api_key, body, "/v1/embeddings").await
 }
 
 async fn models(State(state): State<AppState>) -> Json<ModelList> {
