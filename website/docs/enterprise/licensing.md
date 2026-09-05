@@ -55,7 +55,16 @@ key is a single shell-safe string — no spaces, no special characters.
 
 ## Production deployment guide
 
-### Step 1 — Generate a signing keypair (once per organization)
+!!! info "v0.3: real trust root already provisioned"
+    Starting in **v0.3**, `enterprise/license/license.go` embeds a **real
+    production ed25519 public key** (`ProductionPublicKeyBase64`). The open-core
+    model is now commercially functional — a signed `PURSER_LICENSE_KEY` will
+    validate against the production binary without any further maintainer steps.
+    The private signing key is stored securely and is never committed to the repo.
+    Steps 1 and 2 below are documented for completeness and for future key
+    rotation; operators deploying v0.3+ can skip directly to step 3.
+
+### Step 1 — Generate a signing keypair (once, or on rotation)
 
 ```bash
 purser-license keygen --output-key
@@ -88,14 +97,15 @@ Manager, 1Password, etc.). Never commit it to version control.
 
 ### Step 2 — Embed the public key in your build
 
-Edit `enterprise/license/license.go` and replace the placeholder value:
+Edit `enterprise/license/license.go` and replace the `ProductionPublicKeyBase64`
+constant with the value printed by `keygen`:
 
 ```go
 const ProductionPublicKeyBase64 = "<base64 public key from keygen output>"
 ```
 
 Commit and ship the binary. The embedded public key is not sensitive — anyone
-who has the binary can read it.
+who has the binary can read it. **This step is already done for v0.3 builds.**
 
 ### Step 3 — Sign a license key for a customer
 

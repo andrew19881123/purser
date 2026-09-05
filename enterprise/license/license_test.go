@@ -1,11 +1,13 @@
 package license_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -266,5 +268,71 @@ func TestCommunityHelpers(t *testing.T) {
 	}
 	if nilLic.ValidAt(time.Now()) {
 		t.Errorf("nil license should never be valid")
+	}
+}
+
+// TestProductionKeyRoundTrip verifies that the production trust root is a REAL
+// keypair — a license signed with the production private key (embedded in
+// ProductionPublicKeyBase64) validates against the package-level VerificationKey
+// without any key swapping. This test would fail if ProductionPublicKeyBase64
+// were still a placeholder whose private half was discarded.
+//
+// The private key is read from the well-known .gitignored file
+// purser-license-signing.key. When that file is absent (e.g. CI without the
+// secret) the test is skipped — it is a maintainer-only sanity check that
+// the embedded public key matches the stored private key, not a required-on-
+// every-build proof.
+func TestProductionKeyRoundTrip(t *testing.T) {
+	privB64Raw, err := os.ReadFile("purser-license-signing.key")
+	if err != nil {
+		t.Skipf("purser-license-signing.key not present — skipping production key round-trip (%v)", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(privB64Raw)))
+	if err != nil {
+		t.Fatalf("decode private key: %v", err)
+	}
+	if len(decoded) != ed25519.PrivateKeySize {
+		t.Fatalf("private key is %d bytes, want %d", len(decoded), ed25519.PrivateKeySize)
+	}
+	priv := ed25519.PrivateKey(decoded)
+
+	// Derive the expected public key from the embedded constant and confirm it
+	// matches the public half of the loaded private key.
+	embeddedPub, err := base64.StdEncoding.DecodeString(license.ProductionPublicKeyBase64)
+	if err != nil {
+		t.Fatalf("decode ProductionPublicKeyBase64: %v", err)
+	}
+	derivedPub := priv.Public().(ed25519.PublicKey)
+	if !bytes.Equal([]byte(derivedPub), embeddedPub) {
+		t.Fatalf("ProductionPublicKeyBase64 does not match the public half of purser-license-signing.key — key mismatch")
+	}
+
+	// Sign a license with the production private key and verify it against the
+	// default VerificationKey (which is initialized from ProductionPublicKeyBase64).
+	// No key swapping needed — this is the real production path.
+	now := time.Now().UTC().Truncate(time.Second)
+	key, err := license.Sign(priv, license.Payload{
+		Licensee: "Purser Production Test",
+		Features: []string{"audit", "ha", "rbac"},
+		Issued:   now,
+		Expires:  now.Add(8760 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("sign with production key: %v", err)
+	}
+
+	lic, err := license.Verify(key)
+	if err != nil {
+		t.Fatalf("verify with production key: %v", err)
+	}
+	if lic.Licensee != "Purser Production Test" {
+		t.Errorf("licensee = %q, want \"Purser Production Test\"", lic.Licensee)
+	}
+	if !lic.HasFeature("audit") || !lic.HasFeature("ha") || !lic.HasFeature("rbac") {
+		t.Errorf("features = %v, want audit+ha+rbac", lic.Features)
+	}
+	if !lic.ValidAt(now.Add(time.Hour)) {
+		t.Errorf("license should be valid one hour after issue")
 	}
 }
