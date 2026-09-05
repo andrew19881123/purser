@@ -22,9 +22,9 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install -r website/requirements.txt
-      - run: mkdocs build --config-file website/mkdocs.yml --site-dir site
+      - run: mkdocs build --config-file website/mkdocs.yml
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site/
+          path: website/site/
       - id: deployment
         uses: actions/deploy-pages@v4
