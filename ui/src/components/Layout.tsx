@@ -8,6 +8,7 @@ import {
   IconRocket,
   IconServer,
   IconGrid,
+  IconKey,
   IconLayers,
   IconChat,
   IconSettings,
@@ -29,6 +30,7 @@ const OPERATE: NavItem[] = [
   { to: '/fleet', labelKey: 'nav.fleet', icon: <IconServer /> },
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
+  { to: '/join-token', labelKey: 'nav.joinTokens', icon: <IconKey /> },
 ];
 const USE: NavItem[] = [
   { to: '/playground', labelKey: 'nav.playground', icon: <IconChat /> },

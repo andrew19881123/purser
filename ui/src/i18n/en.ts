@@ -8,6 +8,7 @@ export const en = {
   'nav.fleet': 'Fleet',
   'nav.catalog': 'Model catalog',
   'nav.deployments': 'Deployments',
+  'nav.joinTokens': 'Add Node',
   'nav.playground': 'Playground',
   'nav.settings': 'Settings',
   'nav.section.operate': 'Operate',
@@ -48,6 +49,7 @@ export const en = {
   'error.deployFailed': 'The deployment could not be started.',
   'error.apikeys': 'Could not load API keys.',
   'error.join': 'Could not load the join token.',
+  'error.jointoken': 'Could not generate the join token.',
 
   // onboarding
   'onboarding.title': 'Add nodes to your cluster',
@@ -176,6 +178,25 @@ export const en = {
   'playground.apikey': 'Gateway API key',
   'playground.apikeyHint': 'Sent as Authorization: Bearer to the Gateway. Ignored in mock mode.',
   'playground.error': 'The Gateway did not respond. Check a model is deployed and your API key is valid, then try again.',
+
+  // join token management
+  'jointoken.title': 'Add Node',
+  'jointoken.subtitle':
+    'Generate a one-time join token to enroll a Purser agent into the cluster. The token is shown once — copy it before navigating away.',
+  'jointoken.form.title': 'Generate join token',
+  'jointoken.ttl.label': 'Token lifetime',
+  'jointoken.ttl.1h': '1 hour',
+  'jointoken.ttl.8h': '8 hours',
+  'jointoken.ttl.24h': '24 hours',
+  'jointoken.ttl.7d': '7 days',
+  'jointoken.action.generate': 'Generate',
+  'jointoken.result.title': 'Token ready',
+  'jointoken.result.warning': 'This token is shown only once. Copy it now.',
+  'jointoken.result.token': 'Join token',
+  'jointoken.result.expires': 'Expires {when}',
+  'jointoken.result.env.label': 'Agent environment',
+  'jointoken.result.env.hint': 'Paste these into /etc/purser/agent.env on the target node.',
+  'jointoken.result.instructions.title': 'Connection instructions (Debian / Ubuntu)',
 
   // settings
   'settings.title': 'Settings',

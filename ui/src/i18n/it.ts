@@ -8,6 +8,7 @@ export const it: Record<StringKey, string> = {
   'nav.fleet': 'Flotta',
   'nav.catalog': 'Catalogo modelli',
   'nav.deployments': 'Deploy',
+  'nav.joinTokens': 'Aggiungi nodo',
   'nav.playground': 'Playground',
   'nav.settings': 'Impostazioni',
   'nav.section.operate': 'Gestione',
@@ -44,6 +45,7 @@ export const it: Record<StringKey, string> = {
   'error.deployFailed': 'Impossibile avviare il deployment.',
   'error.apikeys': 'Impossibile caricare le API key.',
   'error.join': 'Impossibile caricare il token di join.',
+  'error.jointoken': 'Impossibile generare il token di join.',
 
   'onboarding.title': 'Aggiungi nodi al cluster',
   'onboarding.subtitle':
@@ -165,6 +167,24 @@ export const it: Record<StringKey, string> = {
   'playground.apikey': 'API key del Gateway',
   'playground.apikeyHint': 'Inviata come Authorization: Bearer al Gateway. Ignorata in modalità mock.',
   'playground.error': 'Il Gateway non ha risposto. Verifica che un modello sia deployato e che la tua API key sia valida, poi riprova.',
+
+  'jointoken.title': 'Aggiungi nodo',
+  'jointoken.subtitle':
+    "Genera un token di join monouso per registrare un agent Purser nel cluster. Il token è mostrato una sola volta — copialo prima di navigare altrove.",
+  'jointoken.form.title': 'Genera token di join',
+  'jointoken.ttl.label': 'Durata del token',
+  'jointoken.ttl.1h': '1 ora',
+  'jointoken.ttl.8h': '8 ore',
+  'jointoken.ttl.24h': '24 ore',
+  'jointoken.ttl.7d': '7 giorni',
+  'jointoken.action.generate': 'Genera',
+  'jointoken.result.title': 'Token pronto',
+  'jointoken.result.warning': 'Questo token è mostrato una sola volta. Copialo ora.',
+  'jointoken.result.token': 'Token di join',
+  'jointoken.result.expires': 'Scade {when}',
+  'jointoken.result.env.label': "Variabili d'ambiente dell'agent",
+  'jointoken.result.env.hint': 'Incollale in /etc/purser/agent.env sul nodo di destinazione.',
+  'jointoken.result.instructions.title': 'Istruzioni di connessione (Debian / Ubuntu)',
 
   'settings.title': 'Impostazioni',
   'settings.subtitle': 'API key e quote per team. Tutto qui è disponibile anche via CLI e API.',
