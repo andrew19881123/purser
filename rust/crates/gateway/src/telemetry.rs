@@ -89,12 +89,12 @@ pub fn init() -> Guard {
 fn build_provider(
     endpoint: &str,
 ) -> Result<sdktrace::TracerProvider, opentelemetry::trace::TraceError> {
-    let svc_name = env::var("OTEL_SERVICE_NAME")
-        .unwrap_or_else(|_| "purser-gateway".to_string());
+    let svc_name = env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "purser-gateway".to_string());
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        opentelemetry::KeyValue::new("service.name", svc_name),
-    ]);
+    let resource = opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+        "service.name",
+        svc_name,
+    )]);
 
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()

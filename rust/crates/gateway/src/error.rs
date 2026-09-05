@@ -237,10 +237,9 @@ impl IntoResponse for ApiError {
         }
         if let Some(pos) = queue_position {
             if let Ok(value) = HeaderValue::from_str(&pos.to_string()) {
-                response.headers_mut().insert(
-                    HeaderName::from_static("x-queue-position"),
-                    value,
-                );
+                response
+                    .headers_mut()
+                    .insert(HeaderName::from_static("x-queue-position"), value);
             }
         }
         response

@@ -227,9 +227,7 @@ async fn proxy_inference(
             "per-model queue full; shedding request with 429"
         );
         ApiError::RateLimited {
-            message: format!(
-                "Model '{model}' request queue is full; retry after a short delay."
-            ),
+            message: format!("Model '{model}' request queue is full; retry after a short delay."),
             retry_after_secs: 5,
             queue_position: Some(pos),
         }

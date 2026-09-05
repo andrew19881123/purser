@@ -52,7 +52,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use foca::{Config as FocaConfig, Foca, NoCustomBroadcast, Notification, PostcardCodec, Runtime, Timer};
+use foca::{
+    Config as FocaConfig, Foca, NoCustomBroadcast, Notification, PostcardCodec, Runtime, Timer,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use tokio::net::UdpSocket;
@@ -384,7 +386,7 @@ async fn drain_runtime(
                 membership.remove(&id.grpc_addr.to_string());
             }
             Notification::Active => tracing::info!("SWIM: node is active in the cluster"),
-            Notification::Idle   => tracing::debug!("SWIM: cluster is idle (no other members)"),
+            Notification::Idle => tracing::debug!("SWIM: cluster is idle (no other members)"),
             Notification::Defunct => {
                 tracing::warn!("SWIM: node declared defunct; will auto-rejoin via identity renewal")
             }
@@ -437,8 +439,14 @@ mod tests {
 
         let id = SwimIdentity::new(swim, grpc);
 
-        assert_eq!(id.swim_addr, swim, "swim_addr must match the UDP bind address");
-        assert_eq!(id.grpc_addr, grpc, "grpc_addr must match the gRPC bind address");
+        assert_eq!(
+            id.swim_addr, swim,
+            "swim_addr must match the UDP bind address"
+        );
+        assert_eq!(
+            id.grpc_addr, grpc,
+            "grpc_addr must match the gRPC bind address"
+        );
         assert_ne!(id.swim_addr, id.grpc_addr, "the two addresses are distinct");
 
         // renew() keeps both addresses, only bumps the nonce
@@ -473,7 +481,8 @@ mod tests {
 
         let mut rt = AccumulatingRuntime::new();
         // Inject a MemberUp notification directly into the runtime.
-        rt.notifications.push(Notification::MemberUp(SwimIdentity::new(swim, grpc)));
+        rt.notifications
+            .push(Notification::MemberUp(SwimIdentity::new(swim, grpc)));
 
         drain_runtime(&mut rt, &tx_input, &tx, &mem).await;
 

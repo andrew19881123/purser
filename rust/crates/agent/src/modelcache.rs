@@ -202,10 +202,7 @@ impl Fetcher for HttpFetcher {
             if !status.is_success() {
                 // 4xx / exhausted redirects — permanent; fail immediately.
                 let _ = tokio::fs::remove_file(&tmp).await;
-                return Err(anyhow::anyhow!(
-                    "HTTP {} fetching {url}",
-                    status.as_u16()
-                ));
+                return Err(anyhow::anyhow!("HTTP {} fetching {url}", status.as_u16()));
             }
 
             // ── Stream body to staging file ───────────────────────────────
@@ -764,9 +761,7 @@ mod tests {
 
         /// Bind a loopback server on an OS-assigned port and return `http://…`.
         async fn start_server(router: Router) -> String {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
                 axum::serve(listener, router).await.unwrap();
@@ -777,8 +772,7 @@ mod tests {
         /// A small payload is downloaded and the file contents match.
         #[tokio::test]
         async fn http_fetcher_downloads_to_dest() {
-            let app =
-                Router::new().route("/weights.bin", get(|| async { "hello weights" }));
+            let app = Router::new().route("/weights.bin", get(|| async { "hello weights" }));
             let base = start_server(app).await;
 
             let dir = tempdir().unwrap();
@@ -788,10 +782,7 @@ mod tests {
                 .fetch(&format!("{base}/weights.bin"), &dest)
                 .await
                 .unwrap();
-            assert_eq!(
-                tokio::fs::read(&dest).await.unwrap(),
-                b"hello weights"
-            );
+            assert_eq!(tokio::fs::read(&dest).await.unwrap(), b"hello weights");
         }
 
         /// Two 500s followed by a 200 succeeds with enough retries.
@@ -821,10 +812,7 @@ mod tests {
             let dest = dir.path().join("file");
             // max_retries=3 → up to 4 attempts; 2 failures + 1 success uses 3.
             let fetcher = HttpFetcher::new(3);
-            fetcher
-                .fetch(&format!("{base}/file"), &dest)
-                .await
-                .unwrap();
+            fetcher.fetch(&format!("{base}/file"), &dest).await.unwrap();
             assert_eq!(tokio::fs::read(&dest).await.unwrap(), b"ok data");
             // Server received exactly 3 requests (2 failures + 1 success).
             assert_eq!(counter.load(Ordering::SeqCst), 3);

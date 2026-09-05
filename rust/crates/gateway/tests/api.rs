@@ -75,8 +75,7 @@ async fn spawn_mock_host() -> String {
 
 /// A mock embedding server that returns a canned 128-dim float32 embedding.
 async fn spawn_mock_embed_host() -> String {
-    let router = Router::new()
-        .route("/v1/embeddings", post(mock_embeddings));
+    let router = Router::new().route("/v1/embeddings", post(mock_embeddings));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -449,10 +448,7 @@ async fn host_down_is_503() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     // Retry-After: 30 is now present on all 503s.
-    assert_eq!(
-        response.headers().get(header::RETRY_AFTER).unwrap(),
-        "30"
-    );
+    assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "30");
     assert_eq!(
         body_json(response).await["error"]["code"],
         "node_unavailable"
@@ -543,9 +539,13 @@ async fn queue_full_returns_429_with_retry_after_and_position() {
     });
     // Insert a real route (the semaphore check runs after route resolution).
     state
-        .insert_route(MOCK_MODEL, ModelRoute::active("http://127.0.0.1:9", "dep-q", "Q4_K_M"))
+        .insert_route(
+            MOCK_MODEL,
+            ModelRoute::active("http://127.0.0.1:9", "dep-q", "Q4_K_M"),
+        )
         .await;
-    let payload = json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
+    let payload =
+        json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
     let response = app(state)
         .oneshot(post_json(
             "/v1/chat/completions",
@@ -685,8 +685,14 @@ async fn embeddings_valid_model_returns_200_with_expected_shape() {
         body["data"][0]["object"], "embedding",
         "data[0].object must be 'embedding'"
     );
-    let embedding = body["data"][0]["embedding"].as_array().expect("embedding array");
-    assert_eq!(embedding.len(), 128, "expected 128-dim vector from mock host");
+    let embedding = body["data"][0]["embedding"]
+        .as_array()
+        .expect("embedding array");
+    assert_eq!(
+        embedding.len(),
+        128,
+        "expected 128-dim vector from mock host"
+    );
     assert!(
         body["usage"]["prompt_tokens"].as_u64().is_some(),
         "usage.prompt_tokens must be present"

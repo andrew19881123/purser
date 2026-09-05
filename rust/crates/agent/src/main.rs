@@ -16,7 +16,6 @@ use tonic::transport::Server;
 
 use purser_agent::config::AgentConfig;
 use purser_agent::discovery::{self, Membership};
-use purser_agent::swim;
 use purser_agent::healing::{diagnose, DiagnosisInput, Liveness, NodeHealthMonitor};
 use purser_agent::linkbench::BandwidthReflector;
 use purser_agent::probe::{DefaultProbe, HardwareProbe};
@@ -24,6 +23,7 @@ use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore,
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
 use purser_agent::state::NodeStateMachine;
 use purser_agent::supervisor::{BackendRegistry, RestartPolicy, Supervisor};
+use purser_agent::swim;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,8 +36,7 @@ async fn main() -> anyhow::Result<()> {
     // TODO(phase2): pass to ModelCache::open() when the weight-loading path is
     // wired in place of FileMirrorFetcher.
     #[cfg(feature = "http-fetch")]
-    let _http_fetcher =
-        purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
+    let _http_fetcher = purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
 
     // Security: warn if bound on all interfaces rather than a trusted subnet.
     if config.bind_addr.ip().is_unspecified() {
@@ -82,7 +81,10 @@ async fn main() -> anyhow::Result<()> {
         Supervisor::with_state_machine(backend, RestartPolicy::default(), Arc::clone(&machine))
     };
 
-    let probe = Arc::new(DefaultProbe::with_backends(node_id.clone(), registry.names()));
+    let probe = Arc::new(DefaultProbe::with_backends(
+        node_id.clone(),
+        registry.names(),
+    ));
     let svc = AgentSvc::new(
         Arc::clone(&probe) as Arc<dyn HardwareProbe>,
         Arc::clone(&config),
@@ -217,7 +219,16 @@ async fn main() -> anyhow::Result<()> {
         let membership_swim = Arc::clone(&membership);
         let shutdown_rx = swim_shutdown_rx.clone();
         tokio::spawn(async move {
-            match swim::start(enabled, bind, grpc_addr, swim_seeds, membership_swim, shutdown_rx).await {
+            match swim::start(
+                enabled,
+                bind,
+                grpc_addr,
+                swim_seeds,
+                membership_swim,
+                shutdown_rx,
+            )
+            .await
+            {
                 Ok(()) => {
                     if enabled {
                         // start() returned Ok after spawning the background tasks — nothing

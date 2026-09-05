@@ -454,14 +454,19 @@ mod tests {
         .await;
 
         assert!(resp.contains("200 OK"), "expected 200: {resp}");
-        assert!(resp.contains("\"object\":\"list\""), "missing outer object: {resp}");
-        assert!(resp.contains("\"object\":\"embedding\""), "missing embedding object: {resp}");
+        assert!(
+            resp.contains("\"object\":\"list\""),
+            "missing outer object: {resp}"
+        );
+        assert!(
+            resp.contains("\"object\":\"embedding\""),
+            "missing embedding object: {resp}"
+        );
 
         // Parse the JSON body from the raw HTTP response (skip headers).
         let body_start = resp.find("\r\n\r\n").expect("headers end") + 4;
         let body = &resp[body_start..];
-        let json: serde_json::Value =
-            serde_json::from_str(body).expect("valid JSON body");
+        let json: serde_json::Value = serde_json::from_str(body).expect("valid JSON body");
 
         let embedding = json["data"][0]["embedding"]
             .as_array()
