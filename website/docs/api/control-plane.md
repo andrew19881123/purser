@@ -1,3 +1,5 @@
+# Control Plane API Reference
+
 # Control Plane API Reference (`/api/v1`)
 
 The Control Plane exposes a management REST API under `/api/v1`. This is separate from the inference data path — it is for fleet operators, not for inference clients.
@@ -459,7 +461,10 @@ Query parameters:
 **Response `200`:** See [Enterprise: Audit Log](../enterprise/audit-log.md) for the full response schema.
 
 **Response `402`:** Enterprise license required.
-
+GET /api/v1/openapi.json
+`go/controlplane/server/openapi.json` (generated from `openapi.yaml`).
+- **Postman**: File → Import → Link, paste `http://<host>/api/v1/openapi.json`
+- **Swagger UI / Redoc**: Point the UI at `http://<host>/api/v1/openapi.json`
 ```json
 {
   "error": {
@@ -470,6 +475,7 @@ Query parameters:
 }
 ```
 
+<<<<<<< HEAD
 ---
 
 ## Error format
@@ -481,3 +487,33 @@ All errors follow this format:
 ```
 
 Common error codes: `not_found`, `model_in_use`, `node_in_use`, `model_exists`, `bad_request`, `bad_spec`, `bad_plan`, `no_deployer`, `no_fleet`, `no_planner`, `deploy_failed`, `teardown_failed`, `join_token_failed`, `create_apikey_failed`, `list_apikeys_failed`, `license_required`.
+=======
+## Routes summary
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/nodes` | List all enrolled nodes |
+| GET | `/api/v1/nodes/{id}` | Get a node by ID |
+| POST | `/api/v1/nodes/{id}/drain` | Cordon a node (mark DRAINING) |
+| DELETE | `/api/v1/nodes/{id}` | Decommission a node |
+| GET | `/api/v1/models` | List the model catalog |
+| POST | `/api/v1/models` | Register a model |
+| DELETE | `/api/v1/models/{id}` | Remove a model |
+| POST | `/api/v1/models/{id}/plan` | Dry-run plan preview (no side effects) |
+| POST | `/api/v1/models/{id}/deploy` | Deploy a model |
+| GET | `/api/v1/plans/{id}` | Get a stored deployment plan |
+| GET | `/api/v1/deployments` | List all deployments |
+| DELETE | `/api/v1/deployments/{id}` | Tear down a deployment |
+| GET | `/api/v1/cluster/health` | Cluster health summary |
+| GET | `/api/v1/apikeys` | List gateway API keys (metadata only) |
+| POST | `/api/v1/apikeys` | Mint a gateway API key |
+| DELETE | `/api/v1/apikeys/{id}` | Revoke an API key |
+| POST | `/api/v1/join-token` | Mint a cluster join token |
+| GET | `/api/v1/metrics` | Live metrics (Server-Sent Events) |
+| GET | `/api/v1/enterprise/status` | Active edition report |
+| GET | `/api/v1/enterprise/audit-log` | Tamper-evident audit log (enterprise) |
+| GET | `/api/v1/openapi.json` | This OpenAPI 3.0 specification |
+
+For full request/response schemas, parameters, and error codes see the live
+spec at `GET /api/v1/openapi.json`.
+>>>>>>> worktree-agent-a6e8c8db47223afb0
