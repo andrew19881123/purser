@@ -95,6 +95,28 @@ Cordons a node: marks it `DRAINING` so the Planner stops scheduling new deployme
 
 **Response `501`:** Fleet manager not configured.
 
+### `POST /api/v1/nodes/{id}/restart`
+
+Tears down all active deployments on the node and lets the reconciler re-provision them on remaining available nodes. The node process itself is **not** rebooted — only the engine processes are stopped and re-scheduled.
+
+This is an asynchronous operation: the response is `202 Accepted` and actual re-provisioning happens in the background as the reconciler notices the stopped deployments.
+
+**Response `202`:**
+
+```json
+{
+  "node_id": "node-abc123",
+  "deployments": ["dep-abc123"],
+  "message": "deployments torn down; re-provisioning proceeds in the background"
+}
+```
+
+**Response `404`:** Node not found.
+
+**Response `409`:** Node has no active deployments to restart.
+
+**Response `501`:** Orchestrator not configured.
+
 ### `DELETE /api/v1/nodes/{id}`
 
 Soft-decommissions a node: transitions it to `DECOMMISSIONED` and revokes its mTLS certificate. The node row remains visible in `GET /api/v1/nodes` in the `DECOMMISSIONED` state.
@@ -168,6 +190,71 @@ Registers a model in the catalog. Request body is a protojson-encoded `purser.v1
 **Response `400`:** Missing or invalid body / `model_id`.
 
 **Response `409`:** Model already exists.
+
+### `POST /api/v1/models/import`
+
+Imports a model from an external source into the catalog. Dispatches by the `source` field.
+
+**Request body:**
+
+```json
+{
+  "source":   "huggingface",
+  "repo":     "meta-llama/Llama-3.1-8B-Instruct",
+  "revision": "main",
+  "filename_pattern": "*.Q4_K_M.gguf"
+}
+```
+
+Supported `source` values and their required fields:
+
+| `source` | Required fields | Optional fields |
+|---|---|---|
+| `huggingface` | `repo` | `revision`, `filename_pattern` |
+| `s3` / `gcs` / `azure` | `uri` | `name`, `family`, `size_gb` |
+| `sagemaker` | — | `model_group`, `version` |
+| `vertexai` | `model` | `vertex_version` |
+| `azureml` | `name` | `workspace`, `azure_version` |
+
+For HuggingFace imports, the `X-HF-Token` request header overrides the server's `PURSER_HF_TOKEN`.
+
+**Response `201`:** Model registered. Body contains the created model object.
+
+**Response `400`:** Missing required field or unknown source.
+
+**Response `401`:** HuggingFace auth required (`hf_auth_required`).
+
+**Response `404`:** Source repository or resource not found.
+
+**Response `409`:** Model with this ID already exists.
+
+See [HuggingFace Hub](../integrations/huggingface.md), [Model Sources](../configuration/model-sources.md), [SageMaker](../integrations/sagemaker.md), [Vertex AI](../integrations/vertexai.md), and [Azure ML](../integrations/azureml.md) for integration-specific details.
+
+### `GET /api/v1/models/{id}/health`
+
+Reports the operational health of a deployed model. Does **not** perform a live inference probe — it reads deployment state from the registry.
+
+**Response `200`:**
+
+```json
+{
+  "model_id":         "llama-8b",
+  "status":           "healthy",
+  "deployment_id":    "dep-abc123",
+  "deployment_state": "ACTIVE",
+  "node_count":       2
+}
+```
+
+`status` values:
+
+| `status` | Condition |
+|---|---|
+| `"healthy"` | Most recent deployment is `ACTIVE` |
+| `"degraded"` | Deployment is `PROVISIONING` or `STOPPING` (transient) |
+| `"unavailable"` | Deployment is `FAILED`, `STOPPED`, or no deployment exists |
+
+**Response `404`:** Model not found in catalog.
 
 ### `DELETE /api/v1/models/{id}`
 
@@ -351,6 +438,28 @@ Mints a single-use, expiring cluster join token. The operator hands the returned
 The plaintext token is returned **once** and never persisted.
 
 **Response `501`:** Fleet manager not configured.
+
+### `GET /api/v1/enrollment-bundle`
+
+Returns a pre-filled environment file (`purser-enrollment.env`) that contains the three variables a new node needs to enroll:
+
+- `PURSER_CONTROL_PLANE_ADDR` — gRPC address of the RegistrationService
+- `PURSER_JOIN_TOKEN` — a freshly minted one-time join token
+- `PURSER_CLUSTER_ID` — the cluster identifier
+
+The bundle format is a shell-sourceable env file (KEY=value per line). Save it to `/etc/purser/agent.env` on the new node and restart the agent service.
+
+**Response `200`:** Plain-text env file (MIME: `text/plain`).
+
+```
+PURSER_CONTROL_PLANE_ADDR=http://10.0.0.1:9443
+PURSER_JOIN_TOKEN=psk_...
+PURSER_CLUSTER_ID=default
+```
+
+**Response `501`:** Fleet manager not configured.
+
+See [Enrollment Bundle](../install/enrollment-bundle.md) for the full workflow.
 
 ---
 
@@ -565,6 +674,46 @@ source.onmessage = (ev) => {
 
 ---
 
+## Usage Accounting
+
+These endpoints are used by the gateway to record token usage and by operators to query chargeback data. See [Usage Accounting](../enterprise/usage-accounting.md) for the full guide.
+
+### `POST /api/v1/usage`
+
+Internal endpoint called by the gateway after each inference request. Operators do not call this directly.
+
+**Authentication:** `X-Purser-Internal-Token: <token>` (required when `PURSER_INTERNAL_TOKEN` is set).
+
+**Request body:**
+
+```json
+{"api_key_id": "key-abc123", "model_id": "llama-3-8b", "input_tokens": 42, "output_tokens": 128}
+```
+
+**Response `200`:** `{"ok": true}`
+
+### `GET /api/v1/apikeys/{id}/usage`
+
+Returns aggregate token usage for a single API key.
+
+**Response `200`:**
+
+```json
+{"api_key_id": "key-abc123", "total_requests": 17, "input_tokens": 8432, "output_tokens": 21050}
+```
+
+### `GET /api/v1/usage/summary`
+
+Returns usage grouped by tenant. Accepts optional `?since=<RFC3339>` query parameter.
+
+**Response `200`:**
+
+```json
+{"tenants": [{"tenant": "acme", "total_requests": 1042, "input_tokens": 412000, "output_tokens": 980000}]}
+```
+
+---
+
 ## Enterprise
 
 ### `GET /api/v1/enterprise/status`
@@ -634,38 +783,36 @@ Serves the embedded OpenAPI 3.0 specification as JSON. The spec is compiled from
 | GET | `/api/v1/nodes` | List all enrolled nodes |
 | GET | `/api/v1/nodes/{id}` | Get a node by ID |
 | POST | `/api/v1/nodes/{id}/drain` | Cordon a node (mark DRAINING) |
+| POST | `/api/v1/nodes/{id}/restart` | Restart engines on a node (async re-provision) |
 | DELETE | `/api/v1/nodes/{id}` | Decommission a node |
-| GET | `/api/v1/models` | List the model catalog |
-| POST | `/api/v1/models` | Register a model |
-| DELETE | `/api/v1/models/{id}` | Remove a model |
+| GET | `/api/v1/models` | List the model catalog (with fit verdicts) |
+| POST | `/api/v1/models` | Register a model (protojson ModelSpec) |
+| POST | `/api/v1/models/import` | Import from HuggingFace, S3/GCS/Azure, SageMaker, Vertex AI, or Azure ML |
+| DELETE | `/api/v1/models/{id}` | Remove a model (guarded — refuses if deployed) |
+| GET | `/api/v1/models/{id}/health` | Operational health of a deployed model |
 | POST | `/api/v1/models/{id}/plan` | Dry-run plan preview (no side effects) |
 | POST | `/api/v1/models/{id}/deploy` | Deploy a model |
 | GET | `/api/v1/plans/{id}` | Get a stored deployment plan |
 | GET | `/api/v1/deployments` | List all deployments |
 | DELETE | `/api/v1/deployments/{id}` | Tear down a deployment |
-| GET | `/api/v1/cluster/health` | Cluster health summary |
+| GET | `/api/v1/cluster/health` | Cluster health summary (public, no auth required) |
 | GET | `/api/v1/apikeys` | List gateway API keys (metadata only) |
 | POST | `/api/v1/apikeys` | Mint a gateway API key |
 | DELETE | `/api/v1/apikeys/{id}` | Revoke an API key |
+| GET | `/api/v1/apikeys/{id}/usage` | Aggregate token usage for a key |
 | POST | `/api/v1/join-token` | Mint a cluster join token |
-| GET | `/api/v1/metrics` | Live metrics (Server-Sent Events) |
-| GET | `/api/v1/enterprise/status` | Active edition report |
-| GET | `/api/v1/enterprise/audit-log` | Tamper-evident audit log (enterprise) |
-| GET | `/api/v1/openapi.json` | This OpenAPI 3.0 specification |
+| GET | `/api/v1/enrollment-bundle` | Download pre-filled enrollment env file |
+| GET | `/api/v1/metrics` | Live hardware metrics (Server-Sent Events, 2 s cadence) |
+| POST | `/api/v1/usage` | Record per-request usage (internal, called by gateway) |
+| GET | `/api/v1/usage/summary` | Usage grouped by tenant (optional `?since=<RFC3339>`) |
+| GET | `/api/v1/enterprise/status` | Active edition report (community or enterprise) |
+| GET | `/api/v1/enterprise/audit-log` | Tamper-evident audit log (enterprise, `"audit"` feature) |
+| GET | `/api/v1/openapi.json` | OpenAPI 3.0 specification (public, no auth required) |
 
 For full request/response schemas, parameters, and error codes see the live
 spec at `GET /api/v1/openapi.json`.
 
 ---
-
-## Error Format
-
-All errors follow this format:
-
-```json
-{"error": "<error_code>", "message": "<human-readable description>"}
-```
-
 
 ## Error Format
 

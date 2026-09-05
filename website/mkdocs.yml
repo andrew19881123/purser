@@ -36,7 +36,11 @@ plugins:
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.highlight:
@@ -49,21 +53,33 @@ nav:
   - Getting Started:
     - Quickstart (Helm): getting-started/quickstart.md
     - Architecture: getting-started/architecture.md
+    - Deploy Your First Model: getting-started/deploy-model.md
   - Install:
     - Kubernetes (Helm): install/kubernetes.md
     - Linux Agent (.deb/.rpm): install/linux-agent.md
     - macOS / Windows Agent: install/macos-windows.md
+    - Enrollment Bundle: install/enrollment-bundle.md
   - Configuration:
-    - Environment Variables Reference: configuration/env-vars.md
-    - OIDC (EntraID / Okta): configuration/oidc.md
-    - OpenTelemetry (Dynatrace / Grafana): configuration/otel.md
+    - Environment Variables: configuration/env-vars.md
+    - OIDC (EntraID / Okta / Keycloak): configuration/oidc.md
+    - OpenTelemetry: configuration/otel.md
+    - RBAC (API Key Roles): configuration/rbac.md
     - Secret Management (Vault / ESO): configuration/secrets.md
     - Certificate Management (cert-manager): configuration/cert-manager.md
+    - Model Sources (S3 / GCS / Azure): configuration/model-sources.md
+    - SWIM Gossip Discovery: configuration/swim.md
   - Enterprise:
     - Open-Core Model: enterprise/overview.md
-    - Audit Log: enterprise/audit-log.md
+    - Licensing & Key Management: enterprise/licensing.md
+    - Tamper-Evident Audit Log: enterprise/audit-log.md
+    - Usage Accounting (Chargeback): enterprise/usage-accounting.md
   - Integrations:
     - LiteLLM: integrations/litellm.md
+    - HuggingFace Hub: integrations/huggingface.md
+    - AWS SageMaker: integrations/sagemaker.md
+    - GCP Vertex AI: integrations/vertexai.md
+    - Azure ML: integrations/azureml.md
+    - Python SDK: integrations/python-sdk.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Gateway (/v1 OpenAI): api/gateway.md

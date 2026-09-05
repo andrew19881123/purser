@@ -5,6 +5,17 @@ Purser can auto-populate a model catalog entry from a
 fetches the model's file list from the HF API, filters for GGUF files, and
 registers the model in the catalog — no manual spec authoring required.
 
+## Import and deploy flow
+
+```mermaid
+flowchart LR
+    A["HuggingFace Hub\nmeta-llama/Llama-3.1-8B-Instruct"] -->|"POST /api/v1/models/import\nsource=huggingface"| B["Control Plane\nfetch metadata"]
+    B -->|"201 Created"| C["Purser Catalog\nmodel registered"]
+    C -->|"POST /api/v1/models/{id}/plan"| D["Planner\ndry-run preview"]
+    D -->|"feasible=true"| E["POST /api/v1/models/{id}/deploy"]
+    E -->|"202 Accepted"| F["Deployment ACTIVE\nmodel serving"]
+```
+
 ## Configuration
 
 | Environment variable | Description |

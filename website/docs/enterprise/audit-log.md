@@ -32,6 +32,17 @@ All events carry:
 
 Every audit entry is immutably chained with SHA-256:
 
+```mermaid
+graph LR
+    G["Genesis\nPrevHash = 0000...0000"]
+    E1["Entry seq=1\naction: join_token.minted\nhash: a3f8..."]
+    E2["Entry seq=2\naction: model.created\nhash: 9c21..."]
+    E3["Entry seq=3\naction: apikey.created\nhash: 7b44..."]
+    G -->|"SHA-256( 0000...0000 || content₁ )"| E1
+    E1 -->|"SHA-256( a3f8... || content₂ )"| E2
+    E2 -->|"SHA-256( 9c21... || content₃ )"| E3
+```
+
 ```
 Hash = SHA-256( rawBytes(PrevHash) || CanonicalBytes(content) )
 ```
