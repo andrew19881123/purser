@@ -26,6 +26,9 @@ jobs:
         with:
           toolchain: "1.98.1"
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: build
         working-directory: rust
         run: cargo build --workspace --locked
@@ -52,6 +55,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/${{ matrix.module }}/go.mod
+          cache-dependency-path: go/${{ matrix.module }}/go.sum
       - name: build
         working-directory: go/${{ matrix.module }}
         run: go build ./...

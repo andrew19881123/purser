@@ -35,6 +35,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/controlplane/go.mod
+          cache-dependency-path: go/controlplane/go.sum
 
       # Build the control-plane as a fully-static linux/amd64 binary.
       # GOWORK=off: match the Dockerfile pattern — rely on in-module `replace`
@@ -70,7 +71,11 @@ jobs:
       # toolchain file lives under rust/ rather than the repo root.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: "1.98.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
 
       # CARGO_INCREMENTAL=0 — incremental artifacts have no value for a
       # release build and only bloat the target directory.
@@ -192,6 +197,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/purser-control-plane:${{ env.TAG }}
             ghcr.io/${{ github.repository_owner }}/purser-control-plane:latest
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
 
       # Sign by digest (not tag) to pin the exact image layer set.
       # The signature is pushed to the same GHCR namespace alongside the image.
@@ -212,6 +219,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/purser-gateway:${{ env.TAG }}
             ghcr.io/${{ github.repository_owner }}/purser-gateway:latest
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
 
       - name: Sign container image — gateway
         env:
@@ -230,6 +239,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/purser-ui:${{ env.TAG }}
             ghcr.io/${{ github.repository_owner }}/purser-ui:latest
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
 
       - name: Sign container image — ui
         env:
