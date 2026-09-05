@@ -142,7 +142,9 @@ func run(logger *slog.Logger) error {
 	}
 
 	// Orchestrator commands agents over gRPC.
-	agentClient := orchestrator.NewGRPCAgentClient()
+	// Use the internal CA pool so agent server certificates are verified.
+	// Falls back to insecure if PKI is absent (dev mode).
+	agentClient := orchestrator.NewGRPCAgentClientWithCA(ca.CertPool(), logger)
 	orch := orchestrator.New(reg, orchestrator.Deps{
 		Agents:   agentClient,
 		Resolver: orchestrator.NewRegistryResolver(reg, cfg.agentPort, 0),
@@ -158,7 +160,7 @@ func run(logger *slog.Logger) error {
 	purserv1.RegisterRegistrationServiceServer(grpcSrv, regServer)
 
 	// Reconciler control loop.
-	rc := reconciler.New(reg, reconciler.NewOrchestratorActuator(orch, reg), reconciler.DefaultConfig())
+	rc := reconciler.New(reg, reconciler.NewOrchestratorActuator(orch, reg), reconciler.ConfigFromEnv())
 	rc.SetLogger(logger)
 	go func() {
 		if err := rc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
