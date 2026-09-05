@@ -18,7 +18,10 @@ use purser_gateway::{app, AppState, Config};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber_init();
+    // Initialise structured logging and, when OTEL_EXPORTER_OTLP_ENDPOINT is
+    // set, the OTLP trace pipeline. The guard must be kept alive until we exit
+    // so pending spans are flushed on shutdown.
+    let _otel_guard = purser_gateway::telemetry::init();
 
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -76,19 +79,3 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Initialise structured JSON logging with correlation fields (`session_id`,
-/// `api_key_id`, `tenant`, `model`). Log level is controlled by `RUST_LOG`
-/// (default `info`). No request content is ever logged. Safe to call once;
-/// ignores the error if a global subscriber is already installed.
-fn tracing_subscriber_init() {
-    use tracing_subscriber::{fmt, EnvFilter};
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let _ = fmt()
-        .json()
-        .with_env_filter(filter)
-        .with_current_span(true)
-        .with_span_list(false)
-        .try_init();
-}

@@ -31,6 +31,7 @@ import (
 	"github.com/purser/purser/go/controlplane/reconciler"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/server"
+	"github.com/purser/purser/go/controlplane/telemetry"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	"google.golang.org/grpc"
 )
@@ -98,6 +99,14 @@ func run(logger *slog.Logger) error {
 	cfg := loadConfig()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// OpenTelemetry — initialise before anything else so that instruments
+	// created by the server (and any other subsystem) use the real providers.
+	// When OTEL_EXPORTER_OTLP_ENDPOINT is unset this is a no-op (zero overhead).
+	otelShutdown, err := telemetry.Init(ctx)
+	if err != nil {
+		return err
+	}
 
 	reg, err := registry.Open(cfg.dbPath)
 	if err != nil {
@@ -211,6 +220,10 @@ func run(logger *slog.Logger) error {
 		InternalToken: cfg.gatewayToken,
 	})
 
+	// Start the background OTEL infrastructure metrics collector (nodes ready/
+	// total, active deployments). It exits when ctx is cancelled.
+	srv.StartInfraMetrics(ctx)
+
 	errCh := make(chan error, 2)
 	go func() {
 		lis, err := net.Listen("tcp", cfg.grpcAddr)
@@ -239,6 +252,9 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		grpcSrv.GracefulStop()
 		_ = agentClient.Close()
+		// Flush and close OTEL exporters before exiting so the last spans and
+		// metrics are not lost.
+		_ = otelShutdown(shutdownCtx)
 		return srv.Shutdown(shutdownCtx)
 	}
 }

@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/purser/purser/go/controlplane/audit"
 
 	// modernc.org/sqlite is a pure-Go (CGO-free) SQLite driver. It registers
@@ -856,6 +859,22 @@ func (r *SQLiteRegistry) AppendAudit(ctx context.Context, e *AuditEntry) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("registry: append audit: commit: %w", err)
+	}
+
+	// OTEL audit-log bridge: emit each committed audit event as a span event
+	// on the active trace span (if any). When an OTLP endpoint is configured
+	// this ships audit records to Splunk / Elastic / Dynatrace in real time,
+	// correlated with the originating HTTP span. When no tracer is active (or
+	// OTEL is not configured) IsRecording() is false and this is a no-op.
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.AddEvent("purser.audit",
+			trace.WithAttributes(
+				attribute.Int64("audit.seq", int64(e.Seq)),
+				attribute.String("audit.actor", e.Actor),
+				attribute.String("audit.action", e.Action),
+				attribute.String("audit.target", e.Target),
+			),
+		)
 	}
 	return nil
 }

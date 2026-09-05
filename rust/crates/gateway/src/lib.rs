@@ -32,6 +32,7 @@ pub mod openai;
 pub mod quota;
 pub mod routes;
 pub mod state;
+pub mod telemetry;
 pub mod upstream;
 
 pub use auth::{ApiKey, ApiKeyInfo, AuthConfig, ControlPlaneAuth};
