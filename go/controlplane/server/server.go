@@ -711,6 +711,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
 	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
+	s.mux.HandleFunc("GET /api/v1/models/{id}", s.handleGetModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
@@ -1488,6 +1489,20 @@ func deploymentOccupiesNode(d *registry.Deployment, nodeID string) bool {
 		}
 	}
 	return false
+}
+
+// handleGetModel returns a single model by ID.
+func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
+	m, err := s.reg.GetModel(r.Context(), r.PathValue("id"))
+	if errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, m)
 }
 
 // handleDeleteModel removes a model from the catalog. It is a guarded delete,

@@ -103,6 +103,7 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_SECRET_KEY` | (unset — auto-generated) | 32-byte AES-256 encryption key, hex- or base64-encoded (64 hex chars or 44 base64 chars). When set it takes precedence over the key file. When unset, the key is loaded from `{PURSER_SECRET_STORE_DIR}/.secret_key` or freshly generated and saved there. Consumed directly by `EncryptedFileSecretStore`, not stored in `AgentConfig`. |
 | `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
 | `PURSER_MODEL_FETCH_MAX_RETRIES` | `3` | Number of additional HTTP fetch attempts after the first failure when downloading model weights (`HttpFetcher`). `0` means try once with no retries. Transient errors (5xx, network/timeout) are retried; 4xx errors fail immediately without retrying. |
+| `PURSER_MODEL_MIRROR_URL` | (none) | Base URL for HTTP(S) model weight downloads, e.g. `https://models.internal/weights`. When set, the agent uses `HttpFetcher` to pull weights from this origin. When absent, `FileMirrorFetcher` is used (local/mounted mirror). The `http-fetch` Cargo feature must be enabled (it is included in the default build). |
 
 ### Engine version detection
 
@@ -205,7 +206,7 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ### Agent env vars (20)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_MODEL_FETCH_MAX_RETRIES`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_MODEL_FETCH_MAX_RETRIES`, `PURSER_MODEL_MIRROR_URL`
 
 ### Gateway env vars (13)
 

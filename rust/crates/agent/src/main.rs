@@ -32,11 +32,39 @@ async fn main() -> anyhow::Result<()> {
     let config = AgentConfig::from_env().context("loading agent configuration")?;
     let config = Arc::new(config);
 
-    // When http-fetch is enabled: construct an HTTP model fetcher from config.
-    // TODO(phase2): pass to ModelCache::open() when the weight-loading path is
-    // wired in place of FileMirrorFetcher.
-    #[cfg(feature = "http-fetch")]
-    let _http_fetcher = purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
+    // Select model fetcher: HTTP when a mirror URL is configured, local file
+    // mirror otherwise.  The cache is not yet on the hot serving path (the
+    // engine-load integration is phase-2 work), but initialising it here
+    // ensures the directory structure exists and the fetcher selection is
+    // exercised at startup.
+    let model_fetcher: Box<dyn purser_agent::modelcache::Fetcher> = {
+        #[cfg(feature = "http-fetch")]
+        {
+            if config.model_mirror_url.is_some() {
+                Box::new(purser_agent::modelcache::HttpFetcher::new(
+                    config.model_fetch_max_retries,
+                ))
+            } else {
+                Box::new(purser_agent::modelcache::FileMirrorFetcher::default())
+            }
+        }
+        #[cfg(not(feature = "http-fetch"))]
+        {
+            Box::new(purser_agent::modelcache::FileMirrorFetcher::default())
+        }
+    };
+    let model_cache_dir = config
+        .secret_store_dir
+        .parent()
+        .unwrap_or(&config.secret_store_dir)
+        .join("model-cache");
+    let _model_cache = purser_agent::modelcache::ModelCache::open(
+        model_cache_dir,
+        50 * 1024 * 1024 * 1024, // 50 GiB default budget
+        model_fetcher,
+    )
+    .await
+    .context("opening model cache")?;
 
     // Security: warn if bound on all interfaces rather than a trusted subnet.
     if config.bind_addr.ip().is_unspecified() {

@@ -110,6 +110,16 @@ pub struct AgentConfig {
     ///
     /// Overridable via `PURSER_MODEL_FETCH_MAX_RETRIES`. Defaults to 3.
     pub model_fetch_max_retries: u32,
+
+    /// Base URL for HTTP(S) model weight downloads, e.g.
+    /// `https://models.internal/weights`.
+    ///
+    /// When set, [`ModelCache`](crate::modelcache::ModelCache) is initialised
+    /// with an [`HttpFetcher`](crate::modelcache::HttpFetcher) that pulls from
+    /// this origin. When absent, the cache falls back to
+    /// [`FileMirrorFetcher`](crate::modelcache::FileMirrorFetcher) (local/mounted
+    /// mirror). Overridable via `PURSER_MODEL_MIRROR_URL`.
+    pub model_mirror_url: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -129,6 +139,7 @@ impl Default for AgentConfig {
             swim_seed_addrs: Vec::new(),
             secret_store_dir: default_secret_store_dir(),
             model_fetch_max_retries: 3,
+            model_mirror_url: None,
         }
     }
 }
@@ -154,6 +165,8 @@ impl AgentConfig {
     /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
     ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
     /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
+    /// - `PURSER_MODEL_MIRROR_URL`          — base URL for HTTP model downloads;
+    ///   when set, `HttpFetcher` is used; when absent, `FileMirrorFetcher`
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -206,6 +219,7 @@ impl AgentConfig {
                 .parse()
                 .with_context(|| format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}"))?;
         }
+        cfg.model_mirror_url = non_empty(std::env::var("PURSER_MODEL_MIRROR_URL").ok());
 
         Ok(cfg)
     }
@@ -432,6 +446,31 @@ mod tests {
     // ------------------------------------------------------------------
     // Enrollment config (T2-8 — fields were already consumed, stale TODOs removed)
     // ------------------------------------------------------------------
+
+    #[test]
+    fn model_mirror_url_is_none_by_default() {
+        let cfg = AgentConfig::default();
+        assert!(cfg.model_mirror_url.is_none());
+    }
+
+    #[test]
+    fn from_env_reads_model_mirror_url() {
+        const VAR: &str = "PURSER_MODEL_MIRROR_URL";
+        let prev = std::env::var(VAR).ok();
+
+        std::env::set_var(VAR, "https://models.internal/weights");
+        let cfg = AgentConfig::from_env().unwrap();
+
+        match prev {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+
+        assert_eq!(
+            cfg.model_mirror_url.as_deref(),
+            Some("https://models.internal/weights")
+        );
+    }
 
     #[test]
     fn from_env_reads_control_plane_addr_and_join_token() {

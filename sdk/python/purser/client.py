@@ -199,14 +199,8 @@ class PurserClient:
         Raises:
             NotFoundError: If no model with that ID exists.
         """
-        # The server does not have a dedicated GET /models/{id} endpoint, so
-        # we list and filter locally.  This is fine for the catalog sizes
-        # expected in practice.
-        models = self.list_models()
-        for m in models:
-            if m.id == model_id:
-                return m
-        raise NotFoundError(f"model not found: {model_id}")
+        data = self._request("GET", f"/api/v1/models/{model_id}")
+        return Model._from_dict(data)
 
     def delete_model(self, model_id: str) -> None:
         """Remove a model from the catalog.

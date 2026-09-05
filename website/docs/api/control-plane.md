@@ -191,6 +191,26 @@ Registers a model in the catalog. Request body is a protojson-encoded `purser.v1
 
 **Response `409`:** Model already exists.
 
+### `GET /api/v1/models/{id}`
+
+Returns a single model by ID.
+
+**Response `200`:**
+
+```json
+{
+  "id": "llama-8b",
+  "family": "llama",
+  "architecture": "transformer",
+  "params_total_b": 8.0,
+  "engine": "mock",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z"
+}
+```
+
+**Response `404`:** Model not found.
+
 ### `POST /api/v1/models/import`
 
 Imports a model from an external source into the catalog. Dispatches by the `source` field.
@@ -788,6 +808,7 @@ Serves the embedded OpenAPI 3.0 specification as JSON. The spec is compiled from
 | GET | `/api/v1/models` | List the model catalog (with fit verdicts) |
 | POST | `/api/v1/models` | Register a model (protojson ModelSpec) |
 | POST | `/api/v1/models/import` | Import from HuggingFace, S3/GCS/Azure, SageMaker, Vertex AI, or Azure ML |
+| GET | `/api/v1/models/{id}` | Get a single model by ID |
 | DELETE | `/api/v1/models/{id}` | Remove a model (guarded — refuses if deployed) |
 | GET | `/api/v1/models/{id}/health` | Operational health of a deployed model |
 | POST | `/api/v1/models/{id}/plan` | Dry-run plan preview (no side effects) |

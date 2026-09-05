@@ -748,6 +748,41 @@ mod tests {
         is_send_sync::<Arc<ModelCache>>();
     }
 
+    // ── I3: ModelCache initialises with the appropriate Fetcher ──────────────
+
+    /// When PURSER_MODEL_MIRROR_URL is absent, ModelCache should be constructible
+    /// with a FileMirrorFetcher (the default path).
+    #[tokio::test]
+    async fn model_cache_opens_with_file_mirror_fetcher() {
+        let cache_dir = tempdir().unwrap();
+        let cache = ModelCache::open(
+            cache_dir.path(),
+            1_000_000,
+            Box::new(FileMirrorFetcher::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cache.total_bytes(), 0);
+    }
+
+    /// When the http-fetch feature is enabled, ModelCache should be constructible
+    /// with an HttpFetcher — this exercises the PURSER_MODEL_MIRROR_URL code path.
+    #[cfg(feature = "http-fetch")]
+    #[tokio::test]
+    async fn model_cache_opens_with_http_fetcher() {
+        let cache_dir = tempdir().unwrap();
+        let cache = ModelCache::open(
+            cache_dir.path(),
+            1_000_000,
+            Box::new(HttpFetcher::new(0)),
+        )
+        .await
+        .unwrap();
+        // Cache opened successfully with HttpFetcher (no downloads yet).
+        assert_eq!(cache.total_bytes(), 0);
+        assert!(cache.cached_refs().is_empty());
+    }
+
     // ── HttpFetcher tests (require `http-fetch` feature + a live axum server) ──
 
     #[cfg(feature = "http-fetch")]
