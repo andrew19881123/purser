@@ -360,3 +360,72 @@ export interface OpenAIModel {
   object: 'model';
   ownedBy: string;
 }
+
+// ---------------------------------------------------------------------------
+// Model Studio — import sources and plan-preview response.
+// These are the UI-side contracts for POST /api/v1/models/import
+// (future backend endpoint) and POST /api/v1/models/{id}/plan.
+// ---------------------------------------------------------------------------
+
+export type ImportSourceType =
+  | 'huggingface'
+  | 'object_storage'
+  | 'sagemaker'
+  | 'vertexai'
+  | 'azure_ml'
+  | 'catalog';
+
+export interface HuggingFaceSource {
+  type: 'huggingface';
+  /** Repository identifier, e.g. "meta-llama/Llama-3.1-8B-Instruct". */
+  repo: string;
+  revision?: string;
+  filenamePattern?: string;
+}
+
+export interface ObjectStorageSource {
+  type: 'object_storage';
+  /** Full URI: s3://, gs://, or az://. */
+  uri: string;
+  name: string;
+  family: string;
+}
+
+export interface SageMakerSource {
+  type: 'sagemaker';
+  modelGroup: string;
+  version?: string;
+}
+
+export interface VertexAISource {
+  type: 'vertexai';
+  modelPath: string;
+  version?: string;
+}
+
+export interface AzureMLSource {
+  type: 'azure_ml';
+  workspace: string;
+  modelName: string;
+  version?: string;
+}
+
+/** Union of all external import sources (the 'catalog' source is handled
+ *  separately — it reuses the existing GET /api/v1/models list). */
+export type ImportSource =
+  | HuggingFaceSource
+  | ObjectStorageSource
+  | SageMakerSource
+  | VertexAISource
+  | AzureMLSource;
+
+/**
+ * Response shape for POST /api/v1/models/{id}/plan.
+ * When feasible === false the plan is absent and reason describes why.
+ * When feasible === true the plan carries all assignments/pipeline info.
+ */
+export interface PlanPreviewResult {
+  feasible: boolean;
+  reason?: string;
+  plan?: DeploymentPlan;
+}

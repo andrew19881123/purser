@@ -5,6 +5,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useI18n, useT, LOCALES, type Locale } from '../i18n';
 import { useTheme } from '../lib/theme';
 import {
+  IconBox,
   IconRocket,
   IconServer,
   IconGrid,
@@ -28,6 +29,7 @@ const OPERATE: NavItem[] = [
   { to: '/', labelKey: 'nav.onboarding', icon: <IconRocket />, end: true },
   { to: '/fleet', labelKey: 'nav.fleet', icon: <IconServer /> },
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
+  { to: '/model-studio', labelKey: 'nav.modelStudio', icon: <IconBox /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
 ];
 const USE: NavItem[] = [
