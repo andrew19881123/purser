@@ -150,6 +150,31 @@ jobs:
           cd dist
           sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS
 
+      # Generate SPDX SBOMs for each published container image.
+      # Note: the docker job runs in parallel; these steps will pull the
+      # images once they are available (the release job enforces ordering by
+      # depending on both package and docker).
+      - name: Generate SBOM — control-plane
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/purser-control-plane:${{ github.ref_name }}
+          artifact-name: sbom-control-plane.spdx.json
+          output-file: dist/sbom-control-plane.spdx.json
+
+      - name: Generate SBOM — gateway
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/purser-gateway:${{ github.ref_name }}
+          artifact-name: sbom-gateway.spdx.json
+          output-file: dist/sbom-gateway.spdx.json
+
+      - name: Generate SBOM — ui
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/purser-ui:${{ github.ref_name }}
+          artifact-name: sbom-ui.spdx.json
+          output-file: dist/sbom-ui.spdx.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-packages
@@ -171,6 +196,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Install cosign once; used for keyless signing of all three images below.
+      # Signing uses the GitHub Actions OIDC token via id-token:write — no
+      # secrets or long-lived keys required.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       # Each Dockerfile performs its own multi-stage build from source; the
       # pre-built binaries from jobs 1 and 2 act as a quality gate only.
 
@@ -185,6 +216,15 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/purser-control-plane:${{ env.TAG }}
             ghcr.io/${{ github.repository_owner }}/purser-control-plane:latest
 
+      # Sign by digest (not tag) to pin the exact image layer set.
+      # The signature is pushed to the same GHCR namespace alongside the image.
+      - name: Sign container image — control-plane
+        env:
+          DIGEST: ${{ steps.push-control-plane.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/purser-control-plane@${DIGEST}
+
       - name: Build and push gateway image
         id: push-gateway
         uses: docker/build-push-action@v6
@@ -196,6 +236,13 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/purser-gateway:${{ env.TAG }}
             ghcr.io/${{ github.repository_owner }}/purser-gateway:latest
 
+      - name: Sign container image — gateway
+        env:
+          DIGEST: ${{ steps.push-gateway.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/purser-gateway@${DIGEST}
+
       - name: Build and push ui image
         id: push-ui
         uses: docker/build-push-action@v6
@@ -206,6 +253,13 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/purser-ui:${{ env.TAG }}
             ghcr.io/${{ github.repository_owner }}/purser-ui:latest
+
+      - name: Sign container image — ui
+        env:
+          DIGEST: ${{ steps.push-ui.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/purser-ui@${DIGEST}
 
       - name: Record image digests
         run: |
@@ -237,6 +291,27 @@ jobs:
           name: docker-digests
           path: dist/digests/
 
+      # Install cosign for keyless blob signing of the binary tarballs.
+      # Uses the GitHub Actions OIDC token — no secrets or long-lived keys.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Sign each binary tarball; the cosign bundle (*.bundle) embeds the
+      # certificate and signature and is uploaded as a release asset alongside
+      # the tarball so users can verify offline with cosign verify-blob.
+      - name: Sign tarballs with cosign
+        run: |
+          TAG=${{ env.TAG }}
+          cosign sign-blob --yes \
+            --bundle dist/purser-agent-linux-amd64-${TAG}.tar.gz.bundle \
+            dist/purser-agent-linux-amd64-${TAG}.tar.gz
+          cosign sign-blob --yes \
+            --bundle dist/purser-gateway-linux-amd64-${TAG}.tar.gz.bundle \
+            dist/purser-gateway-linux-amd64-${TAG}.tar.gz
+          cosign sign-blob --yes \
+            --bundle dist/control-plane-linux-amd64-${TAG}.tar.gz.bundle \
+            dist/control-plane-linux-amd64-${TAG}.tar.gz
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -245,6 +320,8 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*.tar.gz
+            dist/*.tar.gz.bundle
+            dist/*.spdx.json
             dist/SHA256SUMS
           body: |
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ env.TAG }}/CHANGELOG.md) for full release notes.
