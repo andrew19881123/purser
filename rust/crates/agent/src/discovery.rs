@@ -151,6 +151,7 @@ pub fn heartbeat_messages<S: HeartbeatSource + 'static>(
                 node_id: node_id.clone(),
                 state: state as i32,
                 metrics,
+                node_metrics: None,
                 ts: Some(prost_types::Timestamp::from(SystemTime::now())),
             };
             count += 1;
