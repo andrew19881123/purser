@@ -6,13 +6,56 @@ OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go)
 
 ## Environment variables
 
-Three standard OpenTelemetry SDK variables are actively read at startup:
+Standard OpenTelemetry SDK variables actively read at startup:
 
 | Variable | Default | Description |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty — OTEL disabled) | OTLP base URL. **Setting this variable enables all telemetry export.** The Control Plane exports over OTLP/HTTP; the Gateway exports over OTLP/gRPC. |
 | `OTEL_SERVICE_NAME` | `purser-control-plane` or `purser-gateway` | `service.name` resource attribute stamped on every span and metric. Defaults differ per component; set explicitly when running multiple instances or when your backend's service map groups by this attribute. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | (empty) | Comma-separated `key=value` pairs appended to every OTLP request. Used for API-key or token authentication with managed backends. Examples: `Authorization=Api-Token dt0c01.xxx` (Dynatrace), `Authorization=Basic <base64>` (Grafana Cloud). |
+| `OTEL_TRACES_SAMPLER` | `always_on` | Trace sampler to use. See [Trace sampling](#trace-sampling) below for all accepted values. |
+| `OTEL_TRACES_SAMPLER_ARG` | (empty) | Numeric argument for ratio-based samplers (float, 0.0–1.0). Required for `traceidratio` and `parentbased_traceidratio`; defaults to `1.0` when unset or unparseable. |
+
+---
+
+---
+
+## Trace sampling
+
+The Control Plane reads the standard `OTEL_TRACES_SAMPLER` variable (case-sensitive). Five values are supported:
+
+| `OTEL_TRACES_SAMPLER` | Behaviour |
+|---|---|
+| `always_on` (default) | Every request is sampled. Good for development; noisy at scale. |
+| `always_off` | No traces are exported. Useful to confirm zero overhead without removing the endpoint. |
+| `traceidratio` | Probabilistic sampling based on the trace ID. Set `OTEL_TRACES_SAMPLER_ARG` to a float between `0.0` and `1.0` (e.g. `0.1` = 10%). Defaults to `1.0` when the arg is absent or unparseable. |
+| `parentbased_traceidratio` | Like `traceidratio` but respects the sampling decision of the parent span (e.g. from an upstream service). Recommended for multi-service setups. |
+| `parentbased_always_off` | Defers to the parent span's sampling decision; samples nothing that does not have a sampled parent. |
+
+### Quick examples
+
+```bash
+# Sample 10% of traces
+OTEL_TRACES_SAMPLER=traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.1
+
+# Respect upstream sampling decision at 5%
+OTEL_TRACES_SAMPLER=parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.05
+
+# Disable tracing entirely
+OTEL_TRACES_SAMPLER=always_off
+```
+
+```yaml
+# Helm values.yaml
+controlPlane:
+  extraEnv:
+    - name: OTEL_TRACES_SAMPLER
+      value: "parentbased_traceidratio"
+    - name: OTEL_TRACES_SAMPLER_ARG
+      value: "0.1"
+```
 
 ---
 

@@ -30,6 +30,7 @@ import (
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
+	"github.com/purser/purser/go/controlplane/reconciler"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
@@ -81,6 +82,13 @@ type FleetManager interface {
 	// certificates, auditing fleet.node.decommissioned. It is a lifecycle
 	// transition, not a hard row deletion.
 	Decommission(ctx context.Context, nodeID string) error
+}
+
+// ReconcilerStatusProvider is the surface the GET /api/v1/reconciler/status
+// endpoint needs. It is satisfied by *reconciler.Reconciler but declared as
+// an interface so test doubles can stub it without starting a live control loop.
+type ReconcilerStatusProvider interface {
+	Status() reconciler.ReconcilerStatus
 }
 
 // contextKey is a private key type for values stored in request contexts.
@@ -209,28 +217,32 @@ type Config struct {
 	// constructing a client from environment variables at request time.
 	// Primarily useful for testing with a pre-configured mock client.
 	VertexAI *importer.VertexAIClient
+	// Reconciler, if set, backs the GET /api/v1/reconciler/status endpoint.
+	// When nil the endpoint returns 501 Not Implemented.
+	Reconciler ReconcilerStatusProvider
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
-	reg           registry.Registry
-	log           *slog.Logger
-	mux           *http.ServeMux
-	server        *http.Server
-	deployer      Deployer
-	metrics       MetricsSource
-	nodeMetrics   NodeMetricsGetter
-	metricTO      time.Duration
-	planner       *planning.Planner
-	fleet         FleetManager
-	clusterID     string
-	publicAddr    string
-	license       *license.License
-	oidcVerifier  TokenVerifier // nil = OIDC disabled
-	internalToken string        // gateway exemption secret
-	hfToken       string
-	hfBaseURL     string
-	vertexai      *importer.VertexAIClient
+	reg              registry.Registry
+	log              *slog.Logger
+	mux              *http.ServeMux
+	server           *http.Server
+	deployer         Deployer
+	metrics          MetricsSource
+	nodeMetrics      NodeMetricsGetter
+	metricTO         time.Duration
+	planner          *planning.Planner
+	fleet            FleetManager
+	clusterID        string
+	publicAddr       string
+	license          *license.License
+	oidcVerifier     TokenVerifier // nil = OIDC disabled
+	internalToken    string        // gateway exemption secret
+	hfToken          string
+	hfBaseURL        string
+	vertexai         *importer.VertexAIClient
+	reconcilerStatus ReconcilerStatusProvider // nil = endpoint disabled
 
 	// handler is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC
 	// (inner) middleware. Returned by Handler() and used as http.Server.Handler
@@ -267,22 +279,23 @@ func New(reg registry.Registry, cfg Config) *Server {
 		lic = license.Community()
 	}
 	s := &Server{
-		reg:           reg,
-		log:           logger,
-		mux:           http.NewServeMux(),
-		deployer:      cfg.Deployer,
-		metrics:       cfg.Metrics,
-		nodeMetrics:   cfg.NodeMetrics,
-		metricTO:      interval,
-		planner:       cfg.Planner,
-		fleet:         cfg.Fleet,
-		clusterID:     clusterID,
-		publicAddr:    publicAddr,
-		license:       lic,
-		internalToken: cfg.InternalToken,
-		hfToken:       cfg.HFToken,
-		hfBaseURL:     cfg.HFBaseURL,
-		vertexai:      cfg.VertexAI,
+		reg:              reg,
+		log:              logger,
+		mux:              http.NewServeMux(),
+		deployer:         cfg.Deployer,
+		metrics:          cfg.Metrics,
+		nodeMetrics:      cfg.NodeMetrics,
+		metricTO:         interval,
+		planner:          cfg.Planner,
+		fleet:            cfg.Fleet,
+		clusterID:        clusterID,
+		publicAddr:       publicAddr,
+		license:          lic,
+		internalToken:    cfg.InternalToken,
+		hfToken:          cfg.HFToken,
+		hfBaseURL:        cfg.HFBaseURL,
+		vertexai:         cfg.VertexAI,
+		reconcilerStatus: cfg.Reconciler,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -545,6 +558,9 @@ func (s *Server) routes() {
 	// valid, offline-verified license key (see enterprise/license).
 	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
 	s.mux.HandleFunc("GET /api/v1/enterprise/audit-log", s.handleEnterpriseAuditLog)
+
+	// Observability: reconciler config + tracker state.
+	s.mux.HandleFunc("GET /api/v1/reconciler/status", s.handleReconcilerStatus)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -682,6 +698,28 @@ func (s *Server) handleEnterpriseAuditLog(w http.ResponseWriter, r *http.Request
 		"entries":  entries,
 		"chain":    chain,
 	})
+}
+
+// handleReconcilerStatus returns the reconciler's current configuration and
+// per-event-type tracker snapshot. Viewer-accessible (GET). Returns 501 when
+// no reconciler is wired up (e.g. in test servers that omit it from Config).
+//
+// Response shape:
+//
+//	{
+//	  "config": { "interval_s": 10, "node_timeout_s": 45,
+//	              "hysteresis_s": 30, "action_cooldown_s": 60 },
+//	  "tracker": {
+//	    "node_down":          { "tracked": 0, "oldest_age_s": 0 },
+//	    "orphan_deployment":  { "tracked": 1, "oldest_age_s": 120 }
+//	  }
+//	}
+func (s *Server) handleReconcilerStatus(w http.ResponseWriter, r *http.Request) {
+	if s.reconcilerStatus == nil {
+		s.writeError(w, http.StatusNotImplemented, "no_reconciler", "reconciler not configured")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.reconcilerStatus.Status())
 }
 
 // handleListNodes returns all nodes known to the registry.

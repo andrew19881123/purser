@@ -10,6 +10,7 @@ package telemetry
 import (
 	"context"
 	"os"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -22,6 +23,45 @@ import (
 )
 
 const defaultServiceName = "purser-control-plane"
+
+// buildSampler selects a sdktrace.Sampler based on the standard
+// OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG environment variables.
+//
+// Supported sampler names (case-sensitive, matching the OpenTelemetry spec):
+//
+//   - "always_off"               → NeverSample()
+//   - "traceidratio"             → TraceIDRatioBased(ratio)
+//   - "parentbased_traceidratio" → ParentBased(TraceIDRatioBased(ratio))
+//   - "parentbased_always_off"   → ParentBased(NeverSample())
+//   - "always_on" / "" (default) → AlwaysSample()
+//
+// When the sampler requires a ratio (traceidratio / parentbased_traceidratio)
+// and OTEL_TRACES_SAMPLER_ARG cannot be parsed as a float64, the ratio
+// defaults to 1.0 (100% sampling).
+func buildSampler() sdktrace.Sampler {
+	sampler := os.Getenv("OTEL_TRACES_SAMPLER")
+	arg := os.Getenv("OTEL_TRACES_SAMPLER_ARG")
+	switch sampler {
+	case "always_off":
+		return sdktrace.NeverSample()
+	case "traceidratio":
+		ratio, err := strconv.ParseFloat(arg, 64)
+		if err != nil {
+			ratio = 1.0
+		}
+		return sdktrace.TraceIDRatioBased(ratio)
+	case "parentbased_traceidratio":
+		ratio, err := strconv.ParseFloat(arg, 64)
+		if err != nil {
+			ratio = 1.0
+		}
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+	case "parentbased_always_off":
+		return sdktrace.ParentBased(sdktrace.NeverSample())
+	default: // "always_on" or empty
+		return sdktrace.AlwaysSample()
+	}
+}
 
 // Init initialises global TracerProvider and MeterProvider from env vars:
 //
@@ -69,7 +109,7 @@ func Init(ctx context.Context) (shutdown func(context.Context) error, err error)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSampler(buildSampler()),
 	)
 	otel.SetTracerProvider(tp)
 

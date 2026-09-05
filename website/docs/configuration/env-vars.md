@@ -74,7 +74,8 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_SWIM_SEED_ADDRS` | (empty) | Comma-separated `host:port` SWIM peers to announce to on startup (UDP addresses, matching `PURSER_SWIM_BIND_ADDR` on those nodes). Complements `PURSER_SEEDS` (the mDNS + gRPC seed path); the two discovery mechanisms run in parallel when SWIM is enabled. |
 | `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` when `$HOME` is unset) | Directory where encrypted secret files (`*.enc`) and the auto-generated key file (`.secret_key`) are stored. Created with mode 0700 on first use. |
 | `PURSER_SECRET_KEY` | (unset — auto-generated) | 32-byte AES-256 encryption key, hex- or base64-encoded (64 hex chars or 44 base64 chars). When set it takes precedence over the key file. When unset, the key is loaded from `{PURSER_SECRET_STORE_DIR}/.secret_key` or freshly generated and saved there. Consumed directly by `EncryptedFileSecretStore`, not stored in `AgentConfig`. |
-| `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
+| `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the DRAM microbenchmark entirely and always reports this value in the `HardwareProfile`. Takes precedence over `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`. Useful in CI environments or for manual calibration. |
+| `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS` | `6` | How often (in whole hours) the agent re-runs the 100 ms DRAM bandwidth microbenchmark to refresh the cached `mem_bandwidth_gbs` value. The initial measurement always runs at first probe. Set to `0` to re-measure on every probe call. Has no effect when `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` is set. |
 | `PURSER_MODEL_FETCH_MAX_RETRIES` | `3` | Number of additional HTTP fetch attempts after the first failure when downloading model weights (`HttpFetcher`). `0` means try once with no retries. Transient errors (5xx, network/timeout) are retried; 4xx errors fail immediately without retrying. |
 
 ### Engine version detection
@@ -158,13 +159,15 @@ A value of `0` disables the corresponding limit.
 
 ## OpenTelemetry
 
-OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go) and Gateway (Rust). All three variables below are actively read at startup. When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, both components stay on their built-in no-op providers — zero overhead, nothing phoned home.
+OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go) and Gateway (Rust). The variables below are actively read at startup. When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, both components stay on their built-in no-op providers — zero overhead, nothing phoned home.
 
 | Variable | Default | Description |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP exporter base URL. Setting this activates trace and metric export. Control Plane exports over OTLP/HTTP; Gateway exports over OTLP/gRPC. Examples: `http://otel-collector:4318` (self-hosted), `https://abc12345.live.dynatrace.com/api/v2/otlp` (Dynatrace). |
 | `OTEL_SERVICE_NAME` | `purser-control-plane` / `purser-gateway` | Service name stamped on all spans and metrics. Defaults differ per component; set explicitly when running multiple instances. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | (empty) | Comma-separated `key=value` pairs added to OTLP requests for authentication. Example: `Authorization=Api-Token dt0c01.xxx` (Dynatrace), `Authorization=Basic <base64>` (Grafana Cloud). |
+| `OTEL_TRACES_SAMPLER` | `always_on` | Trace sampler for the Control Plane. Accepted values: `always_on`, `always_off`, `traceidratio`, `parentbased_traceidratio`, `parentbased_always_off`. See [OpenTelemetry: Trace sampling](otel.md#trace-sampling). |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling ratio (float 0.0–1.0) for `traceidratio` and `parentbased_traceidratio`. Ignored by other samplers. |
 
 See [OpenTelemetry configuration](otel.md) for full details: emitted signals, metric names, the audit-log span-event bridge, and per-backend configuration examples.
 
@@ -176,9 +179,9 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 `PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`
 
-### Agent env vars (20)
+### Agent env vars (21)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_MODEL_FETCH_MAX_RETRIES`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`, `PURSER_MODEL_FETCH_MAX_RETRIES`
 
 ### Gateway env vars (13)
 
