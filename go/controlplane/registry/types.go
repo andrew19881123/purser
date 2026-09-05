@@ -62,7 +62,9 @@ type Link struct {
 }
 
 // Model is a catalog entry. Spec carries the full purserv1.ModelSpec as JSON
-// (architecture, quantizations, draft info, ...).
+// (architecture, quantizations, draft info, ...). Source carries the import
+// provenance (e.g. HuggingFace Hub coordinates) as a JSON blob; it is
+// omitted for models registered directly via POST /api/v1/models.
 type Model struct {
 	ID           string          `json:"id"`
 	Family       string          `json:"family"`
@@ -70,8 +72,11 @@ type Model struct {
 	ParamsTotalB float64         `json:"params_total_b"`
 	Engine       string          `json:"engine"`
 	Spec         json.RawMessage `json:"spec,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// Source is the import provenance stored as an opaque JSON blob. The shape
+	// depends on the import source type (e.g. {"type":"huggingface","repo":"..."}).
+	Source    json.RawMessage `json:"source,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // Plan is a DeploymentPlan produced by the planner. Plan carries the full

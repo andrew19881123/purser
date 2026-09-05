@@ -43,6 +43,10 @@ type config struct {
 	gatewayToken string
 	clusterID    string
 	agentPort    int
+	// hfToken is the HuggingFace API token used by POST /api/v1/models/import
+	// when the caller does not supply an X-HF-Token header. Read from
+	// PURSER_HF_TOKEN; leave unset for public-model-only access.
+	hfToken string
 }
 
 func loadConfig() config {
@@ -55,6 +59,7 @@ func loadConfig() config {
 		gatewayToken: envOr("PURSER_GATEWAY_TOKEN", ""),
 		clusterID:    envOr("PURSER_CLUSTER_ID", "default"),
 		agentPort:    envInt("PURSER_AGENT_PORT", 0),
+		hfToken:      envOr("PURSER_HF_TOKEN", ""),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -179,6 +184,7 @@ func run(logger *slog.Logger) error {
 		Fleet:     mgr,
 		ClusterID: cfg.clusterID,
 		License:   lic,
+		HFToken:   cfg.hfToken,
 	})
 
 	errCh := make(chan error, 2)
