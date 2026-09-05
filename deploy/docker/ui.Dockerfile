@@ -25,8 +25,16 @@ RUN npm run build
 FROM nginx:alpine AS final
 
 # SPA routing config: unknown routes fall back to index.html (client-side
-# react-router deep links / reloads work).
+# react-router deep links / reloads work); also serves env.js uncached.
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/ui/dist /usr/share/nginx/html
+
+# Runtime config generator. nginx:alpine's default entrypoint runs every
+# /docker-entrypoint.d/*.sh before starting nginx, so this regenerates
+# /usr/share/nginx/html/env.js from environment variables (PURSER_API_BASE_URL,
+# …) at container START — configuring the API base URL without a rebuild, since
+# Vite bakes build-time env. We keep the base image's ENTRYPOINT/CMD.
+COPY deploy/docker/docker-entrypoint.d/40-purser-runtime-config.sh /docker-entrypoint.d/40-purser-runtime-config.sh
+RUN chmod +x /docker-entrypoint.d/40-purser-runtime-config.sh
 
 EXPOSE 80

@@ -1,8 +1,7 @@
 // ---------------------------------------------------------------------------
 // Real HTTP implementation of the `PurserApi` seam, targeting the Control Plane
-// management surface at `/api/v1/...`. It is inert until selected in
-// ./client.ts (when VITE_PURSER_MOCK=0); the mock stays the default so the
-// bundle builds and runs with no server.
+// management surface at `/api/v1/...`. It is the DEFAULT backend selected in
+// ./client.ts; the in-memory mock is opt-in (VITE_PURSER_MOCK / PURSER_UI_MOCK).
 //
 // Wire format: the `purser.v1` proto is snake_case; our TS types are camelCase.
 // We convert with a thin, idempotent serializer:

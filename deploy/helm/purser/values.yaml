@@ -92,11 +92,25 @@ gateway:
 
 ui:
   port: 80
+  # Base URL the browser uses for the Control-Plane management REST API
+  # (/api/v1). Injected at container start into env.js (window.__PURSER_CONFIG__)
+  # as PURSER_API_BASE_URL — Vite bakes build-time env, so this is the knob that
+  # works without rebuilding the image.
+  # Default: same-origin relative path — route /api/* to the control-plane
+  # Service via an ingress. Set an ABSOLUTE URL only when the UI is served from a
+  # different origin than the API.
+  apiBaseUrl: "/api/v1"
+  # OpenAI-compatible Gateway base for the Playground (same-origin by default).
+  gatewayBaseUrl: "/v1"
   service:
     # Empty => inherit the global `service.type`.
     type: ""
     nodePort: ""
     annotations: {}
+  # Extra env passed verbatim to the ui container ([{name,value}]). Use e.g.
+  # PURSER_UI_MOCK=1 to ship the in-memory demo mode (fabricated data — off by
+  # default).
+  extraEnv: []
   resources: {}
 
 # Enterprise license (offline-verified against the embedded public key; no

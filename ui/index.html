@@ -18,6 +18,11 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Runtime config: sets window.__PURSER_CONFIG__ (API base URL, mock flag)
+         BEFORE the app bundle loads. A static stub in dev; regenerated from env
+         vars at container start. Relative path keeps subpath mounts working;
+         local file only (air-gap safe). -->
+    <script src="./env.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

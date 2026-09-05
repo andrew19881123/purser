@@ -2,11 +2,17 @@
 // The single seam between the UI and the backend.
 //
 // `PurserApi` is the management-plane contract (`/api/v1/...`). It is backed by
-// either an in-memory mock (../mock/backend) or the real HTTP client
-// (./http `createHttpApi`), chosen ONCE here from ./config:
-//   - VITE_PURSER_MOCK unset / not "0" -> mock (default; build & dev work with
-//     no server running).
-//   - VITE_PURSER_MOCK=0               -> real `fetch('/api/v1/...')` client.
+// either the real HTTP client (./http `createHttpApi`, the DEFAULT) or an
+// in-memory mock (../mock/wiring), chosen ONCE here from ./config:
+//   - default / VITE_PURSER_MOCK unset -> real `fetch('/api/v1/...')` client.
+//   - mock explicitly opted in         -> in-memory fixtures (dev/offline demo).
+// Mock is strictly opt-in, so a shipped image talks to the real control plane
+// unless an operator asks for it (see ./config for the flags).
+//
+// The mock is pulled in with a DYNAMIC `import()` gated on the opt-in flag, so
+// its fixtures land in a separate chunk that a default (real) build never
+// loads. The `await` runs at module init, before any importer touches `api` /
+// `makeChat`, so both stay synchronous for callers.
 // Every page, hook and component keeps working unchanged across the swap.
 // ---------------------------------------------------------------------------
 import type {
@@ -21,12 +27,9 @@ import type {
   MetricsStreamHandlers,
   ModelSpec,
   NodeView,
-  OpenAIModel,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
-import { mockChatTransport } from '../mock/chat';
-import { mockBackend } from '../mock/backend';
 import { createHttpApi } from './http';
 
 export interface CreateApiKeyInput {
@@ -70,10 +73,15 @@ export interface PurserApi {
   streamMetrics(handlers: MetricsStreamHandlers): () => void;
 }
 
+// The mock fixtures live behind a dynamic import so they are code-split out of
+// the default (real) bundle. `mock` is null unless mock mode was opted into.
+const mock = config.mock ? await import('../mock/wiring') : null;
+
 /**
- * The active management-plane implementation. Selected from env at load time.
+ * The active management-plane implementation. Selected from config at load time
+ * (real HTTP client by default; the in-memory mock only when opted in).
  */
-export const api: PurserApi = config.mock ? mockBackend : createHttpApi(config.apiBase);
+export const api: PurserApi = mock ? mock.mockBackend : createHttpApi(config.apiBase);
 
 // ---------------------------------------------------------------------------
 // Playground chat client (OpenAI-compatible Gateway, `/v1/...`).
@@ -84,23 +92,13 @@ export const api: PurserApi = config.mock ? mockBackend : createHttpApi(config.a
 // it streams from the Gateway and lists GET /v1/models.
 // ---------------------------------------------------------------------------
 
-/** Mock "served models" = the models of the active mock deployments. */
-function mockListModels(): Promise<OpenAIModel[]> {
-  return mockBackend.listDeployments().then((deps) => {
-    const ids = Array.from(
-      new Set(deps.filter((d) => d.state === 'active').map((d) => d.plan.modelId)),
-    );
-    return ids.map((id) => ({ id, object: 'model' as const, ownedBy: 'purser' }));
-  });
-}
-
 export function makeChat(apiKey?: string): ChatClient {
-  if (config.mock) {
+  if (mock) {
     return createChatClient({
       baseUrl: config.gatewayBase,
       apiKey,
-      transport: mockChatTransport,
-      listModels: mockListModels,
+      transport: mock.mockChatTransport,
+      listModels: mock.mockListModels,
     });
   }
   return createChatClient({

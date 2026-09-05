@@ -29,6 +29,16 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.ui.port }}
+          # Consumed at container start by the UI's runtime-config entrypoint,
+          # which writes env.js (window.__PURSER_CONFIG__) before nginx serves.
+          env:
+            - name: PURSER_API_BASE_URL
+              value: {{ .Values.ui.apiBaseUrl | quote }}
+            - name: PURSER_GATEWAY_BASE_URL
+              value: {{ .Values.ui.gatewayBaseUrl | quote }}
+            {{- with .Values.ui.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

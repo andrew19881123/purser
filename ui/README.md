@@ -1,6 +1,7 @@
 # Purser UI (operator dashboard)
 
-**Status: Phase 1F skeleton — navigable, backend mocked.**
+**Status: navigable dashboard wired to the real control-plane REST API by
+default (in-memory mock is opt-in for offline dev).**
 
 React + Vite + TypeScript single-page app, served by the Control Plane. The
 whole bundle is **self-contained / offline**: no CDN, no web fonts, no external
@@ -45,22 +46,36 @@ src/
   styles/     tokens.css (light/dark), global.css
 ```
 
-## Backend wiring (mock ↔ real)
+## Backend wiring (real by default; mock opt-in)
 
 The `PurserApi` seam in `src/api/client.ts` selects its implementation **once,
-from env** (`src/api/config.ts`) — no component changes:
+from config** (`src/api/config.ts`) — no component changes:
 
-- `mockBackend` (default) — in-memory, offline. Build/dev work with no server.
-- `createHttpApi('/api/v1')` (`src/api/http.ts`) — real `fetch` client, chosen
-  when `VITE_PURSER_MOCK=0`.
+- `createHttpApi('/api/v1')` (`src/api/http.ts`) — real `fetch` client. **This is
+  the default**, so a shipped build talks to the real control plane.
+- `mockBackend` (`src/mock/*`) — in-memory, offline, **opt-in only** (serves
+  fabricated data). It is pulled in via a dynamic `import()` gated on the flag,
+  so its fixtures are code-split out of the default bundle. Enable it with
+  `VITE_PURSER_MOCK=1` (build) or `PURSER_UI_MOCK=1` (container runtime).
 
-Env vars (see `.env.example`; copy to `.env.local` to override):
+### Runtime configuration (containers)
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `VITE_PURSER_MOCK` | mock ON | `0`/`false`/`off`/`no` → real HTTP client |
-| `VITE_PURSER_API_BASE` | `/api/v1` | Control-plane management API base (same origin) |
-| `VITE_PURSER_GATEWAY_BASE` | `/v1` | OpenAI-compatible Gateway base (may be another host/port) |
+Vite bakes `import.meta.env` at **build** time, so the built bundle can't be
+re-pointed by build env. To configure a built image per-deployment, the app also
+reads `window.__PURSER_CONFIG__`, injected by **`env.js`** which loads *before*
+the bundle. The container regenerates `env.js` from environment variables at
+start-up (`deploy/docker/docker-entrypoint.d/40-purser-runtime-config.sh`); the
+Helm chart exposes these as `ui.apiBaseUrl` / `ui.gatewayBaseUrl` / `ui.extraEnv`.
+The file is local (air-gap safe) and served uncached so a restart takes effect.
+
+Precedence (highest first): `window.__PURSER_CONFIG__` (runtime) → `VITE_*`
+(build) → same-origin defaults.
+
+| Runtime env (container) | Build env (`.env.local`) | Default | Purpose |
+|-------------------------|--------------------------|---------|---------|
+| `PURSER_API_BASE_URL` | `VITE_PURSER_API_BASE` | `/api/v1` | Control-plane management API base (same origin) |
+| `PURSER_GATEWAY_BASE_URL` | `VITE_PURSER_GATEWAY_BASE` | `/v1` | OpenAI-compatible Gateway base (may be another host/port) |
+| `PURSER_UI_MOCK` | `VITE_PURSER_MOCK` | off (**real**) | `1`/`true`/`on`/`yes` → opt in to the in-memory mock |
 
 The real client maps the `PurserApi` methods onto the control-plane REST surface
 (`GET /nodes`, `GET /nodes/{id}`, `GET /models`, `POST /models/{id}/deploy`,
