@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-05
+
+> **v0.2 — "Production-Grade Enterprise"** — major feature release.
+>
+> Highlights: real-time hardware metrics SSE, RBAC for API keys (admin/viewer/inference),
+> model import from HuggingFace Hub / S3 / GCS / Azure Blob / AWS SageMaker /
+> GCP VertexAI / Azure ML, Model Studio UI with fleet-split preview, /v1/embeddings
+> endpoint, node auto-enrollment bundle, Python management SDK (purser-sdk 0.2.0),
+> cosign-signed container images + SBOM, automated release pipeline, mTLS on
+> orchestrator→agent gRPC, Gossip SWIM improvements, AES-256-GCM encrypted
+> agent secret store, HttpFetcher for model cache, Planner engineCaps awareness,
+> OpenAPI 3.0 spec at /api/v1/openapi.json, enterprise license CLI improvements,
+> CI toolchain pinning (Rust 1.98.1), OTEL traces/metrics/audit log export,
+> MkDocs documentation site on GitHub Pages.
+
 ## [0.1.1] - 2026-09-05
 
 > Patch release. All three GHCR images and the Helm chart are updated to `0.1.1`.
