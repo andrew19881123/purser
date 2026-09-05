@@ -35,14 +35,16 @@ pki-state/
 **/pki-state/
 
 # --- Enterprise license signing keys (NEVER commit — private key material) ---
-# The public key is embedded in source (license.DevPublicKeyBase64); the private
-# half stays out of the repo. `purser-license keygen` writes to *.ed25519.key.
+# The public key is embedded in source (license.ProductionPublicKeyBase64); the
+# private half stays out of the repo.
+# `purser-license keygen` writes to these paths:
 *.ed25519.key
+purser-license-signing.key
 license-signing-*.pem
 license-signing.key
 
 # --- Internal solution-design & strategy docs (kept local, not published) ---
-docs/
+/docs/
 
 # --- Misc ---
 *.tmp
