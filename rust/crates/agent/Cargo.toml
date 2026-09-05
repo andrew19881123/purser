@@ -8,6 +8,10 @@ description = "Purser fleet agent: node-local daemon exposing AgentService over 
 [dependencies]
 anyhow = "1.0.104"
 async-stream = "0.3.6"
+bytes = { workspace = true }
+foca = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
 async-trait = "0.1.92"
 axum = "0.8.9"
 fastrand = "2.5.0"

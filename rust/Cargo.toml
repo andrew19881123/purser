@@ -18,6 +18,12 @@ license = "MIT"
 [profile.dev]
 debug = 0
 
+[workspace.dependencies]
+bytes = "1"
+foca = { version = "0.13", features = ["std", "postcard-codec"] }
+rand = { version = "0.8", features = ["std_rng"] }
+serde = { version = "1", features = ["derive"] }
+
 [profile.release]
 debug = 0
 strip = true
