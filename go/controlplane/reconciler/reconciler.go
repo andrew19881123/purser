@@ -31,6 +31,9 @@ import (
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/registry"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -244,6 +247,13 @@ type Reconciler struct {
 	now     func() time.Time
 
 	tracker map[string]*discState
+
+	// OTEL instruments. All are no-ops unless a real MeterProvider was
+	// installed by telemetry.Init before New() is called.
+	ctrEventsDetected  metric.Int64Counter
+	ctrEventsActed     metric.Int64Counter
+	gaugeEventsPending metric.Int64Gauge
+	histLoopDuration   metric.Float64Histogram
 }
 
 // New builds a Reconciler. act may be nil for NotifyOnly-only operation.
@@ -257,7 +267,7 @@ func New(reg registry.Registry, act Actuator, cfg Config) *Reconciler {
 	if cfg.NodeTimeout <= 0 {
 		cfg.NodeTimeout = DefaultConfig().NodeTimeout
 	}
-	return &Reconciler{
+	rc := &Reconciler{
 		reg:     reg,
 		act:     act,
 		cfg:     cfg,
@@ -265,6 +275,25 @@ func New(reg registry.Registry, act Actuator, cfg Config) *Reconciler {
 		now:     time.Now,
 		tracker: map[string]*discState{},
 	}
+
+	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
+	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
+	// so this is always safe even without a collector.
+	m := otel.Meter("purser.reconciler")
+	rc.ctrEventsDetected, _ = m.Int64Counter("purser.reconciler.events_detected",
+		metric.WithDescription("Reconciler events dispatched (past hysteresis threshold), counted per event type"),
+		metric.WithUnit("{event}"))
+	rc.ctrEventsActed, _ = m.Int64Counter("purser.reconciler.events_acted",
+		metric.WithDescription("Reconciler events where a corrective action was taken, counted per event type"),
+		metric.WithUnit("{event}"))
+	rc.gaugeEventsPending, _ = m.Int64Gauge("purser.reconciler.events_pending_approval",
+		metric.WithDescription("Reconciler events currently waiting for operator approval per event type"),
+		metric.WithUnit("{event}"))
+	rc.histLoopDuration, _ = m.Float64Histogram("purser.reconciler.loop_duration_ms",
+		metric.WithDescription("Wall-clock duration of each Reconcile() pass in milliseconds"),
+		metric.WithUnit("ms"))
+
+	return rc
 }
 
 // SetLogger overrides the logger.
@@ -308,6 +337,11 @@ func (rc *Reconciler) Run(ctx context.Context) error {
 // hysteresis tracker, and act on those past threshold according to the
 // automation policy. It returns a Report for observability and tests.
 func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
+	loopStart := rc.now()
+	defer func() {
+		rc.histLoopDuration.Record(ctx, float64(rc.now().Sub(loopStart).Milliseconds()))
+	}()
+
 	now := rc.now().UTC()
 
 	deps, err := rc.reg.ListDeployments(ctx)
@@ -369,6 +403,19 @@ func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
 		}
 	}
 
+	// Publish the count of events currently waiting for operator approval,
+	// labelled by event type, so operators can see approval backlogs.
+	pendingByType := map[EventType]int64{}
+	for _, ev := range report.Detected {
+		if ev.Level == AutomationApprovalRequired && !ev.Acted {
+			pendingByType[ev.Type]++
+		}
+	}
+	for typ, count := range pendingByType {
+		rc.gaugeEventsPending.Record(ctx, count,
+			metric.WithAttributes(attribute.String("type", string(typ))))
+	}
+
 	return report, nil
 }
 
@@ -418,7 +465,14 @@ func (rc *Reconciler) observe(ctx context.Context, deps []*registry.Deployment, 
 
 // dispatch performs (or defers) the action for ev per its automation level.
 // Returns true if an action was actually performed.
-func (rc *Reconciler) dispatch(ctx context.Context, ev Event) bool {
+func (rc *Reconciler) dispatch(ctx context.Context, ev Event) (acted bool) {
+	typeAttr := metric.WithAttributes(attribute.String("type", string(ev.Type)))
+	defer func() {
+		rc.ctrEventsDetected.Add(ctx, 1, typeAttr)
+		if acted {
+			rc.ctrEventsActed.Add(ctx, 1, typeAttr)
+		}
+	}()
 	switch ev.Level {
 	case AutomationNotifyOnly:
 		rc.log.Info("reconciler notify", "type", ev.Type, "deployment", ev.DeploymentID, "node", ev.NodeID)

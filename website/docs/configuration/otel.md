@@ -37,7 +37,9 @@ Tracer name: `purser.gateway`. Exporter: OTLP/gRPC.
 
 ### Metrics
 
-The Control Plane pushes three infrastructure gauges every 30 seconds via OTLP/HTTP:
+The Control Plane pushes metrics every 30 seconds via OTLP/HTTP.
+
+#### Infrastructure gauges (Meter: `purser.control-plane`)
 
 | Metric name | Unit | Description |
 |---|---|---|
@@ -45,7 +47,30 @@ The Control Plane pushes three infrastructure gauges every 30 seconds via OTLP/H
 | `purser.nodes.ready` | `{node}` | Number of nodes in `READY` or `RUNNING` state. |
 | `purser.nodes.total` | `{node}` | Total number of registered nodes. |
 
-Meter name: `purser.control-plane`.
+#### Per-node hardware metrics (Meter: `purser.control-plane`)
+
+These metrics are emitted once per node that has sent at least one heartbeat. Each data point carries a `node_id` attribute. Nodes that have not yet reported are omitted (no zero-fill) so graphs show only live nodes.
+
+| Metric name | Type | Unit | Description |
+|---|---|---|---|
+| `purser.node.cpu_utilization` | Float64Gauge | `%` | CPU utilisation percentage as reported by the node agent (0–100). |
+| `purser.node.gpu_utilization` | Float64Gauge | `%` | GPU utilisation percentage (0–100; 0 when no GPU is present). |
+| `purser.node.mem_bandwidth_utilization` | Float64Gauge | `%` | Memory-bandwidth utilisation as a fraction of peak measured bandwidth (0–100). |
+| `purser.node.tokens_per_second` | Float64Gauge | `{token}/s` | Current token throughput estimate; 0 when the node is not serving. |
+| `purser.node.inference_port_alive` | Int64Gauge | `{bool}` | `1` if the node's inference HTTP port is responding, `0` otherwise. |
+
+These values come from the `NodeMetrics` extension of the agent heartbeat introduced in v0.3. Agents running an older version will leave these gauges at 0. Only the `NodeMetricsGetter` path (wired when the fleet registration server is live) populates these gauges.
+
+#### Reconciler metrics (Meter: `purser.reconciler`)
+
+The self-healing reconciler loop emits counters, gauges, and a histogram to help operators understand control-plane activity and approval backlogs.
+
+| Metric name | Type | Unit | Description |
+|---|---|---|---|
+| `purser.reconciler.events_detected` | Int64Counter | `{event}` | Reconciler events dispatched (past hysteresis threshold), labelled by `type` (`engine_down`, `node_down`, `new_node`, `orphan_deployment`). |
+| `purser.reconciler.events_acted` | Int64Counter | `{event}` | Events where the reconciler actually took a corrective action, labelled by `type`. |
+| `purser.reconciler.events_pending_approval` | Int64Gauge | `{event}` | Events currently waiting for operator approval, labelled by `type`. A non-zero value means the operator needs to review and approve a proposed action. |
+| `purser.reconciler.loop_duration_ms` | Float64Histogram | `ms` | Wall-clock duration of each `Reconcile()` pass. Use P95/P99 to detect registry contention or slow reconcile loops. |
 
 ### Audit log bridge
 
@@ -244,5 +269,12 @@ When metrics are flowing, a useful dashboard includes:
 - **Active deployments** — `purser_deployments_active` gauge
 - **Ready nodes** — `purser_nodes_ready` gauge
 - **Total nodes** — `purser_nodes_total` gauge
+- **Per-node CPU utilisation** — `purser_node_cpu_utilization{node_id="…"}` (0–100 %)
+- **Per-node GPU utilisation** — `purser_node_gpu_utilization{node_id="…"}` (0–100 %)
+- **Token throughput per node** — `purser_node_tokens_per_second{node_id="…"}`
+- **Inference port alive** — `purser_node_inference_port_alive{node_id="…"}` (1 = up, 0 = down)
+- **Reconciler event rate** — `rate(purser_reconciler_events_detected_total[5m])` by `type`
+- **Reconciler approval backlog** — `purser_reconciler_events_pending_approval` by `type`
+- **Reconciler loop P95 latency** — P95 of `purser_reconciler_loop_duration_ms` histogram
 - **Control-plane request latency** — P50/P95 from the `purser.control-plane` trace span durations
 - **Inference latency** — P50/P95/P99 from `purser.gateway.inference` span durations grouped by `model.id`

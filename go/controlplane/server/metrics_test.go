@@ -181,7 +181,7 @@ func TestNodeMetricsGetter_UpdateAndGet(t *testing.T) {
 	}
 
 	// After an update.
-	lm.Update("node-x", "NODE_STATE_RUNNING", nil, time.Now())
+	lm.Update("node-x", "NODE_STATE_RUNNING", nil, nil, time.Now())
 	m, ok := lm.Get("node-x")
 	if !ok {
 		t.Fatal("Get must return ok=true after Update")

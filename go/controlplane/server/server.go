@@ -279,6 +279,15 @@ type Server struct {
 	gaugeDeploymentsActive metric.Int64Gauge
 	gaugeNodesReady        metric.Int64Gauge
 	gaugeNodesTotal        metric.Int64Gauge
+
+	// OTEL per-node hardware gauge instruments (Float64 for utilisation %/tok/s,
+	// Int64 for the binary inference-port-alive indicator). No-ops unless a real
+	// MeterProvider was installed by telemetry.Init before New() is called.
+	gaugeNodeCPU            metric.Float64Gauge
+	gaugeNodeGPU            metric.Float64Gauge
+	gaugeNodeMemBandwidth   metric.Float64Gauge
+	gaugeNodeTokPerSec      metric.Float64Gauge
+	gaugeNodeInferenceAlive metric.Int64Gauge
 }
 
 // New builds a Server backed by reg.
@@ -370,6 +379,24 @@ func New(reg registry.Registry, cfg Config) *Server {
 	s.gaugeNodesTotal, _ = m.Int64Gauge("purser.nodes.total",
 		metric.WithDescription("Total number of registered nodes"),
 		metric.WithUnit("{node}"))
+
+	// Per-node hardware metrics (labelled by node_id). Values are populated
+	// from the LiveMetrics heartbeat cache on every collectInfraMetrics tick.
+	s.gaugeNodeCPU, _ = m.Float64Gauge("purser.node.cpu_utilization",
+		metric.WithDescription("CPU utilisation percentage reported by the node agent (0–100)"),
+		metric.WithUnit("%"))
+	s.gaugeNodeGPU, _ = m.Float64Gauge("purser.node.gpu_utilization",
+		metric.WithDescription("GPU utilisation percentage reported by the node agent (0–100, 0 when no GPU)"),
+		metric.WithUnit("%"))
+	s.gaugeNodeMemBandwidth, _ = m.Float64Gauge("purser.node.mem_bandwidth_utilization",
+		metric.WithDescription("Memory-bandwidth utilisation percentage reported by the node agent (0–100)"),
+		metric.WithUnit("%"))
+	s.gaugeNodeTokPerSec, _ = m.Float64Gauge("purser.node.tokens_per_second",
+		metric.WithDescription("Tokens per second currently being processed by the node (0 if not serving)"),
+		metric.WithUnit("{token}/s"))
+	s.gaugeNodeInferenceAlive, _ = m.Int64Gauge("purser.node.inference_port_alive",
+		metric.WithDescription("1 if the node's inference HTTP port is responding, 0 otherwise"),
+		metric.WithUnit("{bool}"))
 
 	// Wrap the mux: OTEL (outermost, for distributed tracing) →
 	// OIDC (human-user authentication) → rate-limit → RBAC (API key role
@@ -2750,4 +2777,27 @@ func (s *Server) collectInfraMetrics(ctx context.Context) {
 	}
 	s.gaugeNodesReady.Record(ctx, ready)
 	s.gaugeNodesTotal.Record(ctx, int64(len(nodes)))
+
+	// Per-node hardware metrics: only emitted when a NodeMetricsGetter is
+	// wired (i.e. the fleet registration server is live). Nodes that have
+	// not yet sent a heartbeat are skipped — zero-filling every node would
+	// produce misleading data for clusters with many cold nodes.
+	if s.nodeMetrics != nil {
+		for _, n := range nodes {
+			m, ok := s.nodeMetrics.Get(n.ID)
+			if !ok {
+				continue
+			}
+			attrs := metric.WithAttributes(attribute.String("node_id", n.ID))
+			s.gaugeNodeCPU.Record(ctx, m.CpuUtilizationPct, attrs)
+			s.gaugeNodeGPU.Record(ctx, m.GpuUtilizationPct, attrs)
+			s.gaugeNodeMemBandwidth.Record(ctx, m.MemBandwidthUtilPct, attrs)
+			s.gaugeNodeTokPerSec.Record(ctx, m.TokensPerSecond, attrs)
+			alive := int64(0)
+			if m.InferencePortAlive {
+				alive = 1
+			}
+			s.gaugeNodeInferenceAlive.Record(ctx, alive, attrs)
+		}
+	}
 }
