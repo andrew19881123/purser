@@ -125,6 +125,28 @@ type Node struct {
 	Backends        []string
 	FP4Native       bool // Blackwell / GB10
 	EngineVersions  map[string]string
+
+	// Engine-capability fields (P7 — fase2). These refine performance estimates
+	// when the engine reports them; zero values reproduce the original behaviour.
+
+	// DiskFreeGB is the free SSD capacity available for KV-cache offload,
+	// populated from HardwareProfile.disk_free_gb. Used together with
+	// KVSSDOffload to expand the effective KV-cache memory pool.
+	DiskFreeGB float64
+
+	// KVSSDOffload reports that the engine supports spilling cold KV-cache
+	// blocks to SSD (Tutti-style offload), increasing the effective memory
+	// available for the KV pool.
+	// TODO: add kv_ssd_offload to NodeCapabilities proto (fase2 follow-up);
+	// for now, callers set this field directly.
+	KVSSDOffload bool
+
+	// PrefixCachingFactor is the expected fraction of input tokens that will
+	// be KV-cache hits (0–1). A non-zero value reduces the effective prefill
+	// compute, raising reported prefill throughput.
+	// TODO: add prefix_caching_factor to NodeCapabilities proto (fase2 follow-up);
+	// for now, callers set this field directly.
+	PrefixCachingFactor float64
 }
 
 // Link is a directed network edge between two nodes (design 08 §2).
