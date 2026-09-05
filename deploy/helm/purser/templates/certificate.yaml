@@ -1,0 +1,36 @@
+{{- /*
+cert-manager Certificate for the Control Plane gRPC/mTLS endpoint.
+
+When tls.certManager.enabled=true a cert-manager.io/v1 Certificate CR is
+rendered. cert-manager will issue a TLS certificate from the referenced
+ClusterIssuer (or Issuer) and store it in the secret
+{{ fullname }}-control-plane-tls, which the Control Plane mounts for its
+server certificate.
+
+Requires cert-manager v1.x (https://cert-manager.io) installed in the
+cluster and a valid issuerRef.name that names an existing ClusterIssuer or
+Issuer.
+*/ -}}
+{{- if .Values.tls.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "purser.controlPlane.fullname" . }}
+  labels:
+    {{- include "purser.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+spec:
+  # Secret name must match the volume/mount used by the Control Plane for its
+  # gRPC server certificate (<release-fullname>-control-plane-tls).
+  secretName: {{ printf "%s-tls" (include "purser.controlPlane.fullname" .) }}
+  issuerRef:
+    name: {{ .Values.tls.certManager.issuerRef.name | quote }}
+    kind: {{ .Values.tls.certManager.issuerRef.kind | quote }}
+  duration: {{ .Values.tls.certManager.duration | quote }}
+  renewBefore: {{ .Values.tls.certManager.renewBefore | quote }}
+  dnsNames:
+    # Fully-qualified in-cluster DNS name (preferred by gRPC clients).
+    - {{ printf "%s.%s.svc.cluster.local" (include "purser.controlPlane.fullname" .) .Release.Namespace | quote }}
+    # Short forms for in-namespace and cross-namespace access.
+    - {{ printf "%s.%s.svc" (include "purser.controlPlane.fullname" .) .Release.Namespace | quote }}
+    - {{ include "purser.controlPlane.fullname" . | quote }}
+{{- end }}
