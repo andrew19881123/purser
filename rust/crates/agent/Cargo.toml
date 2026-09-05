@@ -6,7 +6,10 @@ license.workspace = true
 description = "Purser fleet agent: node-local daemon exposing AgentService over gRPC."
 
 [dependencies]
+aes-gcm = { workspace = true }
 anyhow = "1.0.104"
+base64 = "0.22"
+getrandom = "0.2"
 async-stream = "0.3.6"
 bytes = { workspace = true }
 foca = { workspace = true }

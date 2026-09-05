@@ -54,6 +54,8 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_SWIM_ENABLED` | `false` | Set `true`, `1`, or `yes` to enable the SWIM gossip membership layer (wraps `foca`). When disabled (the default) the existing mDNS + seed path runs unchanged. If the UDP bind fails while enabled, the agent logs a warning and falls back to mDNS + seeds. |
 | `PURSER_SWIM_BIND_ADDR` | `0.0.0.0:7946` | UDP bind address for the SWIM gossip layer. Only used when `PURSER_SWIM_ENABLED=true`. |
 | `PURSER_SWIM_SEED_ADDRS` | (empty) | Comma-separated `host:port` SWIM peers to announce to on startup. Complements `PURSER_SEEDS` (the mDNS + gRPC seed path); the two discovery mechanisms run in parallel when SWIM is enabled. |
+| `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` when `$HOME` is unset) | Directory where encrypted secret files (`*.enc`) and the auto-generated key file (`.secret_key`) are stored. Created with mode 0700 on first use. |
+| `PURSER_SECRET_KEY` | (unset — auto-generated) | 32-byte AES-256 encryption key, hex- or base64-encoded (64 hex chars or 44 base64 chars). When set it takes precedence over the key file. When unset, the key is loaded from `{PURSER_SECRET_STORE_DIR}/.secret_key` or freshly generated and saved there. Consumed directly by `EncryptedFileSecretStore`, not stored in `AgentConfig`. |
 | `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
 
 ---
@@ -125,9 +127,9 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 `PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`
 
-### Agent env vars (16)
+### Agent env vars (18)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`
 
 ### Gateway env vars (12)
 

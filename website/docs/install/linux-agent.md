@@ -49,6 +49,9 @@ PURSER_CLUSTER_ID=default
 
 # One-time join token (mint with: curl -X POST http://<cp>:8080/api/v1/join-token)
 PURSER_JOIN_TOKEN=psk_replace-me
+
+# Directory for encrypted secret files (created with mode 0700 on first use)
+PURSER_SECRET_STORE_DIR=/var/lib/purser/secrets
 ```
 
 !!! warning "Security: protect the env file"
@@ -100,6 +103,8 @@ See the complete reference at [Environment Variables Reference](../configuration
 | `PURSER_HEALTH_INTERVAL_SECS` | `5` | Heartbeat cadence in seconds |
 | `PURSER_ENGINE_BACKEND` | `mock` | Engine backend to use (`mock` or `llamacpp`) |
 | `PURSER_SEEDS` | (none) | Comma-separated extra discovery seed peers |
+| `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` | Directory for encrypted-at-rest secret files |
+| `PURSER_SECRET_KEY` | (auto-generated) | 32-byte AES-256 key (hex or base64). See [Secret persistence](#secret-persistence). |
 | `RUST_LOG` | `info` | Log level |
 
 ## GPU nodes
@@ -183,6 +188,7 @@ PURSER_INFERENCE_PORT=8000
 PURSER_CONTROL_PLANE_ADDR={{ purser_control_plane_addr }}
 PURSER_CLUSTER_ID={{ purser_cluster_id }}
 PURSER_JOIN_TOKEN={{ purser_join_token }}
+PURSER_SECRET_STORE_DIR=/var/lib/purser/secrets
 ```
 
 ## Install from binary tarball
@@ -200,3 +206,70 @@ sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
 ```
 
 Then install the unit file and env template from [`packaging/systemd/`](https://github.com/andrew19881123/purser/tree/main/packaging/systemd) and [`packaging/env/agent.env.example`](https://github.com/andrew19881123/purser/tree/main/packaging/env) manually.
+
+## Secret persistence
+
+The agent stores sensitive material — join tokens, mTLS certificates issued
+during enrollment — **encrypted at rest** using AES-256-GCM.
+
+### How it works
+
+Each secret is written to `{PURSER_SECRET_STORE_DIR}/{name}.enc` as:
+
+```
+[ 12-byte nonce ][ ciphertext + 16-byte GCM authentication tag ]
+```
+
+A fresh nonce is generated from the OS CSPRNG on every write, so encrypting
+the same plaintext twice always produces a different ciphertext.  The GCM
+tag means any bit-flip in the file — whether accidental or malicious — is
+detected and rejected on read.
+
+### Key management
+
+The 32-byte AES-256 key is sourced in this order:
+
+1. **`PURSER_SECRET_KEY` env var** (hex- or base64-encoded 32 bytes).
+   Set this when you provision the key from an external secrets manager or
+   Vault:
+   ```bash
+   export PURSER_SECRET_KEY=$(vault kv get -field=key secret/purser/agent-key)
+   ```
+
+2. **Auto-generated key file** (`{PURSER_SECRET_STORE_DIR}/.secret_key`).
+   If `PURSER_SECRET_KEY` is not set the agent reads the key from this file,
+   or generates a cryptographically random key and saves it there (mode 0600)
+   on first start.  Because the key survives restarts, so do the encrypted
+   secrets — enrollment certificates are not lost when the daemon is restarted
+   or upgraded.
+
+#### Generating a key manually
+
+```bash
+# Hex (64 chars)
+openssl rand -hex 32
+
+# Base64 (44 chars)
+openssl rand -base64 32
+```
+
+Pass the output as `PURSER_SECRET_KEY`.  Keep it in a secrets manager (Vault,
+AWS Secrets Manager, etc.) rather than a plain-text file.
+
+### Protecting the key file
+
+The key file and the secrets directory are created with restrictive Unix
+permissions (0700 for the directory, 0600 for all files).  If you run the
+agent as a dedicated user (`purser` in the systemd example above), only that
+user can read the key.
+
+For higher assurance, supply the key via `PURSER_SECRET_KEY` from a secrets
+manager and **do not** write it to disk.  Remove `{PURSER_SECRET_STORE_DIR}/.secret_key`
+if it exists; the agent will use the env-supplied key instead.
+
+### Rotating the key
+
+1. Export all current secrets (or allow a fresh enrollment after rotation).
+2. Set `PURSER_SECRET_KEY` to the new 32-byte key (hex or base64).
+3. Delete the existing `.enc` files in the store directory.
+4. Restart the agent — it will re-enroll and re-write secrets under the new key.
