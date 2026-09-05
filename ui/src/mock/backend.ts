@@ -253,6 +253,7 @@ export const mockBackend: PurserApi = {
       name: input.name,
       team: input.team,
       prefix,
+      role: input.role ?? 'admin',
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       monthlyQuota: input.monthlyQuota,

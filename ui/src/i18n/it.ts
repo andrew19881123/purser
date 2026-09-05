@@ -226,4 +226,14 @@ export const it: Record<StringKey, string> = {
   'join.ttl.24h': '24 ore',
   'join.ttl.7d': '7 giorni',
   'join.ttl.30d': '30 giorni',
+
+  // Etichette ruolo RBAC
+  'settings.col.role': 'Ruolo',
+  'settings.create.role': 'Ruolo',
+  'settings.role.admin': 'Admin',
+  'settings.role.viewer': 'Viewer',
+  'settings.role.inference': 'Inferenza',
+  'settings.role.admin.hint': 'Accesso completo al piano di controllo',
+  'settings.role.viewer.hint': 'Accesso in sola lettura al piano di controllo',
+  'settings.role.inference.hint': 'Solo inferenza gateway — non può gestire il cluster',
 };

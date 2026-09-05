@@ -239,6 +239,16 @@ export const en = {
   'join.ttl.24h': '24 hours',
   'join.ttl.7d': '7 days',
   'join.ttl.30d': '30 days',
+
+  // RBAC role labels
+  'settings.col.role': 'Role',
+  'settings.create.role': 'Role',
+  'settings.role.admin': 'Admin',
+  'settings.role.viewer': 'Viewer',
+  'settings.role.inference': 'Inference',
+  'settings.role.admin.hint': 'Full access to the control plane',
+  'settings.role.viewer.hint': 'Read-only access to the control plane',
+  'settings.role.inference.hint': 'Gateway inference only — cannot manage the cluster',
 } as const;
 
 export type StringKey = keyof typeof en;

@@ -7,6 +7,39 @@ The Control Plane exposes a management REST API under `/api/v1`. This is separat
 All responses are `application/json`. All request bodies that carry a payload use `application/json`.
 
 ---
+## Authentication
+
+Every non-public endpoint requires an API key supplied as a Bearer token:
+
+```http
+Authorization: Bearer psk_<base64>
+```
+
+Keys are minted via `POST /api/v1/apikeys` (see below). The plaintext secret
+is returned **once** at creation time; only its SHA-256 hash is persisted.
+
+### RBAC
+
+Each key carries a **role** that limits what it may do. See
+[RBAC configuration](../configuration/rbac.md) for the full role reference.
+In brief:
+
+| Role | Behaviour |
+|------|-----------|
+| `admin` | Full access to all management endpoints |
+| `viewer` | `GET` requests only; any mutating request returns `403` |
+| `inference` | Rejected on all `/api/v1/*` endpoints with `403`; for use on the gateway `/v1/` surface only |
+
+Requests without a token, or with an unrecognised token, are passed through
+to the handler; handlers enforce authentication independently where required.
+
+### Public endpoints (no token required)
+
+The following endpoints are always accessible regardless of the key role:
+
+- `GET /api/v1/cluster/health`
+
+---
 
 ## Nodes
 
@@ -333,11 +366,12 @@ Mints a new Gateway API key. The plaintext key is returned once; only its SHA-25
 {
   "name": "my-key",
   "tenant": "team-a",
+  "role": "viewer",
   "quota": 0
 }
 ```
 
-`name` and `tenant` are optional labels. `quota` is reserved.
+`role` is one of `"admin"` (default), `"viewer"`, or `"inference"`. `name` and `tenant` are optional labels. `quota` is reserved (0 = unlimited).
 
 **Response `201`:**
 
@@ -346,6 +380,7 @@ Mints a new Gateway API key. The plaintext key is returned once; only its SHA-25
   "id": "key-a1b2c3d4",
   "name": "my-key",
   "tenant": "team-a",
+  "role": "viewer",
   "key": "psk_..."
 }
 ```
@@ -631,4 +666,26 @@ All errors follow this format:
 {"error": "<error_code>", "message": "<human-readable description>"}
 ```
 
-Common error codes: `not_found`, `model_in_use`, `node_in_use`, `model_exists`, `bad_request`, `bad_spec`, `bad_plan`, `no_deployer`, `no_fleet`, `no_planner`, `deploy_failed`, `teardown_failed`, `join_token_failed`, `create_apikey_failed`, `list_apikeys_failed`, `license_required`.
+
+## Error Format
+
+All errors are JSON with `"error"` (machine-readable code) and `"message"`:
+
+```json
+{
+  "error": "forbidden",
+  "message": "this API key has viewer role (read-only)"
+}
+```
+
+Common error codes:
+
+| HTTP | `error` | Meaning |
+|------|---------|---------|
+| 400 | `bad_request` / `invalid_role` | Malformed input |
+| 403 | `forbidden` | RBAC denial |
+| 404 | `not_found` | Resource does not exist |
+| 409 | `model_in_use` / `node_in_use` | Guarded delete blocked |
+| 402 | `license_required` | Enterprise feature, license absent |
+| 500 | various | Internal error |
+

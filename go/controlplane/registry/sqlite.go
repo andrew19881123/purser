@@ -75,6 +75,9 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"audit_log", "hash", "TEXT"},
 		// Import provenance for models (HuggingFace Hub, s3://, gs://, az://).
 		{"models", "source", "TEXT NOT NULL DEFAULT '{}'"},
+		// RBAC role for API keys. Default "admin" preserves full access for
+		// any key created before this column existed.
+		{"api_keys", "role", "TEXT NOT NULL DEFAULT 'admin'"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -572,18 +575,23 @@ func (r *SQLiteRegistry) CreateAPIKey(ctx context.Context, k *APIKey) error {
 		k.CreatedAt = now
 	}
 	k.UpdatedAt = now
+	role := k.Role
+	if role == "" {
+		role = "admin"
+	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, name, key_hash, tenant, quota, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		k.ID, k.Name, k.KeyHash, k.Tenant, k.Quota, boolToInt(k.Enabled),
+		INSERT INTO api_keys (id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		k.ID, k.Name, k.KeyHash, k.Tenant, role, k.Quota, boolToInt(k.Enabled),
 		fmtTime(k.CreatedAt), fmtTime(k.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("registry: create api_key %q: %w", k.ID, err)
 	}
+	k.Role = role
 	return nil
 }
 
-const apiKeyCols = `id, name, key_hash, tenant, quota, enabled, created_at, updated_at`
+const apiKeyCols = `id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at`
 
 func scanAPIKey(s interface{ Scan(...any) error }) (*APIKey, error) {
 	var (
@@ -592,7 +600,7 @@ func scanAPIKey(s interface{ Scan(...any) error }) (*APIKey, error) {
 		created sql.NullString
 		updated sql.NullString
 	)
-	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Quota, &enabled, &created, &updated); err != nil {
+	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Role, &k.Quota, &enabled, &created, &updated); err != nil {
 		return nil, err
 	}
 	k.Enabled = enabled != 0
@@ -632,10 +640,14 @@ func (r *SQLiteRegistry) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 
 func (r *SQLiteRegistry) UpdateAPIKey(ctx context.Context, k *APIKey) error {
 	k.UpdatedAt = nowUTC()
+	role := k.Role
+	if role == "" {
+		role = "admin"
+	}
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE api_keys SET name=?, key_hash=?, tenant=?, quota=?, enabled=?, updated_at=?
+		UPDATE api_keys SET name=?, key_hash=?, tenant=?, role=?, quota=?, enabled=?, updated_at=?
 		WHERE id=?`,
-		k.Name, k.KeyHash, k.Tenant, k.Quota, boolToInt(k.Enabled), fmtTime(k.UpdatedAt), k.ID)
+		k.Name, k.KeyHash, k.Tenant, role, k.Quota, boolToInt(k.Enabled), fmtTime(k.UpdatedAt), k.ID)
 	if err != nil {
 		return fmt.Errorf("registry: update api_key %q: %w", k.ID, err)
 	}

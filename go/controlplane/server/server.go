@@ -194,8 +194,8 @@ type Config struct {
 	OIDCVerifier TokenVerifier
 	// InternalToken is the shared secret compared against the
 	// X-Purser-Internal-Token request header. Requests carrying this value
-	// bypass OIDC verification so the gateway can perform route-sync without a
-	// human token.
+	// bypass OIDC verification (and RBAC) so the gateway can perform route-sync
+	// without a human token.
 	InternalToken string
 	// HFToken is the HuggingFace API token used by POST /api/v1/models/import
 	// when the caller does not supply an X-HF-Token header. Read from
@@ -227,9 +227,9 @@ type Server struct {
 	hfToken       string
 	hfBaseURL     string
 
-	// handler is the mux wrapped with OTEL (outer) and OIDC (inner) middleware.
-	// Returned by Handler() and used as http.Server.Handler so all test paths
-	// go through the same middleware chain.
+	// handler is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC
+	// (inner) middleware. Returned by Handler() and used as http.Server.Handler
+	// so all test paths go through the same middleware chain.
 	handler http.Handler
 
 	// OTEL infrastructure gauge instruments. All three are no-ops unless a real
@@ -314,10 +314,11 @@ func New(reg registry.Registry, cfg Config) *Server {
 		metric.WithDescription("Total number of registered nodes"),
 		metric.WithUnit("{node}"))
 
-	// Wrap the mux with OTEL (outer) then OIDC (inner) middleware so every
-	// route gets a trace span that covers the full request including auth.
-	// When no TracerProvider/OIDCVerifier is configured both are no-ops.
-	s.handler = otelMiddleware(s.oidcMiddleware(s.mux))
+	// Wrap the mux: OTEL (outermost, for distributed tracing) →
+	// OIDC (human-user authentication) → RBAC (API key role enforcement) →
+	// mux. When no TracerProvider/OIDCVerifier is configured those layers are
+	// no-ops.
+	s.handler = otelMiddleware(s.oidcMiddleware(s.rbacMiddleware(s.mux)))
 	s.server = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           s.handler,
@@ -327,8 +328,8 @@ func New(reg registry.Registry, cfg Config) *Server {
 }
 
 // Handler returns the composed http.Handler (useful for tests via httptest).
-// It is the mux wrapped with OTEL (outer) and OIDC (inner) middleware.
-// Both are transparent no-ops when not configured.
+// It is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC (inner)
+// middleware. All three are transparent no-ops when not configured.
 func (s *Server) Handler() http.Handler { return s.handler }
 
 // ListenAndServe starts serving and blocks until the server stops.
@@ -388,6 +389,120 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// rbacPublicPaths are the paths that bypass RBAC regardless of the key
+// presented. These are always accessible (e.g. health check, API schema).
+var rbacPublicPaths = map[string]bool{
+	"/api/v1/cluster/health": true,
+	"/api/v1/openapi.json":   true,
+}
+
+// rbacMiddleware enforces role-based access control on every request based on
+// the API key's Role field. It runs after key lookup so the gate is cheap for
+// anonymous requests (pass-through) and only becomes O(keys) when a Bearer
+// token is present.
+//
+// Rules (in order):
+//  1. Public endpoints (GET /api/v1/cluster/health, /api/v1/openapi.json) → pass through.
+//  2. Authorization: Bearer matches s.internalToken → pass through (gateway route-sync).
+//  3. No Bearer token → pass through (handler enforces auth if required).
+//  4. Bearer token found but no matching key → pass through.
+//  5. Role "admin" → pass through.
+//  6. Role "viewer" → GET allowed; non-GET → 403.
+//  7. Role "inference" → any /api/v1/* path → 403 (inference keys are for the
+//     gateway only, not the CP management surface).
+func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Public GET endpoints always pass through.
+		if r.Method == http.MethodGet && rbacPublicPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. Extract Bearer token.
+		token := bearerToken(r)
+
+		// 2a. Internal token passes through unconditionally.
+		if s.internalToken != "" && token == s.internalToken {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. No token → pass through (anonymous; handler decides if auth is needed).
+		if token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 4. Look up the key by hash; pass through on any registry error or miss.
+		if s.reg == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		keys, err := s.reg.ListAPIKeys(r.Context())
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sum := sha256.Sum256([]byte(token))
+		hashHex := hex.EncodeToString(sum[:])
+		var matched *registry.APIKey
+		for _, k := range keys {
+			if k.KeyHash == hashHex {
+				matched = k
+				break
+			}
+		}
+		if matched == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 5–7. Enforce role.
+		switch matched.Role {
+		case "admin":
+			next.ServeHTTP(w, r)
+		case "viewer":
+			if r.Method != http.MethodGet {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has viewer role (read-only)",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		case "inference":
+			if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has inference role and cannot manage the cluster",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		default:
+			// Unknown role: conservative viewer behavior.
+			if r.Method != http.MethodGet {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "forbidden",
+					"message": "this API key has viewer role (read-only)",
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+// Returns an empty string if the header is absent or malformed.
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
 }
 
 func (s *Server) routes() {
@@ -1606,6 +1721,9 @@ type createAPIKeyRequest struct {
 	Name   string `json:"name"`
 	Tenant string `json:"tenant"`
 	Quota  int64  `json:"quota"`
+	// Role is the RBAC role for the key: "admin" (default), "viewer", or
+	// "inference". An empty role is treated as "admin" for backward compat.
+	Role string `json:"role,omitempty"`
 }
 
 // handleCreateAPIKey mints a new gateway API key. The plaintext key is returned
@@ -1618,6 +1736,20 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Resolve and validate the role. Default "admin" for backward compat.
+	role := body.Role
+	if role == "" {
+		role = "admin"
+	}
+	switch role {
+	case "admin", "viewer", "inference":
+		// valid
+	default:
+		s.writeError(w, http.StatusBadRequest, "invalid_role", `role must be one of: admin, viewer, inference`)
+		return
+	}
+
 	secret := make([]byte, 24)
 	if _, err := rand.Read(secret); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "keygen_failed", err.Error())
@@ -1631,6 +1763,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Name:    body.Name,
 		KeyHash: hex.EncodeToString(sum[:]),
 		Tenant:  body.Tenant,
+		Role:    role,
 		Quota:   body.Quota,
 		Enabled: true,
 	}
@@ -1644,6 +1777,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"id":     id,
 		"name":   body.Name,
 		"tenant": body.Tenant,
+		"role":   role,
 		"key":    plaintext,
 	})
 }

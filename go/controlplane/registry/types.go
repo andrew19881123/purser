@@ -118,10 +118,15 @@ type Deployment struct {
 
 // APIKey is a gateway credential. Only a hash of the key is ever persisted.
 type APIKey struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	KeyHash   string    `json:"-"`
-	Tenant    string    `json:"tenant"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	KeyHash string `json:"-"`
+	Tenant  string `json:"tenant"`
+	// Role controls what the key may do: "admin" (full CP access), "viewer"
+	// (GET-only on /api/v1), or "inference" (gateway /v1 only — cannot call
+	// the CP management surface directly). Defaults to "admin" so keys created
+	// before RBAC was introduced retain full access.
+	Role      string    `json:"role"`
 	Quota     int64     `json:"quota"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
