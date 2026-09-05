@@ -1,4 +1,34 @@
-# Quickstart (Helm)
+# Quickstart
+
+## Quickstart — 2 minutes, no GPU required
+
+```bash
+# 1. Clone and start
+git clone https://github.com/andrew19881123/purser.git
+cd purser
+docker compose up -d
+
+# 2. Open the dashboard
+open http://localhost:3000
+```
+
+The demo stack uses the built-in mock engine — real inference comes when you install the Agent on GPU nodes.
+
+Try the OpenAI-compatible Gateway immediately:
+
+```bash
+curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'
+```
+
+Stop the demo at any time:
+
+```bash
+make demo-stop
+```
+
+---
+
+## Quickstart (Helm — production)
 
 Get from zero to a working OpenAI-compatible inference endpoint in about 5 minutes. This guide uses the Helm path — the primary deployment model for Purser.
 

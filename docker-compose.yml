@@ -1,0 +1,56 @@
+version: '3.8'
+
+# Purser demo stack — mock engine, no GPU required
+# Usage: docker compose up
+# Dashboard: http://localhost:3000
+# Control Plane API: http://localhost:8080
+# Gateway (OpenAI-compatible): http://localhost:8081
+
+services:
+  control-plane:
+    image: ghcr.io/andrew19881123/purser-control-plane:latest
+    environment:
+      PURSER_DB: /data/registry.db
+      PURSER_ADDR: ":8080"
+      PURSER_GRPC_ADDR: ":9443"
+      PURSER_PKI_DIR: /data/pki
+      PURSER_ENGINE_BACKEND: mock
+      PURSER_GATEWAY_ADDR: "http://gateway:8081"
+      PURSER_GATEWAY_TOKEN: demo-internal-token
+    volumes:
+      - purser-data:/data
+    ports:
+      - "8080:8080"
+      - "9443:9443"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/api/v1/cluster/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    image: ghcr.io/andrew19881123/purser-gateway:latest
+    environment:
+      PURSER_GATEWAY_HOST: "0.0.0.0"
+      PURSER_GATEWAY_PORT: "8081"
+      PURSER_GATEWAY_INTERNAL_TOKEN: demo-internal-token
+      PURSER_GATEWAY_API_KEYS: demo-key-12345
+      PURSER_CONTROL_PLANE_URL: "http://control-plane:8080"
+    ports:
+      - "8081:8081"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+  ui:
+    image: ghcr.io/andrew19881123/purser-ui:latest
+    environment:
+      PURSER_API_BASE_URL: "http://localhost:8080/api/v1"
+      PURSER_GATEWAY_BASE_URL: "http://localhost:8081/v1"
+    ports:
+      - "3000:80"
+    depends_on:
+      - control-plane
+
+volumes:
+  purser-data:
