@@ -1072,6 +1072,11 @@ func (s *Server) routes() {
 
 	// Fleet capacity headroom — viewer-accessible.
 	s.mux.HandleFunc("GET /api/v1/fleet/capacity", s.handleFleetCapacity)
+
+	// Config-as-code: apply/diff/export purser.yaml desired state.
+	s.mux.HandleFunc("POST /api/v1/config/apply", s.handleConfigApply)
+	s.mux.HandleFunc("POST /api/v1/config/diff", s.handleConfigDiff)
+	s.mux.HandleFunc("GET /api/v1/config/export", s.handleConfigExport)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
