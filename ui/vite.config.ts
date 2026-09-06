@@ -21,4 +21,9 @@ export default defineConfig({
     // Fail loudly if a stray huge asset sneaks in; the app should stay small.
     chunkSizeWarningLimit: 900,
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.ts'],
+  },
 });

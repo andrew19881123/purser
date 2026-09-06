@@ -59,6 +59,8 @@ export interface PurserApi {
   importModel(source: ImportSource): Promise<ModelSpec>;
   /** POST /api/v1/models/{id}/plan — dry-run plan; returns feasibility + split diagram. */
   previewModelPlan(modelId: string): Promise<PlanPreviewResult>;
+  /** DELETE /api/v1/models/{id} — remove a model from the catalog. 409 if it has active deployments. */
+  deleteModel(modelId: string): Promise<void>;
 
   // --- deployments ---
   planDeployment(modelId: string, overrides: DeployOverrides): Promise<DeploymentPlan>;

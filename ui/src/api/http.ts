@@ -421,6 +421,9 @@ export function createHttpApi(baseUrl: string): PurserApi {
         Array.isArray(raw) ? raw.map(normalizeCatalogEntry) : [],
       ),
 
+    // DELETE /api/v1/models/{id} — guarded delete; 409 when active deployments reference it.
+    deleteModel: (modelId) => request<void>(`/models/${enc(modelId)}`, { method: 'DELETE' }),
+
     // Model detail is derived from the public catalog list (no private route).
     getModel: (modelId) =>
       request<unknown>('/models').then((raw) => {

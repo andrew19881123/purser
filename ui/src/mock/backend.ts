@@ -22,6 +22,7 @@ import type {
   PlanPreviewResult,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
+import { ApiError } from '../api/http';
 import { clamp } from '../lib/format';
 import {
   mockApiKeys,
@@ -182,6 +183,28 @@ export const mockBackend: PurserApi = {
     const m = allModels().find((x) => x.modelId === modelId);
     if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
     return delay(mockPreviewPlan(m, nodes), 600);
+  },
+
+  deleteModel(modelId: string): Promise<void> {
+    const m = allModels().find((x) => x.modelId === modelId);
+    if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
+    // Refuse deletion if any active (non-terminal) deployment references this model.
+    for (const dep of deployments.values()) {
+      if (
+        dep.plan.modelId === modelId &&
+        dep.state !== 'stopped' &&
+        dep.state !== 'failed'
+      ) {
+        return Promise.reject(
+          new ApiError(
+            409,
+            'model is referenced by one or more active deployments; tear them down first',
+          ),
+        );
+      }
+    }
+    importedModels = importedModels.filter((x) => x.modelId !== modelId);
+    return delay(undefined, 350);
   },
 
   planDeployment(modelId, overrides): Promise<DeploymentPlan> {
