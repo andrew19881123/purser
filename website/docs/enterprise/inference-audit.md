@@ -100,6 +100,91 @@ Go bindings are generated into `go/gen/purser/v1/inference_audit.pb.go` via `mak
 
 ---
 
-## Wave 2 (coming in v0.3)
+## API Reference
 
-The HTTP endpoints (`GET /api/v1/enterprise/inference-audit`) and gateway integration that automatically calls `RecordInferenceEvent` are implemented in Wave 2. This page describes the v0.3 data layer only.
+### List inference events
+
+```
+GET /api/v1/inference-audit
+Authorization: Bearer <admin-or-viewer-key>
+```
+
+Requires an enterprise license with the `inference_audit` feature. Returns a
+paginated list of `InferenceEvent` rows in ascending timestamp order.
+
+**Query parameters** (all optional):
+
+| Parameter | Description |
+|---|---|
+| `api_key_hash` | Filter by key hash |
+| `model_id` | Filter by model |
+| `tenant_id` | Filter by tenant |
+| `after` | RFC 3339 exclusive lower bound on timestamp |
+| `before` | RFC 3339 exclusive upper bound on timestamp |
+| `limit` | Page size (default `100`, max `1000`) |
+| `page_token` | Opaque cursor from a previous response's `next_page_token` |
+
+**Response** (`200 OK`):
+
+```json
+{
+  "events": [ { ...InferenceEvent }, ... ],
+  "next_page_token": "<cursor>"   // omitted on the last page
+}
+```
+
+Returns `402 Payment Required` when the license lacks the `inference_audit` feature.
+Returns `403 Forbidden` when the API key has the `inference` role (not allowed to
+call control-plane management endpoints).
+
+---
+
+### Record an inference event (internal)
+
+```
+POST /api/v1/inference-events
+X-Purser-Internal-Token: <PURSER_INTERNAL_TOKEN>
+Content-Type: application/json
+```
+
+Called automatically by the gateway after each completed inference — **not for
+external use**. The operation is idempotent: a duplicate `request_id` is silently
+ignored (returns `204` regardless). Returns `401 Unauthorized` when the internal
+token is wrong or missing (and `PURSER_INTERNAL_TOKEN` is set).
+
+**Request body**: a JSON-serialised `InferenceEvent` (all fields optional except
+`request_id`; the store accepts partial records).
+
+---
+
+## Gateway integration
+
+When `PURSER_CONTROL_PLANE_URL` is set, the gateway automatically calls
+`POST /api/v1/inference-events` after every completed inference (both streaming
+and buffered) in a fire-and-forget `tokio::spawn` task.
+
+Failures (Control Plane unreachable, timeout, wrong token) are logged at `debug`
+level and never block the inference response or affect the client.
+
+Required environment variable on the gateway:
+
+```bash
+PURSER_CONTROL_PLANE_URL=http://control-plane:8080
+PURSER_GATEWAY_INTERNAL_TOKEN=<same-value-as-PURSER_INTERNAL_TOKEN-on-CP>
+```
+
+The `PURSER_INTERNAL_TOKEN` on the control plane and `PURSER_GATEWAY_INTERNAL_TOKEN`
+on the gateway must match.
+
+---
+
+## Privacy and compliance notes
+
+| Requirement | How it is met |
+|---|---|
+| GDPR Art. 5 — data minimisation | Prompt and completion text are never written. Full IP is replaced with a `/24` CIDR prefix. |
+| GDPR Art. 5 — purpose limitation | The table is append-only; records are not used for training or profiling. |
+| AI Act Art. 12 — record-keeping | Every inference request is recorded with actor, model, timestamp, and token counts. |
+| Deduplication / idempotency | `UNIQUE` on `request_id` prevents duplicate rows from gateway retries. |
+
+> **Note:** Purser records the metadata of inference calls. Operators are responsible for any further data retention, deletion, and access-control obligations under their applicable law.

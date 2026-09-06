@@ -45,6 +45,103 @@ use crate::upstream::{count_sse_tokens, json_completion_tokens};
 static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(256)));
 
+// Global bounded semaphore for inference audit emits — same rationale as the
+// usage semaphore: a slow Control Plane must not grow an unbounded task list.
+static AUDIT_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(256)));
+
+// ---------------------------------------------------------------------------
+// Inference audit helpers
+// ---------------------------------------------------------------------------
+
+/// Payload for `POST /api/v1/inference-events` on the Control Plane.
+/// Serialised as JSON; field names mirror the Go `InferenceEvent` struct.
+#[derive(serde::Serialize)]
+struct InferenceEventPayload {
+    request_id: String,
+    api_key_hash: String,
+    model_id: String,
+    tenant_id: String,
+    /// RFC 3339 UTC timestamp.
+    timestamp: String,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    /// Inference protocol: `"openai"` | `"anthropic"` | `"embeddings"`.
+    endpoint: String,
+    /// CIDR `/24` prefix of the caller's IP — never the full address.
+    client_ip_prefix: String,
+    latency_ms: f32,
+    /// `"stop"`, `"length"`, or `"error"`.
+    finish_reason: String,
+}
+
+/// Format the current UTC instant as an RFC 3339 string (`YYYY-MM-DDTHH:MM:SSZ`).
+///
+/// Uses Howard Hinnant's civil-calendar algorithm to avoid a `chrono` dependency.
+fn rfc3339_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Civil calendar from Unix days (Howard Hinnant's algorithm).
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    let tod = secs % 86_400;
+    let h = tod / 3_600;
+    let mn = (tod % 3_600) / 60;
+    let s = tod % 60;
+    format!("{year:04}-{m:02}-{d:02}T{h:02}:{mn:02}:{s:02}Z")
+}
+
+/// Fire-and-forget: POST an inference audit event to the Control Plane.
+///
+/// Bounded by [`AUDIT_SEMAPHORE`]: at most 256 tasks in-flight simultaneously.
+/// Failures are logged at debug level and never propagated — the inference
+/// response is already delivered to the client.
+fn emit_inference_event(
+    client: reqwest::Client,
+    cp_url: Arc<String>,
+    internal_token: Option<String>,
+    event: InferenceEventPayload,
+) {
+    match AUDIT_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit;
+                let url = format!(
+                    "{}/api/v1/inference-events",
+                    cp_url.trim_end_matches('/')
+                );
+                let mut builder = client.post(&url).json(&event);
+                if let Some(tok) = internal_token.as_deref() {
+                    builder = builder.header("X-Purser-Internal-Token", tok);
+                }
+                if let Err(e) = builder.send().await {
+                    tracing::debug!(
+                        error = %e,
+                        "inference audit emit failed (non-fatal)"
+                    );
+                }
+            });
+        }
+        Err(_) => {
+            tracing::debug!(
+                model = event.model_id,
+                "audit semaphore full; dropping inference audit event"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Usage reporting helpers
 // ---------------------------------------------------------------------------
@@ -312,6 +409,7 @@ async fn proxy_inference(
             api_key,
             &model,
             session_id,
+            upstream_path,
             start,
             prompt_tokens,
             input_tokens_for_usage,
@@ -328,6 +426,8 @@ async fn proxy_inference(
             state,
             api_key,
             &model,
+            session_id,
+            upstream_path,
             start,
             prompt_tokens,
             input_tokens_for_usage,
@@ -352,6 +452,7 @@ fn stream_response(
     api_key: &ApiKey,
     model: &str,
     session_id: String,
+    endpoint: &'static str,
     start: Instant,
     prompt_tokens: u64,
     input_tokens_for_usage: u64,
@@ -416,16 +517,37 @@ fn stream_response(
             prompt_tokens,
             out_tokens,
         );
-        // Fire-and-forget usage report to the Control Plane.
+        // Fire-and-forget usage report + inference audit to the Control Plane.
         if let Some(url) = cp_url {
+            let audit_url = Arc::clone(&url);
+            let audit_token = cp_token.clone();
             spawn_usage_report(
-                http_client,
+                http_client.clone(),
                 url,
                 cp_token,
                 key_id.clone(),
                 model.clone(),
                 input_tokens_for_usage,
                 out_tokens,
+            );
+            let finish_reason = if status.is_success() { "stop" } else { "error" };
+            emit_inference_event(
+                http_client,
+                audit_url,
+                audit_token,
+                InferenceEventPayload {
+                    request_id: session_id.clone(),
+                    api_key_hash: key_id.clone(),
+                    model_id: model.clone(),
+                    tenant_id: tenant.clone(),
+                    timestamp: rfc3339_now(),
+                    prompt_tokens: input_tokens_for_usage as i64,
+                    completion_tokens: out_tokens as i64,
+                    endpoint: endpoint.to_string(),
+                    client_ip_prefix: String::new(),
+                    latency_ms: start.elapsed().as_secs_f32() * 1000.0,
+                    finish_reason: finish_reason.to_string(),
+                },
             );
         }
     };
@@ -445,6 +567,8 @@ async fn buffered_response(
     state: &AppState,
     api_key: &ApiKey,
     model: &str,
+    request_id: String,
+    endpoint: &'static str,
     start: Instant,
     prompt_tokens: u64,
     input_tokens_for_usage: u64,
@@ -501,8 +625,10 @@ async fn buffered_response(
         prompt_tokens,
         out_tokens,
     );
-    // Fire-and-forget usage report to the Control Plane.
+    // Fire-and-forget usage report + inference audit to the Control Plane.
     if let Some(url) = cp_url {
+        let audit_url = Arc::clone(&url);
+        let audit_token = cp_token.clone();
         spawn_usage_report(
             state.http.client.clone(),
             url,
@@ -511,6 +637,25 @@ async fn buffered_response(
             model.to_owned(),
             input_tokens_for_usage,
             out_tokens,
+        );
+        let finish_reason = if status.is_success() { "stop" } else { "error" };
+        emit_inference_event(
+            state.http.client.clone(),
+            audit_url,
+            audit_token,
+            InferenceEventPayload {
+                request_id,
+                api_key_hash: api_key.id.clone(),
+                model_id: model.to_owned(),
+                tenant_id: api_key.tenant.clone(),
+                timestamp: rfc3339_now(),
+                prompt_tokens: input_tokens_for_usage as i64,
+                completion_tokens: out_tokens as i64,
+                endpoint: endpoint.to_string(),
+                client_ip_prefix: String::new(),
+                latency_ms: start.elapsed().as_secs_f32() * 1000.0,
+                finish_reason: finish_reason.to_string(),
+            },
         );
     }
     drop(guard);

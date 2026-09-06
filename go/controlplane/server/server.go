@@ -1072,6 +1072,12 @@ func (s *Server) routes() {
 
 	// Fleet capacity headroom — viewer-accessible.
 	s.mux.HandleFunc("GET /api/v1/fleet/capacity", s.handleFleetCapacity)
+
+	// Inference audit log (AI Act Art. 12).
+	// GET is enterprise-gated ("inference_audit" feature) and viewer-accessible.
+	// POST is internal-only (gateway→CP) and never enterprise-gated.
+	s.mux.HandleFunc("GET /api/v1/inference-audit", s.handleListInferenceAudit)
+	s.mux.HandleFunc("POST /api/v1/inference-events", s.handleRecordInferenceEvent)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
