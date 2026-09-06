@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Badge,
   Button,
@@ -6,6 +7,7 @@ import {
   ErrorState,
   LoadingBlock,
   Meter,
+  Modal,
   PageHeader,
   StatusPill,
   type Tone,
@@ -102,52 +104,88 @@ function NodeRow({
   const busy = drain.isPending || restart.isPending || remove.isPending;
   // Prefer SSE live data; fall back to REST snapshot metrics.
   const metrics = liveMetrics ?? node.metrics;
+  const [showRemoveModal, setShowRemoveModal] = useState(false);
   return (
-    <tr>
-      <th scope="row" className="node-cell">
-        <span className="node-cell__host">{node.profile.hostname}</span>
-        <span className="node-cell__meta">
-          {node.profile.os}/{node.profile.arch}
-          {node.role && (
-            <>
-              {' · '}
-              <Badge tone="info">{node.role === 'host' ? t('fleet.role.host') : t('fleet.role.worker')}</Badge>
-            </>
+    <>
+      <tr>
+        <th scope="row" className="node-cell">
+          <span className="node-cell__host">{node.profile.hostname}</span>
+          <span className="node-cell__meta">
+            {node.profile.os}/{node.profile.arch}
+            {node.role && (
+              <>
+                {' · '}
+                <Badge tone="info">{node.role === 'host' ? t('fleet.role.host') : t('fleet.role.worker')}</Badge>
+              </>
+            )}
+            {node.profile.gpus.some((g) => g.fp4Native) && <Badge tone="success">FP4</Badge>}
+          </span>
+        </th>
+        <td>
+          <StatusPill state={node.profile.state} />
+        </td>
+        <td className="hw-cell">{hardwareSummary(node)}</td>
+        <td>
+          {metrics ? (
+            <div className="load-cell">
+              <span>{tokS(metrics.decodeTokS)}</span>
+              <span className="muted">queue {metrics.queueDepth}</span>
+            </div>
+          ) : (
+            <span className="muted">{t('common.na')}</span>
           )}
-          {node.profile.gpus.some((g) => g.fp4Native) && <Badge tone="success">FP4</Badge>}
-        </span>
-      </th>
-      <td>
-        <StatusPill state={node.profile.state} />
-      </td>
-      <td className="hw-cell">{hardwareSummary(node)}</td>
-      <td>
-        {metrics ? (
-          <div className="load-cell">
-            <span>{tokS(metrics.decodeTokS)}</span>
-            <span className="muted">queue {metrics.queueDepth}</span>
+        </td>
+        <td>
+          <Badge tone={LINK_TONE[node.linkQuality]}>{node.linkQuality}</Badge>
+        </td>
+        <td>
+          <div className="row-actions">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                if (window.confirm(t('fleet.confirm.drain', { node: id }))) {
+                  drain.mutate(id);
+                }
+              }}
+            >
+              {t('fleet.action.drain')}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => restart.mutate(id)}>
+              {t('fleet.action.restart')}
+            </Button>
+            <Button size="sm" variant="danger" disabled={busy} onClick={() => setShowRemoveModal(true)}>
+              {t('fleet.action.remove')}
+            </Button>
           </div>
-        ) : (
-          <span className="muted">{t('common.na')}</span>
-        )}
-      </td>
-      <td>
-        <Badge tone={LINK_TONE[node.linkQuality]}>{node.linkQuality}</Badge>
-      </td>
-      <td>
-        <div className="row-actions">
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => drain.mutate(id)}>
-            {t('fleet.action.drain')}
-          </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => restart.mutate(id)}>
-            {t('fleet.action.restart')}
-          </Button>
-          <Button size="sm" variant="danger" disabled={busy} onClick={() => remove.mutate(id)}>
-            {t('fleet.action.remove')}
-          </Button>
-        </div>
-      </td>
-    </tr>
+        </td>
+      </tr>
+      {showRemoveModal && (
+        <Modal
+          title={t('fleet.confirm.removeTitle')}
+          onClose={() => setShowRemoveModal(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setShowRemoveModal(false)}>
+                {t('action.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  remove.mutate(id);
+                  setShowRemoveModal(false);
+                }}
+              >
+                {t('fleet.action.remove')}
+              </Button>
+            </>
+          }
+        >
+          {t('fleet.confirm.removeBody', { node: id })}
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -157,7 +195,7 @@ export function FleetPage() {
   const nodes = useNodes();
   // Live hardware metrics via GET /api/v1/metrics (SSE). null until the first
   // frame arrives; each frame carries per-node engine metrics from heartbeats.
-  const live = useMetricsStream();
+  const { snapshot: live, streamError } = useMetricsStream();
 
   // Build a fast lookup: nodeId → live EngineMetrics from the SSE stream.
   // When a node has not yet reported, its entry is absent and NodeRow falls
@@ -178,6 +216,9 @@ export function FleetPage() {
   return (
     <div className="page">
       <PageHeader title={t('fleet.title')} subtitle={t('fleet.subtitle')} />
+      {streamError && (
+        <Badge tone="warning">{t('fleet.metrics.stale')}</Badge>
+      )}
 
       {capacity.isLoading && <LoadingBlock />}
       {capacity.isError && (

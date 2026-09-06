@@ -24,7 +24,7 @@ export function PlaygroundPage() {
   const deployments = useDeployments();
 
   // Gateway Bearer key (persisted locally); rebuilds the chat client on change.
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem(KEY_STORAGE) ?? '');
+  const [apiKey, setApiKey] = useState<string>(() => sessionStorage.getItem(KEY_STORAGE) ?? '');
   const chat = useMemo(() => makeChat(apiKey.trim() || undefined), [apiKey]);
   const gatewayModels = useGatewayModels(chat);
 
@@ -57,8 +57,8 @@ export function PlaygroundPage() {
 
   const onApiKeyChange = (value: string) => {
     setApiKey(value);
-    if (value.trim()) localStorage.setItem(KEY_STORAGE, value.trim());
-    else localStorage.removeItem(KEY_STORAGE);
+    if (value.trim()) sessionStorage.setItem(KEY_STORAGE, value.trim());
+    else sessionStorage.removeItem(KEY_STORAGE);
   };
 
   useEffect(() => {

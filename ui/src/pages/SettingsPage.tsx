@@ -134,37 +134,69 @@ function CreatedKeyModal({ keyData, onClose, t }: { keyData: ApiKeyWithSecret; o
 function KeyRow({ apiKey, t }: { apiKey: ApiKey; t: TFunc }) {
   const revoke = useRevokeApiKey();
   const role: ApiKeyRole = apiKey.role ?? 'admin';
+  const [showRevokeModal, setShowRevokeModal] = useState(false);
   return (
-    <tr className={apiKey.revoked ? 'row--muted' : undefined}>
-      <th scope="row">{apiKey.name}</th>
-      <td>{apiKey.team}</td>
-      <td>
-        <code className="inline-code">{apiKey.prefix}…</code>
-      </td>
-      <td>
-        <RoleBadge role={role} t={t} />
-      </td>
-      <td className="usage-cell">
-        {apiKey.monthlyQuota === null ? (
-          <span className="muted">{t('settings.usage.unlimited')}</span>
-        ) : (
-          <Meter used={apiKey.usedThisMonth} total={apiKey.monthlyQuota} label={apiKey.name} unit="req" />
-        )}
-      </td>
-      <td>{apiKey.lastUsedAt ? relativeTime(apiKey.lastUsedAt) : <span className="muted">{t('settings.usage.never')}</span>}</td>
-      <td>
-        <Badge tone={apiKey.revoked ? 'neutral' : 'success'}>
-          {apiKey.revoked ? t('settings.status.revoked') : t('settings.status.active')}
-        </Badge>
-      </td>
-      <td>
-        {!apiKey.revoked && (
-          <Button variant="danger" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate(apiKey.id)}>
-            {t('settings.action.revoke')}
-          </Button>
-        )}
-      </td>
-    </tr>
+    <>
+      <tr className={apiKey.revoked ? 'row--muted' : undefined}>
+        <th scope="row">{apiKey.name}</th>
+        <td>{apiKey.team}</td>
+        <td>
+          <code className="inline-code">{apiKey.prefix}…</code>
+        </td>
+        <td>
+          <RoleBadge role={role} t={t} />
+        </td>
+        <td className="usage-cell">
+          {apiKey.monthlyQuota === null ? (
+            <span className="muted">{t('settings.usage.unlimited')}</span>
+          ) : (
+            <Meter used={apiKey.usedThisMonth} total={apiKey.monthlyQuota} label={apiKey.name} unit="req" />
+          )}
+        </td>
+        <td>{apiKey.lastUsedAt ? relativeTime(apiKey.lastUsedAt) : <span className="muted">{t('settings.usage.never')}</span>}</td>
+        <td>
+          <Badge tone={apiKey.revoked ? 'neutral' : 'success'}>
+            {apiKey.revoked ? t('settings.status.revoked') : t('settings.status.active')}
+          </Badge>
+        </td>
+        <td>
+          {!apiKey.revoked && (
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={revoke.isPending}
+              onClick={() => setShowRevokeModal(true)}
+            >
+              {t('settings.action.revoke')}
+            </Button>
+          )}
+        </td>
+      </tr>
+      {showRevokeModal && (
+        <Modal
+          title={t('settings.confirm.revokeTitle')}
+          onClose={() => setShowRevokeModal(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setShowRevokeModal(false)}>
+                {t('action.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  revoke.mutate(apiKey.id);
+                  setShowRevokeModal(false);
+                }}
+              >
+                {t('settings.action.revoke')}
+              </Button>
+            </>
+          }
+        >
+          {t('settings.confirm.revokeBody', { name: apiKey.name })}
+        </Modal>
+      )}
+    </>
   );
 }
 

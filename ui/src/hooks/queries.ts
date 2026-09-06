@@ -239,18 +239,24 @@ export function useGatewayModels(chatClient: ChatClient) {
 
 /**
  * Subscribe to GET /api/v1/metrics for the lifetime of the component and expose
- * the latest snapshot. Returns null until the first frame arrives (or if the
- * stream errors), so callers can gracefully fall back to polled data.
+ * the latest snapshot. Returns null snapshot until the first frame arrives.
+ * `streamError` is set when the SSE stream errors so callers can show a stale
+ * data warning while still displaying the last known values.
  */
-export function useMetricsStream(): MetricsSnapshot | null {
+export function useMetricsStream(): { snapshot: MetricsSnapshot | null; streamError: boolean } {
   const [snapshot, setSnapshot] = useState<MetricsSnapshot | null>(null);
+  const [streamError, setStreamError] = useState(false);
   useEffect(() => {
     let alive = true;
     const stop = api.streamMetrics({
       onMetrics: (s) => {
-        if (alive) setSnapshot(s);
+        if (alive) {
+          setSnapshot(s);
+          setStreamError(false);
+        }
       },
       onError: () => {
+        if (alive) setStreamError(true);
         /* keep the last good snapshot; polled data covers the gap */
       },
     });
@@ -259,5 +265,5 @@ export function useMetricsStream(): MetricsSnapshot | null {
       stop();
     };
   }, []);
-  return snapshot;
+  return { snapshot, streamError };
 }

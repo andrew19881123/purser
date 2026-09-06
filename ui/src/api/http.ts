@@ -139,6 +139,11 @@ function createClient(baseUrl: string) {
       } catch {
         /* non-JSON error body — keep the status message */
       }
+      if (res.status === 401) {
+        // Lazy import to avoid circular dependency
+        const { handleUnauthorized } = await import('./config');
+        handleUnauthorized();
+      }
       throw new ApiError(res.status, message, body);
     }
 
