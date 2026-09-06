@@ -16,7 +16,7 @@ license = "MIT"
 [workspace.dependencies]
 aes-gcm = "0.10"
 bytes = "1"
-foca = { version = "0.13", features = ["std", "postcard-codec"] }
+foca = { version = "2.0", features = ["std", "postcard-codec"] }
 rand = { version = "0.8", features = ["std_rng"] }
 serde = { version = "1", features = ["derive"] }
 subtle = "2"

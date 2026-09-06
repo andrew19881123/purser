@@ -571,14 +571,13 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foca"
-version = "0.13.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a96a25ec033ad13f2c3fb5060f9e260db506b180f5ee925ba82596ea6728a38d"
+checksum = "cfdf03bd44a0044a679493054cf0a78696bcb8dc4140dadaa350af0a04b3bbe1"
 dependencies = [
- "anyhow",
  "bytes",
  "postcard",
- "rand 0.8.8",
+ "rand 0.10.2",
  "serde",
 ]
 
@@ -2492,7 +2491,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3515,7 +3514,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
