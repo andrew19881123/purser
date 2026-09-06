@@ -531,7 +531,7 @@ func TestDeleteCustomRole_SystemRoleBlocked(t *testing.T) {
 	reg := openPlatform(t)
 	mustSeed(t, reg)
 
-	err := reg.DeleteCustomRole(ctx, "developer")
+	err := reg.DeleteCustomRole(ctx, "", "developer")
 	if err == nil {
 		t.Fatal("expected error deleting system role, got nil")
 	}

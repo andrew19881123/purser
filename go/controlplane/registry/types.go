@@ -20,6 +20,10 @@ import (
 // entity does not exist.
 var ErrNotFound = errors.New("registry: not found")
 
+// ErrConflict is returned by Create operations when a unique constraint is
+// violated (e.g. duplicate (org_id, name) on a custom role).
+var ErrConflict = errors.New("registry: conflict")
+
 // Node is a single enrolled machine in the fleet. The full, evolving hardware
 // and liveness detail lives in HardwareProfile (a JSON-encoded
 // purserv1.HardwareProfile); the promoted columns exist for cheap querying and
@@ -482,10 +486,23 @@ type ServiceAccount struct {
 // =============================================================================
 
 // Organization is a top-level tenant on the Purser platform.
+// It includes a slug for human-friendly URL segments and is managed via the
+// full org CRUD API (POST/GET/PUT/DELETE /api/v1/platform/orgs).
 type Organization struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Slug        string    `json:"slug"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PlatformOrg is a lightweight org record used by the roles/users subsystem.
+// It is created automatically (via UpsertPlatformOrg) when org-scoped role
+// endpoints are first called. Wave 3 will unify this with Organization.
+type PlatformOrg struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -502,6 +519,18 @@ type Team struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// PlatformTeam is a lightweight team record used by the roles/permissions
+// subsystem (cross-referenced by CustomRole and TeamMember).
+// Wave 3 will unify this with Team.
+type PlatformTeam struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // PlatformUser is a user identity on the Purser platform.
 type PlatformUser struct {
 	ID          string     `json:"id"`         // OIDC sub or LDAP DN
@@ -513,29 +542,41 @@ type PlatformUser struct {
 }
 
 // OrgMember links a user to an organization with a role.
+//
+// UserSub is the canonical stable identity string ("oidc:<sub>" or
+// "apikey:<hash8>"). UserID is a read-alias that contains the same value and
+// is retained for backward-compatibility with v0.4 org handlers.
+// JoinedAt is the canonical timestamp; CreatedAt mirrors it for compat.
 type OrgMember struct {
-	ID        int64     `json:"id"`
 	OrgID     string    `json:"org_id"`
-	UserID    string    `json:"user_id"`
-	Role      string    `json:"role"` // "org_admin" | "member"
+	UserSub   string    `json:"user_sub"`             // canonical identity
+	UserID    string    `json:"user_id,omitempty"`    // alias for UserSub (compat)
+	Role      string    `json:"role"`                  // "org_admin" | "member"
 	InvitedBy string    `json:"invited_by,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	JoinedAt  time.Time `json:"joined_at"`
+	CreatedAt time.Time `json:"created_at,omitempty"` // alias for JoinedAt (compat)
 }
 
 // TeamMember links a user to a team with a custom role.
+//
+// UserSub is canonical; UserID is a backward-compat alias. JoinedAt is
+// canonical; CreatedAt mirrors it.
 type TeamMember struct {
-	ID        int64     `json:"id"`
 	TeamID    string    `json:"team_id"`
-	UserID    string    `json:"user_id"`
+	UserSub   string    `json:"user_sub"`             // canonical identity
+	UserID    string    `json:"user_id,omitempty"`    // alias for UserSub (compat)
 	RoleID    string    `json:"role_id"`
 	InvitedBy string    `json:"invited_by,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	JoinedAt  time.Time `json:"joined_at"`
+	CreatedAt time.Time `json:"created_at,omitempty"` // alias for JoinedAt (compat)
 	// Resolved fields (not stored, populated on read)
 	User *PlatformUser `json:"user,omitempty"`
 	Role *CustomRole   `json:"role,omitempty"`
 }
 
 // CustomRole defines a named set of permission strings for an organization.
+// System roles (IsSystem=true) are seeded at startup and cannot be modified
+// or deleted. Custom roles are created by org_admin users.
 type CustomRole struct {
 	ID          string    `json:"id"`
 	OrgID       string    `json:"org_id,omitempty"` // empty = platform built-in
@@ -572,13 +613,18 @@ type PoolTeamQuota struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// EffectivePermissions is the resolved permission set for a user in a team context.
+// EffectivePermissions is the resolved permission set for a user in a team
+// context. It merges fields from both the org-CRUD subsystem (UserID,
+// OrgID, IsOrgAdmin) and the roles subsystem (UserSub, RoleID, RoleName).
 type EffectivePermissions struct {
-	UserID      string   `json:"user_id"`
 	TeamID      string   `json:"team_id"`
-	OrgID       string   `json:"org_id"`
+	OrgID       string   `json:"org_id,omitempty"`
+	UserID      string   `json:"user_id,omitempty"`   // compat alias
+	UserSub     string   `json:"user_sub,omitempty"`  // canonical
+	RoleID      string   `json:"role_id,omitempty"`
+	RoleName    string   `json:"role_name,omitempty"`
 	Permissions []string `json:"permissions"`
-	IsOrgAdmin  bool     `json:"is_org_admin"`
+	IsOrgAdmin  bool     `json:"is_org_admin,omitempty"`
 }
 
 // Platform-level permission strings (all capabilities).

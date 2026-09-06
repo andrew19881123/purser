@@ -1425,6 +1425,26 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/members", s.handleListTeamMembers)
 	s.mux.HandleFunc("PUT /api/v1/platform/teams/{teamId}/members/{userId}", s.handleUpdateTeamMember)
 	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{teamId}/members/{userId}", s.handleRemoveTeamMember)
+
+	// Platform v0.4: Users, Custom Roles, Permissions discovery.
+	// Note: /users/me must be registered before /users/{id} so the router
+	// matches the literal "me" segment before the wildcard.
+	s.mux.HandleFunc("GET /api/v1/platform/users", s.handleListUsers)
+	s.mux.HandleFunc("GET /api/v1/platform/users/me", s.handleGetMe)
+	s.mux.HandleFunc("GET /api/v1/platform/users/{id}", s.handleGetUser)
+
+	// Platform: Custom Roles (CRUD scoped to org).
+	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/roles", s.handleCreateRole)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles", s.handleListRoles)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleGetRole)
+	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleUpdateRole)
+	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleDeleteRole)
+
+	// Platform: Permission catalogue discovery.
+	s.mux.HandleFunc("GET /api/v1/platform/permissions", s.handleListPermissions)
+
+	// Platform: Effective permissions for current user in a team.
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/my-permissions", s.handleGetMyPermissions)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log

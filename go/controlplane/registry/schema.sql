@@ -394,29 +394,29 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
--- org_members: users can belong to multiple organizations
+-- org_members: users can belong to multiple organizations.
+-- user_sub is the canonical stable identity string ("oidc:<sub>" or "apikey:<hash8>").
+-- invited_by is retained for the org CRUD handlers; joined_at is the canonical timestamp.
 CREATE TABLE IF NOT EXISTS org_members (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    org_id     TEXT    NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    org_id     TEXT    NOT NULL,
+    user_sub   TEXT    NOT NULL,
     role       TEXT    NOT NULL DEFAULT 'member',  -- 'org_admin' | 'member'
     invited_by TEXT    NOT NULL DEFAULT '',
-    created_at TEXT    NOT NULL,
-    UNIQUE (org_id, user_id)
+    joined_at  TEXT    NOT NULL,
+    PRIMARY KEY (org_id, user_sub)
 );
-CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_sub);
 
--- team_members: users can belong to multiple teams
+-- team_members: users can belong to multiple teams with an assigned custom role.
 CREATE TABLE IF NOT EXISTS team_members (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    team_id    TEXT    NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-    user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role_id    TEXT    NOT NULL,  -- references custom_roles.id
+    team_id    TEXT    NOT NULL,
+    user_sub   TEXT    NOT NULL,
+    role_id    TEXT    NOT NULL DEFAULT '',  -- references custom_roles.id
     invited_by TEXT    NOT NULL DEFAULT '',
-    created_at TEXT    NOT NULL,
-    UNIQUE (team_id, user_id)
+    joined_at  TEXT    NOT NULL,
+    PRIMARY KEY (team_id, user_sub)
 );
-CREATE INDEX IF NOT EXISTS idx_team_members_user   ON team_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_user   ON team_members(user_sub);
 CREATE INDEX IF NOT EXISTS idx_team_members_team   ON team_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_members_role   ON team_members(role_id);
 
@@ -475,3 +475,25 @@ CREATE TABLE IF NOT EXISTS pool_team_quotas (
     updated_at       TEXT    NOT NULL,
     PRIMARY KEY (pool_id, team_id)
 );
+
+-- platform_orgs: lightweight org record used by the roles/users subsystem.
+-- Created automatically when org-scoped role endpoints are first called.
+CREATE TABLE IF NOT EXISTS platform_orgs (
+    id          TEXT    PRIMARY KEY,
+    name        TEXT    NOT NULL UNIQUE,
+    description TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+
+-- platform_teams: lightweight team record used by the roles/permissions subsystem.
+CREATE TABLE IF NOT EXISTS platform_teams (
+    id          TEXT    PRIMARY KEY,
+    org_id      TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE (org_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_platform_teams_org ON platform_teams(org_id);
