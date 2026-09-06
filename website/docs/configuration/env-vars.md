@@ -22,6 +22,9 @@ Source: `go/controlplane/main.go` (`loadConfig()`)
 | `PURSER_HF_TOKEN` | (empty) | HuggingFace API token used by `POST /api/v1/models/import` when the caller does not supply an `X-HF-Token` header. Required for private and gated models; leave empty for public-model-only access. |
 | `PURSER_OIDC_ISSUER` | (empty) | OIDC provider discovery URL. When set, the Control Plane enforces OIDC authentication on the admin UI and management REST API. Example: `https://login.microsoftonline.com/<tenant>/v2.0`. Must be paired with `PURSER_OIDC_CLIENT_ID`. |
 | `PURSER_OIDC_CLIENT_ID` | (empty) | Expected audience (client ID) claim in tokens issued by the OIDC provider. Required when `PURSER_OIDC_ISSUER` is set; startup fails if the issuer is set but the client ID is empty. |
+| `PURSER_OIDC_CLIENT_SECRET` | (empty) | OAuth2 client secret for confidential clients. Optional — leave unset for public/PKCE-only clients. Used in the Authorization Code Flow token exchange. |
+| `PURSER_OIDC_REDIRECT_URI` | (empty) | Full callback URL for the Authorization Code Flow, e.g. `https://purser.example.com/auth/callback`. When set, activates `GET /auth/login` and `GET /auth/callback` — the PKCE browser SSO endpoints. Must match the redirect URI registered with the IdP. |
+| `PURSER_SESSION_SECRET` | (auto) | 64-character hex-encoded 32-byte HMAC-SHA256 key for signing session cookies. When unset, an ephemeral random key is generated at startup (sessions expire on process restart). Set to a persistent value for rolling deployments: `openssl rand -hex 32`. |
 | `PURSER_PLANNER_ORDERING_THRESHOLD` | `10` | Fleet size at or below which the planner uses the exact Held-Karp algorithm to find the minimum-cost pipeline ordering. Above this threshold the planner switches to the nearest-neighbour + 2-opt heuristic. Held-Karp has O(2^N·N²) complexity and is feasible up to ~12 nodes; raise this value only on planners with abundant memory and CPU. Read once at startup; restart the process to apply a new value. |
 
 ### TLS for the management API
@@ -205,9 +208,9 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ## Complete list by component
 
-### Control Plane env vars (24)
+### Control Plane env vars (27)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_OIDC_CLIENT_SECRET`, `PURSER_OIDC_REDIRECT_URI`, `PURSER_SESSION_SECRET`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
 
 ### Agent env vars (22)
 
