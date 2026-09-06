@@ -1860,6 +1860,7 @@ dependencies = [
  "mdns-sd",
  "nvml-wrapper",
  "prost-types",
+ "purser-adapter-llamacpp",
  "purser-engine-adapter",
  "purser-proto",
  "rand 0.8.8",

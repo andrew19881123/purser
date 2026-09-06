@@ -22,7 +22,7 @@ use purser_agent::probe::{DefaultProbe, HardwareProbe};
 use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
 use purser_agent::state::NodeStateMachine;
-use purser_agent::supervisor::{BackendRegistry, RestartPolicy, Supervisor};
+use purser_agent::supervisor::{backend_error_msg, BackendRegistry, RestartPolicy, Supervisor};
 use purser_agent::swim;
 
 #[tokio::main]
@@ -84,17 +84,31 @@ async fn main() -> anyhow::Result<()> {
         NodeStateMachine::starting_at(NodeState::Enrolled)
     }));
 
-    // Engine backend selection (only `mock` is registered today; real adapters
-    // register here without changing the supervisor).
+    // Engine backend selection. Backends registered at compile time:
+    //   - `mock`    — always (GPU-free in-process mock)
+    //   - `llamacpp`— only when compiled with `--features llamacpp`
+    // Set PURSER_ENGINE_BACKEND to choose; defaults to `mock`.
     let registry = BackendRegistry::with_builtins();
     let backend_name =
         std::env::var("PURSER_ENGINE_BACKEND").unwrap_or_else(|_| "mock".to_string());
-    let backend = registry.build(&backend_name).with_context(|| {
-        format!(
-            "unknown engine backend {backend_name:?}; known: {:?}",
-            registry.names()
-        )
-    })?;
+
+    // Emit a clear, actionable message when llamacpp is requested but the
+    // binary was compiled without the feature (generic "unknown backend" would
+    // be confusing in that case).
+    let backend = registry
+        .build(&backend_name)
+        .with_context(|| backend_error_msg(&backend_name, &registry))?;
+
+    // Warn when the llamacpp backend is active but its binary directory is not
+    // configured — the adapter will fall back to searching PATH, which may not
+    // find the binaries on a fresh node.
+    #[cfg(feature = "llamacpp")]
+    if backend_name == "llamacpp" && std::env::var("PURSER_LLAMACPP_BIN").is_err() {
+        tracing::warn!(
+            "PURSER_ENGINE_BACKEND=llamacpp but PURSER_LLAMACPP_BIN is not set; \
+             llama.cpp binaries (rpc-server, llama-server) will be searched in PATH"
+        );
+    }
     // The GPU-free `mock` backend has no serving process of its own, so a HOST
     // start must also stand up an in-process OpenAI-compatible server on the
     // inference port. Real backends serve their own endpoint — leave it unset.

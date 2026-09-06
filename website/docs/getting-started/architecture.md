@@ -22,7 +22,7 @@ graph LR
 | **Control Plane** | Go | `go/controlplane` | Registry (SQLite), Planner, Orchestrator, Reconciler, internal PKI, REST API (`/api/v1`), RegistrationService gRPC |
 | **API Gateway** | Rust | `rust/crates/gateway` | OpenAI-compatible `/v1` endpoint, auth, quota, route-sync from Control Plane |
 | **Agent** | Rust | `rust/crates/agent` | Per-node daemon: hardware probe, link benchmark, engine supervisor, model cache, mDNS / SWIM discovery |
-| **Engine Adapter** | Rust | `rust/crates/engine-adapter` | `EngineBackend` trait; mock backend (default) and llama.cpp backend |
+| **Engine Adapter** | Rust | `rust/crates/engine-adapter` | `EngineBackend` trait; mock backend (always available) and llama.cpp backend (requires `--features llamacpp`) |
 | **Planner** | Go | `go/planner` | Dynamic-programming optimal layer-split algorithm |
 | **Dashboard UI** | TypeScript/React | `ui/` | SPA for fleet view, model catalog, deploy, and chat playground |
 | **Proto contracts** | Protobuf | `proto/purser/v1` | Source of truth for gRPC types, generating both Go and Rust bindings |
@@ -111,6 +111,25 @@ The data plane stays on the trusted LAN subnet between fleet nodes. When a model
 The Control Plane's SQLite Registry and internal PKI CA key/cert are stateful and require a PVC (mounted at `/data` in the container). Keep `replicaCount: 1` — SQLite is single-writer.
 
 Multi-replica HA (Raft-replicated Registry + Gateway VIP) is an **Enterprise** feature behind `PURSER_LICENSE_KEY`. See [Enterprise: Open-Core Model](../enterprise/overview.md).
+
+---
+
+## Engine backends
+
+The Agent ships two engine backends:
+
+| Backend | Availability | Description |
+|---------|-------------|-------------|
+| `mock` | Always (default) | GPU-free deterministic in-process backend. Used in CI and for integration testing without llama.cpp or a GPU. |
+| `llamacpp` | Compiled with `--features llamacpp` | Real llama.cpp RPC worker/host processes. Requires `rpc-server` and `llama-server` binaries (from a llama.cpp build) accessible via `PURSER_LLAMACPP_BIN` or `PATH`. |
+
+To build the agent with llama.cpp support:
+
+```bash
+cargo build -p purser-agent --features llamacpp
+```
+
+Set `PURSER_ENGINE_BACKEND=llamacpp` at runtime to activate it. If the binary is compiled without `--features llamacpp` and `PURSER_ENGINE_BACKEND=llamacpp` is set, the agent exits with a clear error explaining the missing feature flag.
 
 ---
 
