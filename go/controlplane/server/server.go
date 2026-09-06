@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -104,6 +105,15 @@ const (
 	ctxKeyOIDCSub contextKey = iota
 	// ctxKeyOIDCEmail is the context key for the OIDC email claim.
 	ctxKeyOIDCEmail
+	// ctxKeyOIDCRole is the context key for the role resolved from OIDC group/role
+	// claim mappings. Set by oidcMiddleware when GroupMappings is configured and a
+	// matching group or role claim is found in the token; used by rbacMiddleware to
+	// enforce the mapped role without requiring an API key.
+	ctxKeyOIDCRole
+	// ctxKeyOIDCTenant is the context key for the tenant extracted from the OIDC
+	// "tid" (EntraID) or "tenant_id" claim. Used by list handlers to scope results
+	// for viewer-role tokens.
+	ctxKeyOIDCTenant
 )
 
 // OIDCConfig configures the optional OIDC authentication layer for the admin
@@ -127,6 +137,35 @@ type OIDCConfig struct {
 	// TokenEndpoint is the IdP's token exchange URL (populated from OIDC
 	// discovery in main.go). Required for the callback code exchange.
 	TokenEndpoint string
+	// GroupMappings maps OIDC group or role claim values to Purser roles
+	// ("admin", "viewer", or "inference"). Example:
+	//   {"purser-admins":"admin","purser-viewers":"viewer"}
+	// When the token's "groups" or "roles" claim contains a key in this map, the
+	// highest-privilege mapped role is injected into the request context so
+	// rbacMiddleware can enforce it without an API key. If not set here, it is
+	// read from PURSER_OIDC_GROUP_MAPPINGS at startup.
+	GroupMappings map[string]string
+}
+
+// TokenClaims is the full set of claims extracted from a verified OIDC token.
+// It is a superset of what VerifyToken returns and adds group, role, and tenant
+// claims for RBAC mapping and tenant-scoped list filtering.
+type TokenClaims struct {
+	Sub    string   // "sub" subject claim
+	Email  string   // "email" claim
+	Groups []string // "groups" claim (array) — EntraID groups, Keycloak groups
+	Roles  []string // "roles" claim (array) — EntraID app roles
+	Tenant string   // "tid" (EntraID) or "tenant_id" claim
+}
+
+// GroupClaimsVerifier is an optional extension to TokenVerifier that also
+// extracts group, role, and tenant claims. When a verifier implements this
+// interface, oidcMiddleware calls VerifyClaims instead of VerifyToken so that
+// OIDC group-based RBAC and tenant scoping are available. Implementations that
+// only need sub+email may omit this interface — the middleware falls back to
+// VerifyToken gracefully.
+type GroupClaimsVerifier interface {
+	VerifyClaims(ctx context.Context, rawToken string) (*TokenClaims, error)
 }
 
 // TokenVerifier is the single interface oidcMiddleware uses to verify raw ID
@@ -163,6 +202,40 @@ func (a *OIDCVerifierAdapter) VerifyToken(ctx context.Context, rawToken string) 
 		return "", "", err
 	}
 	return claims.Sub, claims.Email, nil
+}
+
+// VerifyClaims verifies rawToken and extracts the full set of claims needed for
+// group-based RBAC and tenant scoping: sub, email, groups (array), roles
+// (array), and tenant ("tid" for EntraID or "tenant_id").
+// This implements GroupClaimsVerifier so oidcMiddleware can extract group/role
+// mappings and the tenant in a single token verification round-trip.
+func (a *OIDCVerifierAdapter) VerifyClaims(ctx context.Context, rawToken string) (*TokenClaims, error) {
+	tok, err := a.v.Verify(ctx, rawToken)
+	if err != nil {
+		return nil, err
+	}
+	var c struct {
+		Sub      string   `json:"sub"`
+		Email    string   `json:"email"`
+		Groups   []string `json:"groups"`
+		Roles    []string `json:"roles"`
+		TID      string   `json:"tid"`
+		TenantID string   `json:"tenant_id"`
+	}
+	if err := tok.Claims(&c); err != nil {
+		return nil, err
+	}
+	tenant := c.TID
+	if tenant == "" {
+		tenant = c.TenantID
+	}
+	return &TokenClaims{
+		Sub:    c.Sub,
+		Email:  c.Email,
+		Groups: c.Groups,
+		Roles:  c.Roles,
+		Tenant: tenant,
+	}, nil
 }
 
 // Config configures the HTTP server.
@@ -268,28 +341,29 @@ type Config struct {
 
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
-	reg              registry.Registry
-	log              *slog.Logger
-	mux              *http.ServeMux
-	server           *http.Server
-	deployer         Deployer
-	metrics          MetricsSource
-	nodeMetrics      NodeMetricsGetter
-	metricTO         time.Duration
-	planner          *planning.Planner
-	fleet            FleetManager
-	clusterID        string
-	publicAddr       string
-	license          *license.License
-	oidcVerifier     TokenVerifier // nil = OIDC disabled
-	oidcConfig       *OIDCConfig   // nil when OIDC not configured
-	sessionSecret    []byte        // HMAC-SHA256 key for session cookie signing
-	pkceStore        *pkceStateStore
-	internalToken    string        // gateway exemption secret
-	hfToken          string
-	hfBaseURL        string
-	vertexai         *importer.VertexAIClient
-	reconcilerStatus ReconcilerStatusProvider // nil = endpoint disabled
+	reg               registry.Registry
+	log               *slog.Logger
+	mux               *http.ServeMux
+	server            *http.Server
+	deployer          Deployer
+	metrics           MetricsSource
+	nodeMetrics       NodeMetricsGetter
+	metricTO          time.Duration
+	planner           *planning.Planner
+	fleet             FleetManager
+	clusterID         string
+	publicAddr        string
+	license           *license.License
+	oidcVerifier      TokenVerifier     // nil = OIDC disabled
+	oidcConfig        *OIDCConfig       // nil when OIDC not configured
+	sessionSecret     []byte            // HMAC-SHA256 key for session cookie signing
+	pkceStore         *pkceStateStore
+	oidcGroupMappings map[string]string // group/role claim → Purser role; nil = no mapping
+	internalToken     string            // gateway exemption secret
+	hfToken           string
+	hfBaseURL         string
+	vertexai          *importer.VertexAIClient
+	reconcilerStatus  ReconcilerStatusProvider // nil = endpoint disabled
 
 	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
 	tlsCert    string
@@ -355,28 +429,43 @@ func New(reg registry.Registry, cfg Config) *Server {
 		rlKeyRPS = 50
 	}
 
+	// Resolve OIDC group mappings: Config.OIDC.GroupMappings takes priority; fall
+	// back to the PURSER_OIDC_GROUP_MAPPINGS env var (JSON) when not set.
+	var oidcGroupMappings map[string]string
+	if cfg.OIDC != nil && len(cfg.OIDC.GroupMappings) > 0 {
+		oidcGroupMappings = cfg.OIDC.GroupMappings
+	} else if raw := os.Getenv("PURSER_OIDC_GROUP_MAPPINGS"); raw != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			oidcGroupMappings = m
+		} else {
+			logger.Warn("PURSER_OIDC_GROUP_MAPPINGS: invalid JSON, group mapping disabled", "err", err)
+		}
+	}
+
 	s := &Server{
-		reg:              reg,
-		log:              logger,
-		mux:              http.NewServeMux(),
-		deployer:         cfg.Deployer,
-		metrics:          cfg.Metrics,
-		nodeMetrics:      cfg.NodeMetrics,
-		metricTO:         interval,
-		planner:          cfg.Planner,
-		fleet:            cfg.Fleet,
-		clusterID:        clusterID,
-		publicAddr:       publicAddr,
-		license:          lic,
-		internalToken:    cfg.InternalToken,
-		hfToken:          cfg.HFToken,
-		hfBaseURL:        cfg.HFBaseURL,
-		vertexai:         cfg.VertexAI,
-		reconcilerStatus: cfg.Reconciler,
-		tlsCert:          cfg.TLSCert,
-		tlsKey:           cfg.TLSKey,
-		rateLimitRPS:     rlRPS,
-		rateLimitKeyRPS:  rlKeyRPS,
+		reg:               reg,
+		log:               logger,
+		mux:               http.NewServeMux(),
+		deployer:          cfg.Deployer,
+		metrics:           cfg.Metrics,
+		nodeMetrics:       cfg.NodeMetrics,
+		metricTO:          interval,
+		planner:           cfg.Planner,
+		fleet:             cfg.Fleet,
+		clusterID:         clusterID,
+		publicAddr:        publicAddr,
+		license:           lic,
+		oidcGroupMappings: oidcGroupMappings,
+		internalToken:     cfg.InternalToken,
+		hfToken:           cfg.HFToken,
+		hfBaseURL:         cfg.HFBaseURL,
+		vertexai:          cfg.VertexAI,
+		reconcilerStatus:  cfg.Reconciler,
+		tlsCert:           cfg.TLSCert,
+		tlsKey:            cfg.TLSKey,
+		rateLimitRPS:      rlRPS,
+		rateLimitKeyRPS:   rlKeyRPS,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -543,17 +632,48 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		}
 		// 4. Try Bearer token (ID token from the IdP, existing flow).
 		if rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && strings.TrimSpace(rawToken) != "" {
-			sub, email, err := s.oidcVerifier.VerifyToken(r.Context(), rawToken)
-			if err != nil {
-				s.log.Debug("OIDC token verification failed", "err", err)
-				s.writeJSON(w, http.StatusUnauthorized, map[string]any{
-					"error":   "unauthorized",
-					"message": "valid OIDC token required",
-				})
-				return
+			// When the verifier also implements GroupClaimsVerifier use VerifyClaims
+			// (single round-trip) for the full claim set; fall back to VerifyToken for
+			// backward compatibility with stubs that only implement the basic interface.
+			var sub, email, oidcRole, oidcTenant string
+			if gcv, ok := s.oidcVerifier.(GroupClaimsVerifier); ok {
+				claims, err := gcv.VerifyClaims(r.Context(), rawToken)
+				if err != nil {
+					s.log.Debug("OIDC token verification failed", "err", err)
+					s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+						"error":   "unauthorized",
+						"message": "valid OIDC token required",
+					})
+					return
+				}
+				sub = claims.Sub
+				email = claims.Email
+				oidcTenant = claims.Tenant
+				// Map groups + roles claims to the highest-privilege Purser role.
+				if len(s.oidcGroupMappings) > 0 {
+					oidcRole = s.resolveGroupRole(append(claims.Groups, claims.Roles...))
+				}
+			} else {
+				var err error
+				sub, email, err = s.oidcVerifier.VerifyToken(r.Context(), rawToken)
+				if err != nil {
+					s.log.Debug("OIDC token verification failed", "err", err)
+					s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+						"error":   "unauthorized",
+						"message": "valid OIDC token required",
+					})
+					return
+				}
 			}
+			// Inject verified claims into the request context for downstream handlers.
 			ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
 			ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+			if oidcRole != "" {
+				ctx = context.WithValue(ctx, ctxKeyOIDCRole, oidcRole)
+			}
+			if oidcTenant != "" {
+				ctx = context.WithValue(ctx, ctxKeyOIDCTenant, oidcTenant)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -622,6 +742,46 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// 2b. OIDC-resolved role: if oidcMiddleware already resolved a role from
+		// group/role claim mappings, enforce it directly — no API key lookup needed.
+		// This path is taken when the token carries a matching group claim and
+		// PURSER_OIDC_GROUP_MAPPINGS (or OIDCConfig.GroupMappings) is configured.
+		if oidcRole, ok := r.Context().Value(ctxKeyOIDCRole).(string); ok && oidcRole != "" {
+			switch oidcRole {
+			case "admin":
+				next.ServeHTTP(w, r)
+			case "viewer":
+				if r.Method != http.MethodGet {
+					s.writeJSON(w, http.StatusForbidden, map[string]any{
+						"error":   "forbidden",
+						"message": "OIDC-assigned viewer role allows read-only access",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+			case "inference":
+				if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+					s.writeJSON(w, http.StatusForbidden, map[string]any{
+						"error":   "forbidden",
+						"message": "OIDC-assigned inference role cannot manage the cluster",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+			default:
+				// Unknown OIDC-mapped role: conservative viewer behavior.
+				if r.Method != http.MethodGet {
+					s.writeJSON(w, http.StatusForbidden, map[string]any{
+						"error":   "forbidden",
+						"message": "OIDC-assigned viewer role allows read-only access",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+			}
+			return
+		}
+
 		// 3. No token → pass through (anonymous; handler decides if auth is needed).
 		if token == "" {
 			next.ServeHTTP(w, r)
@@ -686,6 +846,24 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+// resolveGroupRole returns the highest-privilege Purser role found by looking
+// up each entry in groups through s.oidcGroupMappings. The privilege order is
+// admin > inference > viewer. Returns "" if no mapping is found.
+func (s *Server) resolveGroupRole(groups []string) string {
+	rolePriority := map[string]int{"admin": 3, "inference": 2, "viewer": 1}
+	best := ""
+	bestPri := 0
+	for _, g := range groups {
+		if role, ok := s.oidcGroupMappings[g]; ok {
+			if pri := rolePriority[role]; pri > bestPri {
+				best = role
+				bestPri = pri
+			}
+		}
+	}
+	return best
 }
 
 // bearerToken extracts the token from an "Authorization: Bearer <token>" header.
@@ -1547,6 +1725,28 @@ func (s *Server) handleImportObjectStorage(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// tenantedDetail is a minimal JSON decode of the deployment Detail blob that
+// extracts only the tenant field. It overlaps structurally with
+// orchestrator.DeploymentDetail (which also carries FailoverPlanID, Engines,
+// etc.) but is defined here to avoid importing the orchestrator package just for
+// this field. Both structs are valid JSON shapes for the same blob.
+type tenantedDetail struct {
+	Tenant string `json:"tenant"`
+}
+
+// deploymentTenant extracts the tenant field from a deployment's Detail blob.
+// Returns "" when the field is absent, blank, or the blob cannot be decoded.
+func deploymentTenant(d *registry.Deployment) string {
+	if len(d.Detail) == 0 {
+		return ""
+	}
+	var td tenantedDetail
+	if err := json.Unmarshal(d.Detail, &td); err != nil {
+		return ""
+	}
+	return td.Tenant
+}
+
 // deploymentTerminal reports whether a deployment in the given state has
 // released its placement. Only STOPPED and FAILED are terminal; every other
 // state — PLANNED, PROVISIONING, ACTIVE, REBALANCING, STOPPING — is live and
@@ -1979,7 +2179,9 @@ func (s *Server) handlePreviewPlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListDeployments returns all deployments.
+// handleListDeployments returns all deployments. Tenant-scoped OIDC viewer
+// tokens restrict the response to deployments whose Detail.tenant matches the
+// token's tenant claim (foundational multi-tenant isolation layer).
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	deps, err := s.reg.ListDeployments(r.Context())
 	if err != nil {
@@ -1989,6 +2191,25 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	if deps == nil {
 		deps = []*registry.Deployment{}
 	}
+
+	// Tenant scoping: a viewer with an OIDC tenant claim only sees deployments
+	// whose Detail JSON contains a matching "tenant" field. Admin tokens and
+	// API-key-based viewers see all deployments (no tenant claim → no filter).
+	if oidcRole, _ := r.Context().Value(ctxKeyOIDCRole).(string); oidcRole == "viewer" {
+		if oidcTenant, _ := r.Context().Value(ctxKeyOIDCTenant).(string); oidcTenant != "" {
+			var filtered []*registry.Deployment
+			for _, d := range deps {
+				if deploymentTenant(d) == oidcTenant {
+					filtered = append(filtered, d)
+				}
+			}
+			if filtered == nil {
+				filtered = []*registry.Deployment{}
+			}
+			deps = filtered
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]any{"deployments": deps})
 }
 
