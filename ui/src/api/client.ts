@@ -27,6 +27,7 @@ import type {
   Deployment,
   DeploymentApproval,
   DeploymentPlan,
+  EffectivePermissions,
   EnterpriseStatus,
   ImportSource,
   JoinInfo,
@@ -35,9 +36,14 @@ import type {
   MetricsStreamHandlers,
   ModelHealth,
   ModelSpec,
+  NodePool,
   NodeView,
+  Organization,
   PlanPreviewResult,
+  PoolTeamQuota,
   ReconcilerStatus,
+  Team,
+  TeamMember,
   UsageSummary,
 } from './types';
 import { config } from './config';
@@ -137,6 +143,37 @@ export interface PurserApi {
   getBillingCsvUrl(start: string, end: string, tenantId?: string): string;
   /** GET /api/v1/billing/summary — quick stats, not enterprise-gated. */
   getBillingSummary(tenantId?: string): Promise<BillingSummary>;
+
+  // --- v0.4 platform model: organizations ---
+  listOrganizations(): Promise<{ organizations: Organization[] }>;
+  createOrganization(data: { name: string; slug: string; description?: string }): Promise<Organization>;
+  getOrganization(id: string): Promise<Organization>;
+  deleteOrganization(id: string): Promise<void>;
+
+  // --- v0.4 platform model: teams ---
+  listTeams(orgId: string): Promise<{ teams: Team[] }>;
+  createTeam(orgId: string, data: { name: string; slug: string; description?: string }): Promise<Team>;
+  getTeam(id: string): Promise<Team>;
+  deleteTeam(id: string): Promise<void>;
+
+  // --- v0.4 platform model: team members ---
+  listTeamMembers(teamId: string): Promise<{ members: TeamMember[] }>;
+  addTeamMember(teamId: string, data: { user_id: string; role_id: string }): Promise<TeamMember>;
+  removeTeamMember(teamId: string, userId: string): Promise<void>;
+
+  // --- v0.4 platform model: node pools ---
+  listNodePools(): Promise<{ pools: NodePool[] }>;
+  createNodePool(data: Partial<NodePool>): Promise<NodePool>;
+  getNodePool(id: string): Promise<NodePool>;
+  listPoolNodes(poolId: string): Promise<{ node_ids: string[] }>;
+  assignNodeToPool(poolId: string, nodeId: string): Promise<void>;
+  removeNodeFromPool(poolId: string, nodeId: string): Promise<void>;
+  listPoolQuotas(poolId: string): Promise<{ quotas: PoolTeamQuota[] }>;
+  upsertPoolQuota(poolId: string, teamId: string, quota: Partial<PoolTeamQuota>): Promise<PoolTeamQuota>;
+
+  // --- v0.4 platform model: current user ---
+  getMe(): Promise<{ actor: string; orgs: Organization[]; teams: Team[] }>;
+  getMyTeamPermissions(teamId: string): Promise<EffectivePermissions>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

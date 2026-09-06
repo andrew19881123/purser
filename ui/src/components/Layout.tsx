@@ -6,6 +6,7 @@ import { useI18n, useT, LOCALES, type Locale } from '../i18n';
 import { useTheme } from '../lib/theme';
 import {
   IconBox,
+  IconBuildingOffice,
   IconRocket,
   IconServer,
   IconGrid,
@@ -33,6 +34,8 @@ const OPERATE: NavItem[] = [
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
   { to: '/model-studio', labelKey: 'nav.modelStudio', icon: <IconBox /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
+  { to: '/platform/orgs', labelKey: 'nav.organizations', icon: <IconBuildingOffice /> },
+  { to: '/platform/pools', labelKey: 'nav.nodePools', icon: <IconServer /> },
   { to: '/audit', labelKey: 'nav.audit', icon: <IconShield /> },
   { to: '/approvals', labelKey: 'nav.approvals', icon: <IconShield /> },
   { to: '/join-token', labelKey: 'nav.joinTokens', icon: <IconKey /> },
