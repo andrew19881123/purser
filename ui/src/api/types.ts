@@ -450,3 +450,116 @@ export interface PlanPreviewResult {
   reason?: string;
   plan?: DeploymentPlan;
 }
+
+// --- model health ---
+export type ModelHealthStatus = 'healthy' | 'degraded' | 'unavailable';
+
+/** Response shape for GET /api/v1/models/{id}/health */
+export interface ModelHealth {
+  modelId: string;
+  status: ModelHealthStatus;
+  deploymentId: string;
+  deploymentState: string;
+  nodeCount: number;
+  errorMessage?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Enterprise audit log — GET /api/v1/enterprise/audit-log.
+// Gated on a valid license with the "audit" feature entitlement (402 without).
+// ---------------------------------------------------------------------------
+
+/** One entry in the tamper-evident audit chain. */
+export interface AuditEntry {
+  seq: number;
+  actor: string;
+  action: string;
+  target: string;
+  details?: Record<string, string>;
+  prevHash: string;
+  hash: string;
+  /** ISO-8601 timestamp, normalised from the wire's `time_unix_nano`. */
+  createdAt: string;
+}
+
+/** Chain integrity summary returned alongside entries. */
+export interface AuditChainVerification {
+  verified: boolean;
+  length: number;
+  break?: { index: number; seq: number; kind: string; msg: string };
+}
+
+/** Full response shape for GET /api/v1/enterprise/audit-log. */
+export interface AuditLog {
+  feature: string;
+  licensee: string;
+  entries: AuditEntry[];
+  chain: AuditChainVerification;
+}
+
+// --- reconciler ---
+
+/** Per-event-type summary inside ReconcilerStatus.tracker. */
+export interface ReconcilerEventSummary {
+  tracked: number;
+  oldestAgeS: number;
+}
+
+/** Snapshot of the reconciler's active config knobs. */
+export interface ReconcilerConfigSnapshot {
+  intervalS: number;
+  nodeTimeoutS: number;
+  hysteresisS: number;
+  actionCooldownS: number;
+}
+
+/** GET /api/v1/reconciler/status response shape. */
+export interface ReconcilerStatus {
+  config: ReconcilerConfigSnapshot;
+  /** Keyed by event type (e.g. "node_down", "engine_down"). Only entries with
+   *  tracked > 0 represent pending approval events. */
+  tracker: Record<string, ReconcilerEventSummary>;
+}
+
+// ---------------------------------------------------------------------------
+// Usage accounting — mirrors GET /api/v1/apikeys/{id}/usage and
+// GET /api/v1/usage/summary (reported by the Gateway to the Control Plane
+// via POST /api/v1/usage after each inference call).
+// ---------------------------------------------------------------------------
+
+/** Token usage for a single API key. GET /api/v1/apikeys/{id}/usage */
+export interface KeyUsage {
+  apiKeyId: string;
+  totalRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Aggregate usage for one tenant (team). */
+export interface TenantUsage {
+  tenant: string;
+  totalRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Cross-tenant usage summary. GET /api/v1/usage/summary */
+export interface UsageSummary {
+  tenants: TenantUsage[];
+}
+
+// ---------------------------------------------------------------------------
+// Enterprise — GET /api/v1/enterprise/status.
+// ---------------------------------------------------------------------------
+
+/**
+ * License and edition status returned by the control plane.
+ * edition === 'community' means no license key is loaded.
+ */
+export interface EnterpriseStatus {
+  edition: 'community' | 'enterprise';
+  licensee: string;
+  features: string[];
+  /** ISO-8601 expiry timestamp; absent on community edition. */
+  expires?: string;
+}

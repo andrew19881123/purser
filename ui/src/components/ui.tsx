@@ -8,6 +8,7 @@ import {
   type ButtonHTMLAttributes,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { IconCheck, IconCopy, IconWarning } from './icons';
 import { useT } from '../i18n';
 import type { NodeState } from '../api/types';
@@ -434,7 +435,7 @@ export function Modal({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
         className="modal"
@@ -453,6 +454,7 @@ export function Modal({
         <div className="modal__body">{children}</div>
         {footer && <footer className="modal__foot">{footer}</footer>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

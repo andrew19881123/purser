@@ -164,7 +164,11 @@ export function PlaygroundPage() {
               ))}
             </select>
           </Field>
-          <Field label={t('playground.apikey')} htmlFor={keyFieldId} hint={t('playground.apikeyHint')}>
+          <Field
+            label={t('playground.apikey')}
+            htmlFor={keyFieldId}
+            hint={`Sent as Authorization: Bearer to the Gateway.${import.meta.env.DEV ? ' Ignored in mock mode.' : ''}`}
+          >
             <input
               id={keyFieldId}
               className="input"
@@ -180,7 +184,7 @@ export function PlaygroundPage() {
 
         <div className="chat__log" role="log" aria-live="polite" aria-relevant="additions" ref={logRef}>
           {messages.length === 0 && (
-            <EmptyState icon={<IconChat />} message={t('playground.empty')} />
+            <EmptyState icon={<IconChat />} message="Start the conversation below to see streaming tokens appear here." />
           )}
           {messages.map((m, i) => (
             <div key={i} className={`bubble bubble--${m.role}`}>
