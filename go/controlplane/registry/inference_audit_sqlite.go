@@ -127,8 +127,9 @@ func (r *SQLiteRegistry) RecordInferenceEvent(ctx context.Context, event *Infere
 		INSERT OR IGNORE INTO inference_audit_log
 			(request_id, api_key_hash, model_id, tenant_id, timestamp,
 			 prompt_tokens, completion_tokens, endpoint, client_ip_prefix,
-			 latency_ms, finish_reason, seq, prev_hash, hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 latency_ms, finish_reason, seq, prev_hash, hash,
+			 model_revision, model_quantization, node_id, inference_engine)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.RequestID,
 		ev.APIKeyHash,
 		ev.ModelID,
@@ -141,6 +142,10 @@ func (r *SQLiteRegistry) RecordInferenceEvent(ctx context.Context, event *Infere
 		ev.LatencyMs,
 		ev.FinishReason,
 		seq, prevHash, hash,
+		ev.ModelRevision,
+		ev.ModelQuantization,
+		ev.NodeID,
+		ev.InferenceEngine,
 	)
 	if err != nil {
 		return fmt.Errorf("registry: record inference event %q: %w", event.RequestID, err)
@@ -204,7 +209,8 @@ func (r *SQLiteRegistry) ListInferenceEvents(ctx context.Context, req *ListInfer
 
 	query := `SELECT id, request_id, api_key_hash, model_id, tenant_id, timestamp,
 		prompt_tokens, completion_tokens, endpoint, client_ip_prefix,
-		latency_ms, finish_reason
+		latency_ms, finish_reason,
+		model_revision, model_quantization, node_id, inference_engine
 		FROM inference_audit_log`
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
@@ -252,6 +258,7 @@ func scanInferenceEvent(s interface{ Scan(...any) error }) (*InferenceEvent, err
 		&e.ID, &e.RequestID, &e.APIKeyHash, &e.ModelID, &e.TenantID, &ts,
 		&e.PromptTokens, &e.CompletionTokens, &e.Endpoint, &e.ClientIPPrefix,
 		&e.LatencyMs, &e.FinishReason,
+		&e.ModelRevision, &e.ModelQuantization, &e.NodeID, &e.InferenceEngine,
 	); err != nil {
 		return nil, err
 	}

@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS inference_audit_log (
     client_ip_prefix  TEXT     NOT NULL DEFAULT '',
     latency_ms        REAL     NOT NULL DEFAULT 0,
     finish_reason     TEXT     NOT NULL DEFAULT 'stop',
-    -- AI Act Art.12 model version tracking
+    -- AI Act Art.12(1)(a): model version tracking. Empty for pre-feature events.
     model_revision      TEXT    NOT NULL DEFAULT '',
     model_quantization  TEXT    NOT NULL DEFAULT '',
     node_id             TEXT    NOT NULL DEFAULT '',

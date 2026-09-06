@@ -269,6 +269,12 @@ type InferenceEvent struct {
 	LatencyMs      float64 `json:"latency_ms"`
 	// FinishReason is "stop", "length", or "error".
 	FinishReason string `json:"finish_reason"`
+
+	// AI Act Art.12(1)(a): version tracking. Empty for pre-feature events.
+	ModelRevision     string `json:"model_revision,omitempty"`
+	ModelQuantization string `json:"model_quantization,omitempty"`
+	NodeID            string `json:"node_id,omitempty"`
+	InferenceEngine   string `json:"inference_engine,omitempty"`
 }
 
 // ListInferenceEventsRequest is the filter and pagination spec for
