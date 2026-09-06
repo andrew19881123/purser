@@ -171,10 +171,35 @@ externalSecrets:
     internalToken: ""     # e.g. "secret/data/purser/internal-token"
     licenseKey: ""        # e.g. "secret/data/purser/license-key"
 
-# Pod-level security context for the Control Plane. The distroless image runs as
-# UID 65532; fsGroup makes the persistent volume group-writable for that user.
+# -- Container-level security context applied to every container.
+# readOnlyRootFilesystem requires emptyDir mounts for writable paths — the UI
+# (nginx) template automatically adds /var/cache/nginx, /var/run, /tmp volumes
+# when this is enabled.
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Pod-level security context. The distroless image runs as UID 65532;
+# fsGroup makes the persistent volume group-writable for that user.
 podSecurityContext:
   fsGroup: 65532
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Optional Kubernetes NetworkPolicy.
+# When enabled, ingress/egress rules are rendered for each component.
+# Disabled by default; set networkPolicy.enabled=true for production hardening.
+networkPolicy:
+  enabled: false  # opt-in; set true in production
 
 # Annotations applied to all pods.
 podAnnotations: {}

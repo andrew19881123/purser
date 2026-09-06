@@ -36,6 +36,10 @@ spec:
         - name: control-plane
           image: {{ include "purser.controlPlane.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.controlPlane.httpPort }}

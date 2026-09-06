@@ -1,0 +1,86 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+# NetworkPolicy for control-plane: accept traffic only from gateway pods
+# and from agents on the gRPC port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "purser.fullname" . }}-control-plane
+  labels:
+    {{- include "purser.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: control-plane
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Accept from gateway pods (REST API port)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Accept agent gRPC enrollment from any source (agents run outside K8s,
+    # reachable via NodePort/LoadBalancer).
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 9443
+          protocol: TCP
+  egress:
+    # Allow all egress (CP needs to reach agents for gRPC)
+    - {}
+---
+# NetworkPolicy for gateway: accept from load balancer / internet
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "purser.fullname" . }}-gateway
+  labels:
+    {{- include "purser.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - {}  # Gateway needs to reach agents and control-plane
+---
+# NetworkPolicy for UI: accept from load balancer / internet
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "purser.fullname" . }}-ui
+  labels:
+    {{- include "purser.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: ui
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - {}  # UI has no strict egress restriction; allow for logging/metrics
+{{- end }}

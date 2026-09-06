@@ -22,10 +22,18 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: ui
           image: {{ include "purser.ui.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.ui.port }}
@@ -39,6 +47,17 @@ spec:
             {{- with .Values.ui.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          # emptyDir mounts required when readOnlyRootFilesystem=true so nginx
+          # can write its cache, pid-file, and temp directories.
+          {{- if ((.Values.containerSecurityContext).readOnlyRootFilesystem) }}
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-tmp
+              mountPath: /tmp
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -55,6 +74,15 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      {{- if ((.Values.containerSecurityContext).readOnlyRootFilesystem) }}
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
