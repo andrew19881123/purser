@@ -476,3 +476,141 @@ type ServiceAccount struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
+
+// =============================================================================
+// Platform multi-tenant types (v0.4)
+// =============================================================================
+
+// Organization is a top-level tenant on the Purser platform.
+type Organization struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Team is a sub-unit of an Organization.
+type Team struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PlatformUser is a user identity on the Purser platform.
+type PlatformUser struct {
+	ID          string     `json:"id"`         // OIDC sub or LDAP DN
+	Email       string     `json:"email"`
+	DisplayName string     `json:"display_name,omitempty"`
+	AuthMethod  string     `json:"auth_method"` // "oidc" | "ldap"
+	CreatedAt   time.Time  `json:"created_at"`
+	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
+}
+
+// OrgMember links a user to an organization with a role.
+type OrgMember struct {
+	ID        int64     `json:"id"`
+	OrgID     string    `json:"org_id"`
+	UserID    string    `json:"user_id"`
+	Role      string    `json:"role"` // "org_admin" | "member"
+	InvitedBy string    `json:"invited_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TeamMember links a user to a team with a custom role.
+type TeamMember struct {
+	ID        int64     `json:"id"`
+	TeamID    string    `json:"team_id"`
+	UserID    string    `json:"user_id"`
+	RoleID    string    `json:"role_id"`
+	InvitedBy string    `json:"invited_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	// Resolved fields (not stored, populated on read)
+	User *PlatformUser `json:"user,omitempty"`
+	Role *CustomRole   `json:"role,omitempty"`
+}
+
+// CustomRole defines a named set of permission strings for an organization.
+type CustomRole struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id,omitempty"` // empty = platform built-in
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Permissions []string  `json:"permissions"` // e.g. ["team:models:deploy"]
+	IsSystem    bool      `json:"is_system"`   // platform built-ins cannot be deleted
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// NodePool is a named group of GPU nodes with an access policy.
+type NodePool struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	OwnerType   string    `json:"owner_type"` // "platform" | "org" | "team"
+	OwnerID     string    `json:"owner_id"`   // org_id or team_id
+	Policy      string    `json:"policy"`     // "exclusive" | "shared"
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	// Resolved: nodes in this pool
+	NodeIDs []string `json:"node_ids,omitempty"`
+}
+
+// PoolTeamQuota defines per-team limits on a shared pool.
+type PoolTeamQuota struct {
+	PoolID         string    `json:"pool_id"`
+	TeamID         string    `json:"team_id"`
+	MaxDeployments int       `json:"max_deployments"` // 0 = unlimited
+	MaxGPUNodes    int       `json:"max_gpu_nodes"`   // 0 = unlimited
+	Priority       int       `json:"priority"`        // lower = higher precedence
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// EffectivePermissions is the resolved permission set for a user in a team context.
+type EffectivePermissions struct {
+	UserID      string   `json:"user_id"`
+	TeamID      string   `json:"team_id"`
+	OrgID       string   `json:"org_id"`
+	Permissions []string `json:"permissions"`
+	IsOrgAdmin  bool     `json:"is_org_admin"`
+}
+
+// Platform-level permission strings (all capabilities).
+// Fine-grained RBAC: callers check Has(perm) against EffectivePermissions.
+const (
+	// Platform-scope
+	PermPlatformOrgsCreate  = "platform:orgs:create"
+	PermPlatformOrgsDelete  = "platform:orgs:delete"
+	PermPlatformPoolsManage = "platform:pools:manage"
+	PermPlatformUsersInvite = "platform:users:invite"
+
+	// Org-scope
+	PermOrgTeamsCreate   = "org:teams:create"
+	PermOrgTeamsDelete   = "org:teams:delete"
+	PermOrgMembersInvite = "org:members:invite"
+	PermOrgMembersRemove = "org:members:remove"
+	PermOrgRolesCreate   = "org:roles:create"
+	PermOrgRolesDelete   = "org:roles:delete"
+	PermOrgPoolsRequest  = "org:pools:request"
+
+	// Team-scope
+	PermTeamModelsDeploy    = "team:models:deploy"
+	PermTeamModelsUndeploy  = "team:models:undeploy"
+	PermTeamKeysCreate      = "team:keys:create"
+	PermTeamKeysRevoke      = "team:keys:revoke"
+	PermTeamMembersView     = "team:members:view"
+	PermTeamMembersInvite   = "team:members:invite"
+	PermTeamMembersRemove   = "team:members:remove"
+	PermTeamMetricsView     = "team:metrics:view"
+	PermTeamApprovalsView   = "team:approvals:view"
+	PermTeamApprovalsReview = "team:approvals:review"
+
+	// Inference-scope
+	PermInferenceCall = "inference:call"
+)

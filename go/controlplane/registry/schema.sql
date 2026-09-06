@@ -354,3 +354,124 @@ CREATE TABLE IF NOT EXISTS service_accounts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sa_client_id ON service_accounts(client_id);
 CREATE INDEX IF NOT EXISTS idx_sa_tenant ON service_accounts(tenant);
+
+-- =============================================================================
+-- PLATFORM: Multi-tenant organization, team, and resource model (v0.4)
+-- =============================================================================
+
+-- organizations: top-level tenants on the platform
+CREATE TABLE IF NOT EXISTS organizations (
+    id          TEXT    PRIMARY KEY,
+    name        TEXT    NOT NULL,
+    slug        TEXT    NOT NULL UNIQUE,  -- URL-safe, immutable after creation
+    description TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orgs_slug ON organizations(slug);
+
+-- teams: sub-units of an organization
+CREATE TABLE IF NOT EXISTS teams (
+    id          TEXT    PRIMARY KEY,
+    org_id      TEXT    NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL,
+    slug        TEXT    NOT NULL,         -- unique within org
+    description TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE (org_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_teams_org ON teams(org_id);
+
+-- users: platform-level user identities (linked to OIDC sub or LDAP DN)
+CREATE TABLE IF NOT EXISTS users (
+    id           TEXT    PRIMARY KEY,    -- OIDC sub or LDAP DN
+    email        TEXT    NOT NULL UNIQUE,
+    display_name TEXT    NOT NULL DEFAULT '',
+    auth_method  TEXT    NOT NULL DEFAULT 'oidc',  -- 'oidc' | 'ldap' | 'service_account'
+    created_at   TEXT    NOT NULL,
+    last_seen_at TEXT                              -- NULL until first login
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- org_members: users can belong to multiple organizations
+CREATE TABLE IF NOT EXISTS org_members (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id     TEXT    NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role       TEXT    NOT NULL DEFAULT 'member',  -- 'org_admin' | 'member'
+    invited_by TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL,
+    UNIQUE (org_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
+
+-- team_members: users can belong to multiple teams
+CREATE TABLE IF NOT EXISTS team_members (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id    TEXT    NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id    TEXT    NOT NULL,  -- references custom_roles.id
+    invited_by TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL,
+    UNIQUE (team_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_user   ON team_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_team   ON team_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_role   ON team_members(role_id);
+
+-- custom_roles: permission bundles, defined per-organization
+-- is_system=1 rows are pre-seeded and cannot be deleted
+CREATE TABLE IF NOT EXISTS custom_roles (
+    id          TEXT    PRIMARY KEY,
+    org_id      TEXT,                    -- NULL = platform-level built-in role
+    name        TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    -- JSON array of permission strings, e.g.:
+    -- ["team:models:deploy","team:keys:create","inference:call"]
+    permissions TEXT    NOT NULL DEFAULT '[]',
+    is_system   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE (org_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_roles_org ON custom_roles(org_id);
+
+-- node_pools: named groups of GPU nodes with an access policy
+-- policy: 'exclusive' = only pool owner's team can deploy
+--         'shared'    = multiple teams can use it (governed by pool_team_quotas)
+CREATE TABLE IF NOT EXISTS node_pools (
+    id          TEXT    PRIMARY KEY,
+    name        TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    -- 'platform' | 'org' | 'team'
+    owner_type  TEXT    NOT NULL DEFAULT 'platform',
+    -- org_id or team_id when owner_type is org/team; empty for platform pool
+    owner_id    TEXT    NOT NULL DEFAULT '',
+    -- 'exclusive': only owner's members; 'shared': quota-governed access
+    policy      TEXT    NOT NULL DEFAULT 'shared'
+                        CHECK (policy IN ('exclusive', 'shared')),
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pools_owner ON node_pools(owner_type, owner_id);
+
+-- node_pool_members: each node belongs to exactly one pool
+CREATE TABLE IF NOT EXISTS node_pool_members (
+    node_id  TEXT    PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+    pool_id  TEXT    NOT NULL    REFERENCES node_pools(id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_npm_pool ON node_pool_members(pool_id);
+
+-- pool_team_quotas: per-team limits on a shared pool
+CREATE TABLE IF NOT EXISTS pool_team_quotas (
+    pool_id          TEXT    NOT NULL REFERENCES node_pools(id) ON DELETE CASCADE,
+    team_id          TEXT    NOT NULL REFERENCES teams(id)      ON DELETE CASCADE,
+    max_deployments  INTEGER NOT NULL DEFAULT 0,  -- 0 = unlimited
+    max_gpu_nodes    INTEGER NOT NULL DEFAULT 0,  -- 0 = unlimited
+    -- Lower priority number = higher precedence when pool is contested
+    priority         INTEGER NOT NULL DEFAULT 100,
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL,
+    PRIMARY KEY (pool_id, team_id)
+);
