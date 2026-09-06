@@ -31,6 +31,7 @@ Enterprise features:
 |---|---|---|
 | **Identity & Access** | ✅ Shipped | RBAC (per-API-key roles), OIDC PKCE (EntraID / Okta / Keycloak). See [OIDC configuration](../configuration/oidc.md) and [RBAC](../configuration/rbac.md). |
 | **Compliance** | ✅ Shipped | **Tamper-evident audit log** (hash-chained, offline-verifiable), strong per-tenant isolation, chargeback/usage accounting. See [Audit Log](audit-log.md). |
+| **Policy-as-Code** | ✅ Shipped | Embedded OPA/Rego engine — version-controlled governance rules for deploy gating, model allowlists, and team-based access control. See [Policy-as-Code](policy-as-code.md). |
 | **Fleet at Scale** | ✅ Shipped | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, offline license validation. |
 | **High Availability** | Targeted v0.4 | Leader election (Raft) + replicated registry; Gateway HA behind a VIP. Required for `replicaCount > 1` on the Control Plane. |
 

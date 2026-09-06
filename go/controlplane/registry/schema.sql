@@ -156,3 +156,15 @@ CREATE TABLE IF NOT EXISTS inference_audit_log (
 CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_tenant_ts ON inference_audit_log(tenant_id, timestamp);
+
+-- policies: Rego policy documents evaluated by the embedded OPA engine.
+-- The engine is reloaded on every PUT/DELETE so the `enabled` flag takes
+-- effect without a restart.
+CREATE TABLE IF NOT EXISTS policies (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    rego       TEXT NOT NULL,           -- Rego source code
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

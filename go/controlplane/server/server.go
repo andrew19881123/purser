@@ -36,6 +36,7 @@ import (
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
+	"github.com/purser/purser/go/controlplane/policy"
 	"github.com/purser/purser/go/controlplane/reconciler"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/registry/importer"
@@ -393,6 +394,10 @@ type Server struct {
 	keyLimiters       map[string]*rate.Limiter
 	keyLimitersAccess map[string]time.Time
 
+	// policyMu guards policyEngine; use RLock for reads and Lock for swaps.
+	policyMu     sync.RWMutex
+	policyEngine *policy.Engine // nil when feature is off or no policies are loaded
+
 	// handler is the mux wrapped with OTEL (outer), OIDC (middle), rate-limit,
 	// and RBAC (inner) middleware. Returned by Handler() and used as
 	// http.Server.Handler so all test paths go through the same middleware chain.
@@ -530,6 +535,12 @@ func New(reg registry.Registry, cfg Config) *Server {
 	s.pkceStore = newPKCEStateStore()
 
 	s.routes()
+
+	// Eagerly load stored policies (if any) into the OPA engine so the first
+	// deploy request after startup is evaluated against the correct policy set.
+	if reg != nil {
+		s.reloadPolicies(context.Background())
+	}
 
 	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
 	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
@@ -1044,7 +1055,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
-	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
+	s.mux.Handle("POST /api/v1/models/{id}/deploy",
+		s.policyMiddleware("deploy")(http.HandlerFunc(s.handleDeployModel)))
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
 	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
 	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
@@ -1082,11 +1094,93 @@ func (s *Server) routes() {
 	// POST is internal-only (gateway→CP) and never enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/inference-audit", s.handleListInferenceAudit)
 	s.mux.HandleFunc("POST /api/v1/inference-events", s.handleRecordInferenceEvent)
+
+	// Policy-as-code (OPA/Rego) — enterprise-gated ("policy_engine" feature).
+	s.mux.HandleFunc("GET /api/v1/policies", s.handleListPolicies)
+	s.mux.HandleFunc("PUT /api/v1/policies/{name}", s.handleUpsertPolicy)
+	s.mux.HandleFunc("DELETE /api/v1/policies/{name}", s.handleDeletePolicy)
+	s.mux.HandleFunc("POST /api/v1/policies/eval", s.handleEvalPolicy)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
 // (see LICENSING.md, "Compliance").
 const featureAudit = "audit"
+
+// featurePolicyEngine is the enterprise entitlement for OPA/Rego policy
+// evaluation. When absent, policyMiddleware is a no-op.
+const featurePolicyEngine = "policy_engine"
+
+// reloadPolicies fetches all enabled policies from the registry, compiles them
+// into a fresh OPA engine, and atomically swaps it in. Callers: New() and
+// every PUT/DELETE policy handler.
+func (s *Server) reloadPolicies(ctx context.Context) {
+	if s.reg == nil {
+		return
+	}
+	rows, err := s.reg.ListPolicies(ctx)
+	if err != nil {
+		s.log.Warn("policy: could not list policies from registry", "err", err)
+		return
+	}
+	var sources []policy.PolicySource
+	for _, p := range rows {
+		if p.Enabled {
+			sources = append(sources, policy.PolicySource{Name: p.Name, Rego: p.Rego})
+		}
+	}
+	eng, err := policy.LoadPolicies(ctx, sources)
+	if err != nil {
+		s.log.Warn("policy: failed to compile policies", "err", err)
+		return
+	}
+	s.policyMu.Lock()
+	s.policyEngine = eng
+	s.policyMu.Unlock()
+	s.log.Info("policy engine reloaded", "count", len(sources))
+}
+
+// policyMiddleware gates requests with action through the active OPA engine.
+// It is a no-op when:
+//   - the enterprise "policy_engine" feature is not licensed, or
+//   - no policies are loaded (open-by-default semantics).
+func (s *Server) policyMiddleware(action string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.licenseAllows(featurePolicyEngine) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			s.policyMu.RLock()
+			eng := s.policyEngine
+			s.policyMu.RUnlock()
+			if eng == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			req := policy.EvalRequest{
+				Action:  action,
+				ModelID: r.PathValue("id"),
+			}
+			if tok := bearerToken(r); tok != "" {
+				sum := sha256.Sum256([]byte(tok))
+				req.KeyHash = hex.EncodeToString(sum[:])
+			}
+			result, err := eng.Allow(r.Context(), req)
+			if err != nil {
+				s.writeError(w, http.StatusInternalServerError, "policy_eval_failed", err.Error())
+				return
+			}
+			if !result.Allowed {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "policy_denied",
+					"message": result.Reason,
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // handleOpenAPISpec serves the embedded OpenAPI 3.0 specification as JSON.
 // The spec is embedded at compile time from openapi.json (generated from

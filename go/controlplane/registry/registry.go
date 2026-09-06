@@ -100,4 +100,16 @@ type Registry interface {
 	// the filter described in req. Unset filter fields are ignored. The
 	// default limit is 100; the maximum is 1000.
 	ListInferenceEvents(ctx context.Context, req *ListInferenceEventsRequest) (*ListInferenceEventsResponse, error)
+
+	// --- Policies (OPA/Rego) -----------------------------------------------
+	// UpsertPolicy inserts or replaces a policy by name. The updated_at
+	// timestamp is set by the implementation.
+	UpsertPolicy(ctx context.Context, p *Policy) error
+	// GetPolicy returns the policy with the given name, or ErrNotFound.
+	GetPolicy(ctx context.Context, name string) (*Policy, error)
+	// ListPolicies returns all stored policies (enabled and disabled).
+	ListPolicies(ctx context.Context) ([]*Policy, error)
+	// DeletePolicy removes the policy with the given name. Returns ErrNotFound
+	// when no such policy exists.
+	DeletePolicy(ctx context.Context, name string) error
 }
