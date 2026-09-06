@@ -5,8 +5,7 @@
 > (pipeline parallelism) su più nodi, e lo espone dietro un unico endpoint OpenAI-compatibile.
 > Usa motori esistenti (llama.cpp, DwarfStar) via un Engine Adapter — non riscrive l'inferenza.
 
-Data snapshot: 2026-09-06. **Questo documento descrive lo scope del rilascio `v0.1.0`** (prima
-release Community) e il lavoro atterrato successivamente fino a `v0.3` (candidate su `release/v0.3`). Cronologia completa in [CHANGELOG.md](CHANGELOG.md).
+Data snapshot: 2026-09-06. **Rilascio corrente: `v0.3.0`** — Enterprise-Ready. Cronologia completa in [CHANGELOG.md](CHANGELOG.md).
 
 ## Architettura & linguaggi (ADR-1)
 
@@ -102,27 +101,52 @@ Lavoro atterrato post-release, non ancora etichettato come `v0.1.1`:
 - **UI default reale**: la dashboard punta all'API reale di default; la modalità mock è opt-in (`PURSER_UI_MOCK=1`). URL configurabile a runtime via `PURSER_API_BASE_URL` (default `/api/v1`, same-origin) tramite `env.js` (servito con `Cache-Control: no-store`, caricato prima del bundle); il chart Helm cabla il valore al container start. **Nota**: l'immagine GHCR `purser-ui:0.1.0` eroga ancora la build mock-by-default fino alla ricostruzione e ripubblicazione dell'immagine.
 - **Gate `gofmt`** nel job Go di CI (copre `go/` e `enterprise/license`).
 
-## Chiuso in v0.3 (release/v0.3, 2026-09-06)
+## Chiuso in v0.3.0 (2026-09-06) — alpha, GPU validation pending
 
-Tutto il lavoro della `release/v0.3` candidate — ~37 feature distribuite in 4 wave:
+~60 feature distribuite in 4 wave + hardening + UX audit:
 
-- **OIDC SSO completo**: Authorization Code Flow + PKCE, session cookie HttpOnly, browser SSO end-to-end funzionante; `PURSER_OIDC_CLIENT_SECRET` ora letto correttamente.
-- **RBAC OIDC**: mapping claim groups/roles → ruoli Purser via `PURSER_OIDC_GROUP_MAPPINGS`; tenant-scoped list deployments.
-- **TLS management API** (auto via PKI interna, `PURSER_TLS_AUTO`) + **rate limiting** per-IP e per-key (100/50 RPS default).
-- **Webhook notification** per approval-required del reconciler (`PURSER_RECONCILER_WEBHOOK_URL`).
-- **Fleet Capacity Headroom API** (`GET /api/v1/fleet/capacity`).
-- **Osservabilità completa**: NodeMetrics→OTEL bridge (5 gauge per nodo), reconciler OTEL metrics (counter/gauge/histogram), trace sampler configurabile (`OTEL_TRACES_SAMPLER`), reconciler status endpoint.
-- **llama.cpp registrato in BackendRegistry** (feature-gated `--features llamacpp`); ModelCache cablato nel path StartEngine; HttpFetcher attivato di default.
-- **`prefix_caching_factor` e `kv_ssd_offload`** in HardwareProfile proto; planner usa le capability reali; flash attention come campo esplicito in EngineParams.
-- **ARM64 build matrix**: linux/arm64 + darwin/arm64 (Apple Silicon M2/M3 come nodi di inferenza).
-- **Demo mode** (`docker-compose.yml`, `docker compose up`, no GPU) + `devcontainer.json` + `make dev` + good-first-issue guide.
-- **SDK**: Python `AsyncPurserClient` + `stream_metrics()` SSE generator; TypeScript `@purser/sdk 0.3.0` zero-dependency.
-- **Planner benchmark suite** con dati baseline reali; Ansible role `purser_agent` per fleet enrollment.
-- **Release pipeline**: ARM64 artifacts, SLSA L2 provenance, cosign SBOM attestazioni, chart signing; apt/yum hosted via Cloudsmith.
-- **Production license trust root** (chiave reale, modello open-core commercialmente funzionale).
-- **Fix e2e scripts**: ROOT auto-detection via `${BASH_SOURCE[0]}` (postmortem `docs/postmortems/e2e_hardcoded_path.md`).
-- **Failover execution** completato e testato.
-- Documentazione GitHub Pages aggiornata: webhook notifications, Ansible integration.
+**API & Compatibilità**
+- **Anthropic Messages API** (`POST /v1/messages`): Claude Code, Cursor, `@anthropic-ai/sdk` — translation layer con streaming SSE Anthropic format, `x-api-key` auth.
+
+**Enterprise Network**
+- **HTTP proxy + CA bundle**: `PURSER_AGENT_HTTP(S)_PROXY` / `NO_PROXY` / `CA_BUNDLE` su agent, gateway, control-plane. Requisito #1 per deploy enterprise.
+
+**Configuration-as-Code (GitOps)**
+- **`purser.yaml` schema** (`go/controlplane/config/`): loader, validator, diff engine.
+- **`POST /api/v1/config/apply`** (idempotent), `/config/diff` (dry-run), `GET /config/export`.
+- **GitOps watcher**: SHA-256 polling 30s, re-apply automatico, K8s ConfigMap-ready.
+
+**Compliance (AI Act / DORA)**
+- **Inference audit log**: `InferenceEvent` proto + SQLite, gateway emit fire-and-forget; AI Act Art.12. `GET /api/v1/inference-audit` enterprise-gated.
+- **Deployment approval gates**: `GET/POST /api/v1/approvals`; `ApprovalsPage` UI; AI Act Art.14 human oversight.
+- **Backup/restore CLI**: `purser backup/restore` via `VACUUM INTO`; DORA Art.12.
+
+**Policy-as-Code**
+- **OPA engine embedded** (`hashicorp/opa`): Rego policies in SQLite, reload atomico, `GET/PUT/DELETE /api/v1/policies`, eval dry-run.
+
+**Alta Disponibilità**
+- **HA Raft foundation** (`hashicorp/raft` + BoltDB): `PurserFSM` su SQLiteRegistry; single-node preserved; `GET /api/v1/cluster/status`.
+
+**FinOps / Multi-tenancy**
+- **Chargeback reports**: `GET /api/v1/billing/report` (JSON + CSV), `ChargebackPage` UI, FOCUS spec.
+
+**Hardening (6 componenti)**
+- Rust agent: AES zeroize, probe mutex-free, backoff reconnect, NodeMetrics reali.
+- Rust gateway: body limit 4MB, constant-time auth, 503 sanitizzato, semaphore cleanup.
+- Go CP: constant-time token, O(1) RBAC, reconciler RWMutex, pkce bounded, goroutine recovery.
+- Go planner: OOM guard threshold ≤20, context.Context in Plan(), KV SSD offload nel fit check.
+- CI/Docker: nginx non-root, security headers, job timeout, dependabot.
+- UI: confirm dialogs, 401 redirect, sessionStorage gateway key.
+
+**Infrastruttura v0.3 (da precedenti sprint)**
+- OIDC SSO completo (Authorization Code + PKCE); RBAC OIDC; TLS management API; rate limiting.
+- Fleet Capacity Headroom API; reconciler OTEL metrics; NodeMetrics→OTEL bridge.
+- llama.cpp in BackendRegistry; ModelCache nel path StartEngine; HttpFetcher default.
+- ARM64 build matrix; demo mode docker-compose; devcontainer; Ansible role.
+- SDK Python + TypeScript; SLSA L2 provenance; cosign SBOM; production license trust root.
+
+**UX Audit (17 fix)**
+- History routing (URL bookmarkabili); Audit Log → sezione Operate; Model Studio stepper; Settings QuickStatsBar; Catalog empty state + spec tooltips; Playground mock hint nascosto in prod.
 
 ## Backlog / follow-up (post-v0.3, onesto, prioritizzato)
 

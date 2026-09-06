@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-09-06
 
-> **v0.3 — "Enterprise-Ready"** — major feature release.
+> **v0.3 — "Enterprise Architecture"** — major feature release (alpha; GPU validation pending).
 >
 > Highlights: Anthropic Messages API compatibility (Claude Code / Cursor),
 > configuration-as-code with GitOps reconciler, inference audit log (AI Act Art.12),

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-09-06
 
-> **v0.3 — "Enterprise-Ready"** — major feature release.
+> **v0.3 — "Enterprise Architecture"** — major feature release (alpha; GPU validation pending).
 
 ### Added
 - **Anthropic Messages API** (`POST /v1/messages`) — Claude Code, Cursor, and `@anthropic-ai/sdk` now work with Purser without modification; `x-api-key` auth; Anthropic SSE streaming

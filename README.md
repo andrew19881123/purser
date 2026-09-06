@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![CI](https://github.com/andrew19881123/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/andrew19881123/purser/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/andrew19881123/purser)](https://github.com/andrew19881123/purser/releases/latest)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](PROJECT_STATUS.md)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://andrew19881123.github.io/purser/)
 
 📖 **[Full documentation → andrew19881123.github.io/purser](https://andrew19881123.github.io/purser/)**
@@ -365,14 +366,8 @@ See [LICENSING.md](LICENSING.md) for details.
 
 ## Status & roadmap
 
-**v0.3.0** — Enterprise-Ready. The complete zero-config vertical (*enroll → deploy → chat*) is stable. v0.3 adds:
+**Alpha — v0.3.0.** The zero-config vertical (*enroll → deploy → chat*) is implemented and demonstrated end-to-end. The architecture supports enterprise features but **live inference on real GPU hardware** has not yet been validated. Use for evaluation, development, and staging — not yet recommended for production.
 
-- **Anthropic SDK compatibility** — `POST /v1/messages` for Claude Code, Cursor, `@anthropic-ai/sdk`
-- **Configuration-as-code** — `purser.yaml` with GitOps reconciler (30s polling, K8s ConfigMap-ready)
-- **AI Act compliance** — inference audit log (Art.12), deployment approval gates (Art.14)
-- **Policy-as-code** — embedded OPA/Rego engine; versionable governance rules
-- **HA Raft foundation** — `hashicorp/raft` layer; single-node preserved when `PURSER_RAFT_NODE_ID` unset
-- **Multi-tenancy chargeback** — billing reports (JSON + CSV) aggregated by team/model
-- **Enterprise network** — HTTP proxy, custom CA bundle, backup/restore CLI
+v0.3 adds Anthropic SDK compatibility (`/v1/messages`), `purser.yaml` config-as-code + GitOps reconciler, inference audit log (AI Act Art.12), deployment approval gates (Art.14), embedded OPA policy engine, HA Raft foundation, chargeback reports, HTTP proxy + custom CA bundle, and backup/restore CLI.
 
-CI is green across all jobs (proto, Rust, Go, UI). See [CHANGELOG.md](CHANGELOG.md) for the full history and [PROJECT_STATUS.md](PROJECT_STATUS.md) for the backlog.
+CI is green across all jobs (proto, Rust, Go, UI). See [CHANGELOG.md](CHANGELOG.md) for the full history and [PROJECT_STATUS.md](PROJECT_STATUS.md) for the honest backlog — including the GPU validation gap.
