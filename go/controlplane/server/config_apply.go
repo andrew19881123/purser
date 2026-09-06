@@ -65,6 +65,18 @@ func (l *registryLister) CurrentDeploymentModelIDs(ctx context.Context) ([]strin
 	return ids, nil
 }
 
+// CurrentOrgIDs returns the org IDs currently registered.
+// The registry does not yet track orgs; this stub satisfies config.Lister.
+func (l *registryLister) CurrentOrgIDs(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
+// CurrentNodePoolIDs returns the node pool IDs currently registered.
+// The registry does not yet track pools; this stub satisfies config.Lister.
+func (l *registryLister) CurrentNodePoolIDs(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 // ApplyResult summarises the mutations made by ApplyClusterConfig.
 type ApplyResult struct {
 	ModelsAdded      int `json:"models_added"`
