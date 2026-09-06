@@ -131,6 +131,22 @@ type APIKey struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Enterprise lifecycle fields (Wave B).
+	// ExpiresAt is nil when the key never expires.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// LastUsedAt is nil when the key has never been used. Updates are throttled
+	// (at most once per 5 minutes) to minimise write amplification on the hot
+	// auth path.
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// PredecessorID links this key to the key it replaced (rotation chain).
+	// Empty string when this key was not created via RotateAPIKey.
+	PredecessorID string `json:"predecessor_id,omitempty"`
+	// RotatedAt is set when this key has been superseded by a successor.
+	// Nil means the key is still active (or was deleted rather than rotated).
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
+	// Scopes is a JSON-backed list of fine-grained permission strings.
+	// An empty slice means the key's permissions are governed by Role alone.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // Session records an inference session for metrics/attribution.
@@ -283,4 +299,132 @@ type Policy struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// =============================================================================
+// Enterprise Wave B types
+// =============================================================================
+
+// OIDCSession represents a persisted browser session created via OIDC or LDAP
+// login. Stored in the oidc_sessions table for HA support (cross-node session
+// sharing). TokenHash and RefreshTokenEnc are never exposed in JSON responses.
+type OIDCSession struct {
+	TokenHash         string     `json:"-"` // SHA-256 hex of the cookie value
+	Sub               string     `json:"sub"`
+	Email             string     `json:"email"`
+	IDPIssuer         string     `json:"idp_issuer"`
+	AuthMethod        string     `json:"auth_method"` // "oidc" | "ldap" | "service_account"
+	CreatedAt         time.Time  `json:"created_at"`
+	ExpiresAt         time.Time  `json:"expires_at"`
+	Revoked           bool       `json:"revoked"`
+	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
+	RefreshTokenEnc   string     `json:"-"` // AES-256-GCM encrypted; never in JSON
+	AccessTokenExpiry *time.Time `json:"access_token_expiry,omitempty"`
+}
+
+// PKCEState is a consume-once PKCE code verifier stored during the OIDC auth
+// flow. StateHash and Verifier are never exposed in JSON responses.
+type PKCEState struct {
+	StateHash string    `json:"-"` // SHA-256 of the OAuth2 state parameter
+	Verifier  string    `json:"-"` // code_verifier; deleted on consumption
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// APIKeyAccessEntry records a single authenticated API request for audit and
+// anomaly detection. IPPrefix stores only the /24 CIDR prefix (GDPR Art.5
+// data minimisation — the full client IP is never persisted).
+type APIKeyAccessEntry struct {
+	ID         int64     `json:"id"`
+	APIKeyID   string    `json:"api_key_id"`
+	KeyHash    string    `json:"-"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	IPPrefix   string    `json:"ip_prefix"` // /24 CIDR
+	UserAgent  string    `json:"user_agent"`
+	StatusCode int       `json:"status_code"`
+	RequestAt  time.Time `json:"request_at"`
+}
+
+// ModelPricing defines the cost schedule for a model, effective from a given
+// timestamp. The most-recent row per model wins. Tiers applies volume
+// discounts above token thresholds.
+type ModelPricing struct {
+	ModelID          string        `json:"model_id"`
+	EffectiveFrom    time.Time     `json:"effective_from"`
+	InputPricePer1K  float64       `json:"input_price_per_1k"`  // USD per 1000 input tokens
+	OutputPricePer1K float64       `json:"output_price_per_1k"` // USD per 1000 output tokens
+	Tiers            []PricingTier `json:"tiers,omitempty"`
+}
+
+// PricingTier defines a volume discount threshold. Above ThresholdTokens the
+// effective price is multiplied by Multiplier (e.g. 0.8 = 20% discount).
+type PricingTier struct {
+	ThresholdTokens int64   `json:"threshold_tokens"`
+	Multiplier      float64 `json:"multiplier"`
+}
+
+// TenantQuota configures multi-dimensional usage limits for a tenant.
+// A zero value for any counter means unlimited for that dimension.
+// InheritFromParent propagates limits down from a parent tenant hierarchy.
+type TenantQuota struct {
+	TenantID            string    `json:"tenant_id"`
+	MonthlyRequests     int64     `json:"monthly_requests"`
+	MaxConcurrent       int32     `json:"max_concurrent"`
+	RequestsPerSec      float64   `json:"requests_per_sec"`
+	InputTPM            int64     `json:"input_tpm"`  // input tokens/min
+	OutputTPM           int64     `json:"output_tpm"` // output tokens/min
+	MonthlyInputTokens  int64     `json:"monthly_input_tokens"`
+	MonthlyOutputTokens int64     `json:"monthly_output_tokens"`
+	MonthlyCostBudget   float64   `json:"monthly_cost_budget"` // USD; 0 = unlimited
+	AlertAtPercent      int       `json:"alert_at_percent"`
+	InheritFromParent   bool      `json:"inherit_from_parent"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// TenantQuotaUsage accumulates usage for a tenant within a billing period.
+// PeriodStart is the first second of the billing month (UTC).
+type TenantQuotaUsage struct {
+	TenantID         string    `json:"tenant_id"`
+	PeriodStart      time.Time `json:"period_start"`
+	RequestsUsed     int64     `json:"requests_used"`
+	InputTokensUsed  int64     `json:"input_tokens_used"`
+	OutputTokensUsed int64     `json:"output_tokens_used"`
+	CostUsedUSD      float64   `json:"cost_used_usd"`
+	LastUpdated      time.Time `json:"last_updated"`
+}
+
+// UsageDelta is an atomic increment applied to TenantQuotaUsage by
+// IncrementTenantUsage. Counters are applied with an atomic upsert so
+// concurrent increments from multiple gateway nodes do not race.
+type UsageDelta struct {
+	Requests     int64
+	InputTokens  int64
+	OutputTokens int64
+	CostUSD      float64
+}
+
+// PolicyVersion records the full source history of a Rego policy.
+// A new row is appended on every PUT; the highest Version per PolicyName is
+// the currently active revision.
+type PolicyVersion struct {
+	ID         int64     `json:"id"`
+	PolicyName string    `json:"policy_name"`
+	Version    int       `json:"version"`
+	Rego       string    `json:"rego"`
+	CreatedAt  time.Time `json:"created_at"`
+	CreatedBy  string    `json:"created_by"`
+}
+
+// GDPRErasureLog records one GDPR Art.17 right-to-erasure operation.
+// SubjectHash is SHA-256 of the subject identifier so the log itself holds
+// no PII. ErasureType identifies which table was scrubbed (e.g.
+// "inference_audit").
+type GDPRErasureLog struct {
+	ID           int64     `json:"id"`
+	SubjectHash  string    `json:"subject_hash"`
+	ErasedAt     time.Time `json:"erased_at"`
+	ErasedBy     string    `json:"erased_by"`
+	Reason       string    `json:"reason"`
+	EventsErased int64     `json:"events_erased"`
+	ErasureType  string    `json:"erasure_type"`
 }

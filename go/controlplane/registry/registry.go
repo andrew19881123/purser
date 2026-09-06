@@ -130,4 +130,89 @@ type Registry interface {
 	// DeletePolicy removes the policy with the given name. Returns ErrNotFound
 	// when no such policy exists.
 	DeletePolicy(ctx context.Context, name string) error
+
+	// ==========================================================================
+	// Enterprise Wave B methods
+	// ==========================================================================
+
+	// --- OIDC Session Store (distributed, HA-safe) ----------------------------
+	// CreateOIDCSession persists a new browser session created via OIDC or LDAP
+	// login. Returns an error if a session with the same token_hash already exists.
+	CreateOIDCSession(ctx context.Context, s *OIDCSession) error
+	// GetOIDCSession returns the session whose token_hash matches, or ErrNotFound.
+	GetOIDCSession(ctx context.Context, tokenHash string) (*OIDCSession, error)
+	// RevokeOIDCSessionsBySubject marks all non-expired sessions for sub as
+	// revoked. Returns the number of rows updated.
+	RevokeOIDCSessionsBySubject(ctx context.Context, sub string) (int, error)
+	// RevokeOIDCSessionByTokenHash revokes the single session identified by
+	// tokenHash. Returns ErrNotFound when the session does not exist.
+	RevokeOIDCSessionByTokenHash(ctx context.Context, tokenHash string) error
+	// DeleteExpiredOIDCSessions removes all sessions whose expires_at is in the
+	// past. Returns the number of rows deleted.
+	DeleteExpiredOIDCSessions(ctx context.Context) (int, error)
+
+	// --- PKCE State (distributed, consume-once) --------------------------------
+	// SetPKCEState stores a PKCE state/verifier pair with the given TTL. The
+	// stateHash is SHA-256 of the OAuth2 state parameter.
+	SetPKCEState(ctx context.Context, stateHash, verifier string, ttl time.Duration) error
+	// ConsumePKCEState atomically retrieves and deletes the verifier for
+	// stateHash. ok is false when the state is not found or has expired.
+	ConsumePKCEState(ctx context.Context, stateHash string) (verifier string, ok bool, err error)
+	// DeleteExpiredPKCEStates removes all rows whose expires_at is in the past.
+	// Returns the number of rows deleted.
+	DeleteExpiredPKCEStates(ctx context.Context) (int, error)
+
+	// --- API Key Lifecycle -----------------------------------------------------
+	// RotateAPIKey atomically marks oldID as rotated (sets rotated_at) and
+	// inserts newKey with predecessor_id = oldID. The operation is transactional.
+	RotateAPIKey(ctx context.Context, oldID string, newKey *APIKey) error
+	// UpdateAPIKeyLastUsed updates the last_used_at timestamp for the given key.
+	// Callers should throttle this to at most once per 5 minutes to limit write
+	// amplification on the auth hot-path.
+	UpdateAPIKeyLastUsed(ctx context.Context, keyID string, at time.Time) error
+	// ListAPIKeysExpiringBefore returns all enabled keys whose expires_at is
+	// before the given timestamp (used by the expiry-notification background job).
+	ListAPIKeysExpiringBefore(ctx context.Context, before time.Time) ([]*APIKey, error)
+	// RecordAPIKeyAccess appends one row to api_key_access_log.
+	RecordAPIKeyAccess(ctx context.Context, entry *APIKeyAccessEntry) error
+	// HasAnyAPIKey returns true when at least one API key exists (used to detect
+	// a first-run/bootstrap state).
+	HasAnyAPIKey(ctx context.Context) (bool, error)
+
+	// --- Model Pricing ---------------------------------------------------------
+	// UpsertModelPricing inserts or replaces the pricing row for
+	// (model_id, effective_from).
+	UpsertModelPricing(ctx context.Context, p *ModelPricing) error
+	// GetCurrentModelPricing returns the most-recently effective pricing for
+	// modelID, or ErrNotFound when no pricing has been configured.
+	GetCurrentModelPricing(ctx context.Context, modelID string) (*ModelPricing, error)
+
+	// --- Tenant Quota ----------------------------------------------------------
+	// UpsertTenantQuota inserts or replaces the quota configuration for a tenant.
+	UpsertTenantQuota(ctx context.Context, q *TenantQuota) error
+	// GetTenantQuota returns the quota configuration for tenantID, or ErrNotFound.
+	GetTenantQuota(ctx context.Context, tenantID string) (*TenantQuota, error)
+	// IncrementTenantUsage atomically increments the usage counters for tenantID
+	// in the given billing period. An upsert is used so the row is created on
+	// first use.
+	IncrementTenantUsage(ctx context.Context, tenantID string, period time.Time, delta UsageDelta) error
+	// GetTenantUsage returns the accumulated usage for tenantID in the given
+	// billing period, or ErrNotFound when no usage has been recorded yet.
+	GetTenantUsage(ctx context.Context, tenantID string, period time.Time) (*TenantQuotaUsage, error)
+
+	// --- Policy Versioning -----------------------------------------------------
+	// GetPolicyVersions returns up to limit historical versions of policyName,
+	// newest first. limit <= 0 means "a sane default" (e.g. 50).
+	GetPolicyVersions(ctx context.Context, policyName string, limit int) ([]*PolicyVersion, error)
+	// SavePolicyVersion appends a new versioned snapshot of a policy's Rego
+	// source. Version numbers are assigned by the caller.
+	SavePolicyVersion(ctx context.Context, pv *PolicyVersion) error
+
+	// --- GDPR ------------------------------------------------------------------
+	// RecordGDPRErasure appends one erasure record to gdpr_erasure_log.
+	RecordGDPRErasure(ctx context.Context, log *GDPRErasureLog) error
+	// EraseInferenceEventsBySubject replaces identifying fields in
+	// inference_audit_log rows whose api_key_hash matches subjectHash with
+	// empty/zero values. Returns the number of rows affected.
+	EraseInferenceEventsBySubject(ctx context.Context, subjectHash string) (int64, error)
 }
