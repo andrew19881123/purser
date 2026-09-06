@@ -141,6 +141,41 @@ func planInternal(ctx context.Context, nodes []Node, links []Link, model ModelSp
 			Suggestions: []string{"widen include_nodes", "remove some exclude_nodes", "register more nodes"},
 		}
 	}
+
+	// Apply pool filter if AllowedNodeIDs is specified.
+	if len(c.AllowedNodeIDs) > 0 {
+		allowed := make(map[string]bool, len(c.AllowedNodeIDs))
+		for _, id := range c.AllowedNodeIDs {
+			allowed[id] = true
+		}
+		filtered := nodes[:0]
+		for _, n := range nodes {
+			if allowed[n.ID] {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+
+		if len(nodes) == 0 {
+			return nil, &PlanError{
+				Reason: fmt.Sprintf(
+					"no nodes available in team pool: %d nodes requested but 0 are in the allowed pool",
+					len(c.AllowedNodeIDs),
+				),
+			}
+		}
+
+		// If ForceHost is set but not in the allowed pool, fail immediately.
+		if c.ForceHost != nil && *c.ForceHost != "" && !allowed[*c.ForceHost] {
+			return nil, &PlanError{
+				Reason: fmt.Sprintf(
+					"ForceHost %q is not in the team's allowed node pool",
+					*c.ForceHost,
+				),
+			}
+		}
+	}
+
 	if model.Layers <= 0 {
 		return nil, &PlanError{
 			Reason:      fmt.Sprintf("model %q declares no layers", model.ID),

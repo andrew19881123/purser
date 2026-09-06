@@ -221,6 +221,13 @@ type Constraints struct {
 	// ReplicaCount, when > 1, triggers multi-replica planning via PlanReplicaSet.
 	// Zero and 1 both mean "single replica" (standard Plan behaviour).
 	ReplicaCount int
+
+	// AllowedNodeIDs, when non-empty, restricts the planning search to the listed
+	// node IDs. Used for node-pool enforcement: the control plane resolves the
+	// team's accessible node IDs via GetAllowedNodeIDs() and passes them here.
+	// An empty slice means "no restriction" (use all available nodes).
+	// If ForceHost is set to a node NOT in AllowedNodeIDs, planning fails.
+	AllowedNodeIDs []string `json:"allowed_node_ids,omitempty"`
 }
 
 // Assignment places a contiguous shard of layers [LayerStart, LayerEnd]
