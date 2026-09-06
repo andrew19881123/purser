@@ -268,4 +268,75 @@ type Registry interface {
 	// inference_audit_log rows whose api_key_hash matches subjectHash with
 	// empty/zero values. Returns the number of rows affected.
 	EraseInferenceEventsBySubject(ctx context.Context, subjectHash string) (int64, error)
+
+	// ==========================================================================
+	// Platform multi-tenant methods (v0.4)
+	// ==========================================================================
+
+	// --- Organizations ---
+	CreateOrganization(ctx context.Context, org *Organization) error
+	GetOrganization(ctx context.Context, id string) (*Organization, error)
+	GetOrganizationBySlug(ctx context.Context, slug string) (*Organization, error)
+	ListOrganizations(ctx context.Context) ([]*Organization, error)
+	UpdateOrganization(ctx context.Context, org *Organization) error
+	DeleteOrganization(ctx context.Context, id string) error
+
+	// --- Teams ---
+	CreateTeam(ctx context.Context, team *Team) error
+	GetTeam(ctx context.Context, id string) (*Team, error)
+	GetTeamBySlug(ctx context.Context, orgID, slug string) (*Team, error)
+	ListTeamsByOrg(ctx context.Context, orgID string) ([]*Team, error)
+	UpdateTeam(ctx context.Context, team *Team) error
+	DeleteTeam(ctx context.Context, id string) error
+
+	// --- Users ---
+	UpsertPlatformUser(ctx context.Context, u *PlatformUser) error // create or update on login
+	GetPlatformUser(ctx context.Context, id string) (*PlatformUser, error)
+	GetPlatformUserByEmail(ctx context.Context, email string) (*PlatformUser, error)
+	ListPlatformUsers(ctx context.Context) ([]*PlatformUser, error)
+	UpdatePlatformUserLastSeen(ctx context.Context, id string, at time.Time) error
+
+	// --- Org memberships ---
+	AddOrgMember(ctx context.Context, m *OrgMember) error
+	RemoveOrgMember(ctx context.Context, orgID, userID string) error
+	GetOrgMember(ctx context.Context, orgID, userID string) (*OrgMember, error)
+	ListOrgMembers(ctx context.Context, orgID string) ([]*OrgMember, error)
+	ListUserOrgs(ctx context.Context, userID string) ([]*OrgMember, error)
+
+	// --- Team memberships ---
+	AddTeamMember(ctx context.Context, m *TeamMember) error
+	RemoveTeamMember(ctx context.Context, teamID, userID string) error
+	GetTeamMember(ctx context.Context, teamID, userID string) (*TeamMember, error)
+	ListTeamMembers(ctx context.Context, teamID string) ([]*TeamMember, error)
+	ListUserTeams(ctx context.Context, userID string) ([]*TeamMember, error)
+
+	// --- Custom roles ---
+	CreateCustomRole(ctx context.Context, r *CustomRole) error
+	GetCustomRole(ctx context.Context, id string) (*CustomRole, error)
+	ListCustomRoles(ctx context.Context, orgID string) ([]*CustomRole, error)
+	UpdateCustomRole(ctx context.Context, r *CustomRole) error
+	DeleteCustomRole(ctx context.Context, id string) error
+	SeedSystemRoles(ctx context.Context) error // insert built-in roles if not present
+
+	// --- Node pools ---
+	CreateNodePool(ctx context.Context, p *NodePool) error
+	GetNodePool(ctx context.Context, id string) (*NodePool, error)
+	ListNodePools(ctx context.Context) ([]*NodePool, error)
+	UpdateNodePool(ctx context.Context, p *NodePool) error
+	DeleteNodePool(ctx context.Context, id string) error
+	AddNodeToPool(ctx context.Context, nodeID, poolID string) error
+	RemoveNodeFromPool(ctx context.Context, nodeID string) error
+	GetNodePool_ByNode(ctx context.Context, nodeID string) (*NodePool, error)
+	ListNodesInPool(ctx context.Context, poolID string) ([]string, error)
+	// GetAllowedNodeIDs returns all node IDs accessible to a team (own pool + shared pools with quota)
+	GetAllowedNodeIDs(ctx context.Context, teamID string) ([]string, error)
+
+	// --- Pool quotas ---
+	UpsertPoolTeamQuota(ctx context.Context, q *PoolTeamQuota) error
+	GetPoolTeamQuota(ctx context.Context, poolID, teamID string) (*PoolTeamQuota, error)
+	ListPoolTeamQuotas(ctx context.Context, poolID string) ([]*PoolTeamQuota, error)
+	DeletePoolTeamQuota(ctx context.Context, poolID, teamID string) error
+
+	// --- Effective permissions ---
+	GetEffectivePermissions(ctx context.Context, userID, teamID string) (*EffectivePermissions, error)
 }
