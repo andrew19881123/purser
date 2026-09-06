@@ -56,6 +56,8 @@ purser diff purser.yaml         # dry-run: prints add/remove/upsert plan
 | `deployments` | [][DeploySpec](#deployspec) | no | Desired active deployments |
 | `quotas` | [][QuotaSpec](#quotaspec) | no | Team usage limits |
 | `gateway` | [GatewaySpec](#gatewayspec) | no | API gateway tuning |
+| `orgs` | [][OrgSpec](#orgspec) | no | Organisation and team hierarchy (v0.4+) |
+| `node_pools` | [][NodePoolSpec](#nodepoolspec) | no | Node pool GitOps configuration (v0.4+) |
 
 ---
 
@@ -208,6 +210,128 @@ gateway:
 
 ---
 
+### OrgSpec
+
+Declares an organisation and its nested team hierarchy.
+
+```yaml
+orgs:
+  - id: acme                      # Unique org ID (immutable)
+    name: "Acme Corp"             # Display name
+    slug: acme                    # URL-safe identifier
+    description: "Main org"       # Optional
+    teams:
+      - id: ml-research
+        name: "ML Research"
+        slug: ml-research
+        members:
+          - user_id: "alice@example.com"   # email or OIDC subject
+            role: developer
+          - user_id: "bob@example.com"
+            role: team_admin
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Unique, immutable organisation identifier |
+| `name` | string | no | Human-readable display name |
+| `slug` | string | no | URL-safe short name |
+| `description` | string | no | Free-text description |
+| `teams` | [][TeamSpec](#teamspec) | no | Teams within this org |
+
+#### TeamSpec
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Unique team identifier within the org |
+| `name` | string | no | Human-readable display name |
+| `slug` | string | no | URL-safe short name |
+| `description` | string | no | Free-text description |
+| `members` | [][TeamMemberSpec](#teammemberspec) | no | Team members |
+
+#### TeamMemberSpec
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `user_id` | string | yes | User identifier — email address or OIDC `sub` claim |
+| `role` | string | yes | Role name — see [built-in roles](#built-in-roles) |
+
+**Built-in roles**
+
+| Role | Description |
+|---|---|
+| `platform_admin` | Full cluster administration |
+| `org_admin` | Administers one org and all its teams |
+| `team_admin` | Administers one team |
+| `developer` | Can create and manage deployments within the team's pools |
+| `viewer` | Read-only access |
+| `inference_only` | Can call inference endpoints but cannot manage resources |
+
+Custom role names are also accepted — they are stored as-is and matched against
+policies defined in the RBAC configuration.
+
+---
+
+### NodePoolSpec
+
+Declares a node pool under GitOps control.
+
+```yaml
+node_pools:
+  - id: ml-gpu-lab
+    name: "ML GPU Lab"
+    owner_type: team       # "platform" | "org" | "team"
+    owner_id: ml-research  # team ID when owner_type is "team"
+    policy: exclusive      # "exclusive" | "shared"
+    nodes:
+      - gpu-node-01
+      - gpu-node-02
+
+  - id: platform-shared
+    name: "Platform Shared Pool"
+    owner_type: platform
+    policy: shared
+    nodes:
+      - gpu-node-03
+    quotas:
+      - team_id: ml-research
+        max_deployments: 3
+        max_gpu_nodes: 6
+        priority: 10
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Unique pool identifier (immutable) |
+| `name` | string | no | Human-readable display name |
+| `description` | string | no | Free-text description |
+| `owner_type` | string | yes | Ownership scope: `platform`, `org`, or `team` |
+| `owner_id` | string | no | ID of the owning org or team; omit when `owner_type` is `platform` |
+| `policy` | string | yes | `exclusive` — single-team dedicated pool; `shared` — multi-team pool with quotas |
+| `nodes` | []string | no | Node host names or IDs assigned to this pool |
+| `quotas` | [][PoolQuotaSpec](#poolquotaspec) | no | Per-team quotas; only valid when `policy: shared` |
+
+**Validation rules:**
+
+- `policy` must be `exclusive` or `shared`.
+- `quotas` may only be set on `shared` pools — an `exclusive` pool with quotas
+  is a validation error.
+- `owner_id` is advisory when `owner_type` is `team`; the team may be defined
+  externally and the loader will not fail if it is not present in `orgs`.
+
+#### PoolQuotaSpec
+
+Per-team resource quota on a shared pool.
+
+| Field | Type | Description |
+|---|---|---|
+| `team_id` | string | Team identifier matching a `teams[].id` in `orgs` |
+| `max_deployments` | int | Maximum concurrent deployments this team may run on the pool |
+| `max_gpu_nodes` | int | Maximum GPU nodes this team may occupy on the pool |
+| `priority` | int | Scheduling priority — higher values are served first |
+
+---
+
 ## Production example
 
 ```yaml
@@ -286,6 +410,120 @@ gateway:
 
 ---
 
+## v0.4 full example (orgs + node pools)
+
+```yaml
+apiVersion: purser/v1
+kind: ClusterConfig
+metadata:
+  name: acme-prod
+
+cluster:
+  id: prod-cluster
+
+models:
+  - id: llama3-70b
+    source:
+      type: huggingface
+      repo: meta-llama/Llama-3.1-70B
+    quantizations: [Q4_K_M]
+
+deployments:
+  - model: llama3-70b
+    quantization: Q4_K_M
+    min_nodes: 2
+    max_nodes: 8
+    approved: true
+
+orgs:
+  - id: acme
+    name: "Acme Corp"
+    slug: acme
+    teams:
+      - id: ml-research
+        name: "ML Research"
+        slug: ml-research
+        members:
+          - user_id: "alice@example.com"
+            role: developer
+
+      - id: platform-eng
+        name: "Platform Engineering"
+        slug: platform-eng
+        members:
+          - user_id: "admin@example.com"
+            role: team_admin
+
+node_pools:
+  - id: ml-gpu-lab
+    name: "ML GPU Lab"
+    owner_type: team
+    owner_id: ml-research
+    policy: exclusive
+    nodes:
+      - gpu-node-01
+      - gpu-node-02
+
+  - id: platform-shared
+    name: "Platform Shared Pool"
+    owner_type: platform
+    policy: shared
+    nodes:
+      - gpu-node-03
+      - gpu-node-04
+    quotas:
+      - team_id: ml-research
+        max_deployments: 3
+        max_gpu_nodes: 6
+        priority: 10
+      - team_id: platform-eng
+        max_deployments: 2
+        max_gpu_nodes: 4
+        priority: 20
+
+gateway:
+  port: 8081
+  body_limit_mb: 4
+
+quotas:
+  - team: ml-research
+    monthly_requests: 100000
+```
+
+---
+
+## Node Pool GitOps
+
+Node pools can be fully managed through `purser.yaml`, keeping pool topology
+alongside the rest of your infrastructure code.
+
+### How it works
+
+1. **Declare** pools in `node_pools` with their assigned nodes and ownership.
+2. **Commit** the updated `purser.yaml` and push to your GitOps branch.
+3. **Apply** — either via `purser apply` or automatically via the control-plane
+   watcher — and Purser reconciles the pool topology:
+   - Pools present in the file but not live → **created**.
+   - Pools present both in the file and live → **updated** (nodes, quotas, policy).
+   - Pools present live but absent from the file → **removed**.
+
+### Exclusive vs shared pools
+
+| Policy | Use case | Quotas allowed? |
+|---|---|---|
+| `exclusive` | Dedicated GPU cluster for one team; no sharing | No |
+| `shared` | Shared infrastructure with per-team resource limits | Yes |
+
+### Diff output (v0.4)
+
+```
++ node_pool  ml-gpu-lab          (add, exclusive, 2 nodes)
++ node_pool  platform-shared     (add, shared, 4 nodes, 2 team quotas)
++ org        acme                (add, 2 teams, 2 members)
+```
+
+---
+
 ## Staging example
 
 Identical cluster topology but with a different `cluster.id` and reduced quotas:
@@ -357,6 +595,12 @@ The loader enforces the following rules at parse time:
 - Every `models[].source.type`, when set, must be one of the known backends.
 - Every `deployments[].model` must reference an `id` declared in `models`.
 - Every `quotas[].team` must be non-empty.
+- Every `orgs[].id` must be non-empty and unique.
+- Every team within an org must have a non-empty `id`.
+- Every team member must have a non-empty `user_id`.
+- Every `node_pools[].id` must be non-empty and unique.
+- `node_pools[].policy` must be `exclusive` or `shared`.
+- A pool with `policy: exclusive` must not carry any `quotas` entries.
 
 Validation errors are returned as structured Go errors that include the offending
 field and value, making them suitable for display in CI pipelines.

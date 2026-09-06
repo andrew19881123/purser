@@ -10,6 +10,15 @@ type DiffResult struct {
 	DeploymentsToAdd    []DeploySpec
 	DeploymentsToRemove []string // deployment model IDs present live but absent from desired state
 	QuotasToUpsert      []QuotaSpec
+
+	// Org/team hierarchy changes.
+	OrgsToAdd    []OrgSpec
+	OrgsToUpdate []OrgSpec
+
+	// Node pool changes.
+	NodePoolsToAdd    []NodePoolSpec
+	NodePoolsToUpdate []NodePoolSpec
+	NodePoolsToRemove []string // pool IDs present live but absent from desired state
 }
 
 // Lister is the minimal read interface needed for diffing.
@@ -20,6 +29,12 @@ type Lister interface {
 	CurrentModelIDs(ctx context.Context) ([]string, error)
 	// CurrentDeploymentModelIDs returns the model IDs referenced by active deployments.
 	CurrentDeploymentModelIDs(ctx context.Context) ([]string, error)
+	// CurrentOrgIDs returns the org IDs currently registered.
+	// Implementations that do not track orgs may return (nil, nil).
+	CurrentOrgIDs(ctx context.Context) ([]string, error)
+	// CurrentNodePoolIDs returns the node pool IDs currently registered.
+	// Implementations that do not track pools may return (nil, nil).
+	CurrentNodePoolIDs(ctx context.Context) ([]string, error)
 }
 
 // Diff computes what changes are needed to bring the live cluster state in line
@@ -34,6 +49,8 @@ func Diff(ctx context.Context, cfg *ClusterConfig, lister Lister) (*DiffResult, 
 		result.ModelsToAdd = append(result.ModelsToAdd, cfg.Models...)
 		result.DeploymentsToAdd = append(result.DeploymentsToAdd, cfg.Deployments...)
 		result.QuotasToUpsert = cfg.Quotas
+		result.OrgsToAdd = append(result.OrgsToAdd, cfg.Orgs...)
+		result.NodePoolsToAdd = append(result.NodePoolsToAdd, cfg.NodePools...)
 		return result, nil
 	}
 
@@ -85,6 +102,47 @@ func Diff(ctx context.Context, cfg *ClusterConfig, lister Lister) (*DiffResult, 
 
 	// Quotas are always upserted (no removal semantics for quotas in Wave 1).
 	result.QuotasToUpsert = cfg.Quotas
+
+	// --- Orgs diff ---
+	currentOrgIDs, err := lister.CurrentOrgIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	currentOrgSet := make(map[string]bool, len(currentOrgIDs))
+	for _, id := range currentOrgIDs {
+		currentOrgSet[id] = true
+	}
+	for _, org := range cfg.Orgs {
+		if !currentOrgSet[org.ID] {
+			result.OrgsToAdd = append(result.OrgsToAdd, org)
+		} else {
+			result.OrgsToUpdate = append(result.OrgsToUpdate, org)
+		}
+	}
+
+	// --- Node pools diff ---
+	currentPoolIDs, err := lister.CurrentNodePoolIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	currentPoolSet := make(map[string]bool, len(currentPoolIDs))
+	for _, id := range currentPoolIDs {
+		currentPoolSet[id] = true
+	}
+	desiredPoolSet := make(map[string]bool, len(cfg.NodePools))
+	for _, p := range cfg.NodePools {
+		desiredPoolSet[p.ID] = true
+		if !currentPoolSet[p.ID] {
+			result.NodePoolsToAdd = append(result.NodePoolsToAdd, p)
+		} else {
+			result.NodePoolsToUpdate = append(result.NodePoolsToUpdate, p)
+		}
+	}
+	for _, id := range currentPoolIDs {
+		if !desiredPoolSet[id] {
+			result.NodePoolsToRemove = append(result.NodePoolsToRemove, id)
+		}
+	}
 
 	return result, nil
 }

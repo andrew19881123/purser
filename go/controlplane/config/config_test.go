@@ -232,11 +232,102 @@ func TestDiff_QuotasAlwaysUpserted(t *testing.T) {
 	}
 }
 
+// --- New v0.4 tests: orgs + node_pools ---
+
+func TestLoad_ValidConfig_WithOrgsAndPools(t *testing.T) {
+	yaml := `
+apiVersion: purser/v1
+kind: ClusterConfig
+metadata:
+  name: test
+orgs:
+  - id: acme
+    name: "Acme Corp"
+    slug: acme
+    teams:
+      - id: ml-team
+        name: "ML Team"
+        slug: ml-team
+node_pools:
+  - id: gpu-pool
+    name: "GPU Pool"
+    owner_type: team
+    owner_id: ml-team
+    policy: exclusive
+    nodes: [node-01]
+`
+	cfg, err := config.Load([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Orgs) != 1 {
+		t.Errorf("len(Orgs) = %d, want 1", len(cfg.Orgs))
+	}
+	if len(cfg.Orgs[0].Teams) != 1 {
+		t.Errorf("len(Orgs[0].Teams) = %d, want 1", len(cfg.Orgs[0].Teams))
+	}
+	if len(cfg.NodePools) != 1 {
+		t.Errorf("len(NodePools) = %d, want 1", len(cfg.NodePools))
+	}
+	if cfg.NodePools[0].Policy != "exclusive" {
+		t.Errorf("NodePools[0].Policy = %q, want exclusive", cfg.NodePools[0].Policy)
+	}
+}
+
+func TestLoad_InvalidPoolPolicy(t *testing.T) {
+	yaml := `
+apiVersion: purser/v1
+kind: ClusterConfig
+metadata:
+  name: test
+node_pools:
+  - id: bad-pool
+    name: "Bad Pool"
+    policy: invalid-policy
+`
+	_, err := config.Load([]byte(yaml))
+	if err == nil {
+		t.Fatal("Load() expected error, got nil")
+	}
+	want := "policy must be"
+	if !contains(err.Error(), want) {
+		t.Errorf("err = %q, want to contain %q", err.Error(), want)
+	}
+}
+
+func TestLoad_ExclusivePoolWithQuotas_ReturnsError(t *testing.T) {
+	yaml := `
+apiVersion: purser/v1
+kind: ClusterConfig
+metadata:
+  name: test
+node_pools:
+  - id: exc-pool
+    name: "Exclusive Pool"
+    policy: exclusive
+    quotas:
+      - team_id: some-team
+        max_deployments: 2
+        max_gpu_nodes: 4
+        priority: 10
+`
+	_, err := config.Load([]byte(yaml))
+	if err == nil {
+		t.Fatal("Load() expected error for exclusive pool with quotas, got nil")
+	}
+	want := "quotas are only allowed on 'shared' pools"
+	if !contains(err.Error(), want) {
+		t.Errorf("err = %q, want to contain %q", err.Error(), want)
+	}
+}
+
 // --- helpers ---
 
 type fakeLister struct {
 	models      []string
 	deployments []string
+	orgs        []string
+	pools       []string
 }
 
 func (f *fakeLister) CurrentModelIDs(_ context.Context) ([]string, error) {
@@ -245,6 +336,14 @@ func (f *fakeLister) CurrentModelIDs(_ context.Context) ([]string, error) {
 
 func (f *fakeLister) CurrentDeploymentModelIDs(_ context.Context) ([]string, error) {
 	return f.deployments, nil
+}
+
+func (f *fakeLister) CurrentOrgIDs(_ context.Context) ([]string, error) {
+	return f.orgs, nil
+}
+
+func (f *fakeLister) CurrentNodePoolIDs(_ context.Context) ([]string, error) {
+	return f.pools, nil
 }
 
 func contains(s, sub string) bool {

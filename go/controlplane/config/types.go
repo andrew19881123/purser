@@ -22,14 +22,16 @@ package config
 //	  - team: eng
 //	    monthly_requests: 100000
 type ClusterConfig struct {
-	APIVersion  string       `yaml:"apiVersion"`
-	Kind        string       `yaml:"kind"`
-	Metadata    Metadata     `yaml:"metadata"`
-	Cluster     ClusterSpec  `yaml:"cluster"`
-	Models      []ModelSpec  `yaml:"models"`
-	Deployments []DeploySpec `yaml:"deployments"`
-	Quotas      []QuotaSpec  `yaml:"quotas"`
-	Gateway     GatewaySpec  `yaml:"gateway"`
+	APIVersion  string         `yaml:"apiVersion"`
+	Kind        string         `yaml:"kind"`
+	Metadata    Metadata       `yaml:"metadata"`
+	Cluster     ClusterSpec    `yaml:"cluster"`
+	Models      []ModelSpec    `yaml:"models"`
+	Deployments []DeploySpec   `yaml:"deployments"`
+	Quotas      []QuotaSpec    `yaml:"quotas"`
+	Gateway     GatewaySpec    `yaml:"gateway"`
+	Orgs        []OrgSpec      `yaml:"orgs,omitempty"`
+	NodePools   []NodePoolSpec `yaml:"node_pools,omitempty"`
 }
 
 // Metadata holds identification and labelling fields for the cluster config.
@@ -83,4 +85,48 @@ type QuotaSpec struct {
 type GatewaySpec struct {
 	Port        int `yaml:"port"`
 	BodyLimitMB int `yaml:"body_limit_mb"`
+}
+
+// OrgSpec defines an organization in the GitOps config.
+type OrgSpec struct {
+	ID          string     `yaml:"id"`
+	Name        string     `yaml:"name"`
+	Slug        string     `yaml:"slug"`
+	Description string     `yaml:"description,omitempty"`
+	Teams       []TeamSpec `yaml:"teams,omitempty"`
+}
+
+// TeamSpec defines a team within an org.
+type TeamSpec struct {
+	ID          string           `yaml:"id"`
+	Name        string           `yaml:"name"`
+	Slug        string           `yaml:"slug"`
+	Description string           `yaml:"description,omitempty"`
+	Members     []TeamMemberSpec `yaml:"members,omitempty"`
+}
+
+// TeamMemberSpec defines a team member in the config.
+type TeamMemberSpec struct {
+	UserID string `yaml:"user_id"` // email or OIDC sub
+	Role   string `yaml:"role"`    // built-in role ID or custom role name
+}
+
+// NodePoolSpec defines a node pool in the GitOps config.
+type NodePoolSpec struct {
+	ID          string          `yaml:"id"`
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description,omitempty"`
+	OwnerType   string          `yaml:"owner_type"`         // "platform" | "org" | "team"
+	OwnerID     string          `yaml:"owner_id,omitempty"` // required when owner_type is "org" or "team"
+	Policy      string          `yaml:"policy"`             // "exclusive" | "shared"
+	Nodes       []string        `yaml:"nodes,omitempty"`
+	Quotas      []PoolQuotaSpec `yaml:"quotas,omitempty"`
+}
+
+// PoolQuotaSpec defines a team's quota on a shared pool.
+type PoolQuotaSpec struct {
+	TeamID         string `yaml:"team_id"`
+	MaxDeployments int    `yaml:"max_deployments"`
+	MaxGPUNodes    int    `yaml:"max_gpu_nodes"`
+	Priority       int    `yaml:"priority"`
 }
