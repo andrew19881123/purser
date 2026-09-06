@@ -31,9 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           go-version-file: go/controlplane/go.mod
           cache-dependency-path: go/controlplane/go.sum
@@ -76,17 +76,17 @@ jobs:
 
       # go/planner is a library — no runnable binary to produce.
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: go-binaries-amd64
           path: bin/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: go-binaries-arm64
           path: bin-arm64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: go-binaries-darwin-arm64
           path: bin-darwin-arm64/
@@ -97,17 +97,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       # Install the toolchain declared in rust/rust-toolchain.toml (stable,
       # minimal profile). Using @master so it reads the file when located at
       # the workspace root; we supply the channel explicitly here because the
       # toolchain file lives under rust/ rather than the repo root.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0  # master
         with:
           toolchain: "1.98.1"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: rust
 
@@ -146,19 +146,19 @@ jobs:
           cargo build --release -p purser-agent \
             --target aarch64-apple-darwin
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: rust-binaries-amd64
           path: |
             rust/target/release/purser-agent
             rust/target/release/purser-gateway
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: rust-binaries-arm64
           path: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: steps.build-rust-darwin-arm64.outcome == 'success'
         with:
           name: rust-binaries-darwin-arm64
@@ -173,9 +173,9 @@ jobs:
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: go-binaries-amd64
           path: bin/
@@ -183,28 +183,28 @@ jobs:
       # Place Rust binaries at the path the nfpm config expects:
       #   packaging/nfpm/purser-agent.yaml     → src: rust/target/release/purser-agent
       #   packaging/nfpm/purser-agent-arm64.yaml → src: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: rust-binaries-amd64
           path: rust/target/release/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: rust-binaries-arm64
           path: rust/target/aarch64-unknown-linux-gnu/release/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: go-binaries-arm64
           path: bin-arm64/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: go-binaries-darwin-arm64
           path: bin-darwin-arm64/
 
       # darwin Rust binary is best-effort; download may fail if cross-compile failed.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         continue-on-error: true
         with:
           name: rust-binaries-darwin-arm64
@@ -221,7 +221,7 @@ jobs:
           # darwin Rust binary is best-effort; ignore if absent
           chmod +x rust/target/aarch64-apple-darwin/release/purser-agent 2>/dev/null || true
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           go-version: stable
 
@@ -291,7 +291,7 @@ jobs:
           cd dist
           echo "hashes=$(sha256sum * | base64 -w0)" >> $GITHUB_OUTPUT
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: release-packages
           path: dist/
@@ -304,7 +304,7 @@ jobs:
       id-token: write
       contents: write
       actions: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563  # v2.0.0
     with:
       base64-subjects: "${{ needs.package.outputs.hashes }}"
 
@@ -315,11 +315,11 @@ jobs:
     timeout-minutes: 45
     needs: [build-go, build-rust]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -329,14 +329,14 @@ jobs:
       # Signing uses the GitHub Actions OIDC token via id-token:write — no
       # secrets or long-lived keys required.
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3.9.1
 
       # Each Dockerfile performs its own multi-stage build from source; the
       # pre-built binaries from jobs 1 and 2 act as a quality gate only.
 
       - name: Build and push control-plane image
         id: push-control-plane
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           file: deploy/docker/control-plane.Dockerfile
@@ -358,7 +358,7 @@ jobs:
 
       - name: Build and push gateway image
         id: push-gateway
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           file: deploy/docker/gateway.Dockerfile
@@ -378,7 +378,7 @@ jobs:
 
       - name: Build and push ui image
         id: push-ui
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           file: deploy/docker/ui.Dockerfile
@@ -403,7 +403,7 @@ jobs:
           echo '${{ steps.push-gateway.outputs.digest }}'       > dist/digests/gateway
           echo '${{ steps.push-ui.outputs.digest }}'            > dist/digests/ui
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: docker-digests
           path: dist/digests/
@@ -415,14 +415,14 @@ jobs:
     timeout-minutes: 15
     needs: [package, docker]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: release-packages
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: docker-digests
           path: dist/digests/
@@ -430,12 +430,12 @@ jobs:
       # Install cosign for keyless blob signing of the binary tarballs.
       # Uses the GitHub Actions OIDC token — no secrets or long-lived keys.
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3.9.1
 
       # Login to GHCR so cosign can push attestation signatures and the Helm
       # chart signature to the registry without a separate keyring step.
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -443,21 +443,21 @@ jobs:
 
       # Generate SPDX SBOMs — runs here (after docker job) so images exist.
       - name: Generate SBOM — control-plane
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           image: ghcr.io/${{ github.repository_owner }}/purser-control-plane:${{ env.TAG }}
           artifact-name: sbom-control-plane.spdx.json
           output-file: dist/sbom-control-plane.spdx.json
 
       - name: Generate SBOM — gateway
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           image: ghcr.io/${{ github.repository_owner }}/purser-gateway:${{ env.TAG }}
           artifact-name: sbom-gateway.spdx.json
           output-file: dist/sbom-gateway.spdx.json
 
       - name: Generate SBOM — ui
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           image: ghcr.io/${{ github.repository_owner }}/purser-ui:${{ env.TAG }}
           artifact-name: sbom-ui.spdx.json
@@ -529,7 +529,7 @@ jobs:
           done
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           files: |
@@ -545,7 +545,7 @@ jobs:
       # Package and push the Helm chart to the GHCR OCI registry.
       # Chart version is the numeric part of the tag (no leading 'v').
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
 
       - name: Package and push Helm chart to GHCR OCI
         run: |

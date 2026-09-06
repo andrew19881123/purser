@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: bufbuild/buf-setup-action@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99  # v1.50.0
       - run: buf lint
         working-directory: proto
 
@@ -23,12 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0  # master
         with:
           toolchain: "1.98.1"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           workspaces: rust
       - name: build
@@ -54,8 +54,8 @@ jobs:
     env:
       CGO_ENABLED: "0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
           go-version-file: go/${{ matrix.module }}/go.mod
           cache-dependency-path: go/${{ matrix.module }}/go.sum
@@ -85,8 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: "22"
       - name: install
@@ -101,3 +101,52 @@ jobs:
       - name: test
         working-directory: ui
         run: npm test
+
+  security-scan:
+    name: Container security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Runs in parallel with other jobs — does not block them
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Build gateway image for scan
+        # gateway.Dockerfile final runtime stage is named "final" (debian:bookworm-slim)
+        run: |
+          docker build -f deploy/docker/gateway.Dockerfile \
+            --target final \
+            -t purser-gateway:scan .
+
+      - name: Build control-plane image for scan
+        # control-plane.Dockerfile final stage is unnamed (distroless/static); build full image
+        run: |
+          docker build -f deploy/docker/control-plane.Dockerfile \
+            -t purser-control-plane:scan .
+
+      - name: Trivy scan — gateway
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: purser-gateway:scan
+          format: sarif
+          output: trivy-gateway.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true  # ignore CVEs with no available fix
+
+      - name: Trivy scan — control-plane
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: purser-control-plane:scan
+          format: sarif
+          output: trivy-cp.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true  # ignore CVEs with no available fix
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@6f5948dfacef28e207b48d0905cf90c03365536d  # v3
+        if: always()  # upload even if the scan found issues
+        with:
+          sarif_file: '*.sarif'
