@@ -51,12 +51,44 @@ jobs:
           mkdir -p ../../bin
           go build -trimpath -ldflags "-s -w" -o ../../bin/control-plane .
 
+      - name: Build control-plane (linux/arm64)
+        working-directory: go/controlplane
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+          GOWORK: "off"
+        run: |
+          mkdir -p ../../bin-arm64
+          go build -trimpath -ldflags "-s -w" -o ../../bin-arm64/control-plane .
+
+      - name: Build control-plane (darwin/arm64)
+        working-directory: go/controlplane
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+          GOWORK: "off"
+        run: |
+          mkdir -p ../../bin-darwin-arm64
+          go build -trimpath -ldflags "-s -w" -o ../../bin-darwin-arm64/control-plane .
+
       # go/planner is a library — no runnable binary to produce.
 
       - uses: actions/upload-artifact@v4
         with:
-          name: go-binaries
+          name: go-binaries-amd64
           path: bin/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries-arm64
+          path: bin-arm64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries-darwin-arm64
+          path: bin-darwin-arm64/
 
   # ── Job 2: Rust ────────────────────────────────────────────────────────────
   build-rust:
@@ -79,19 +111,56 @@ jobs:
 
       # CARGO_INCREMENTAL=0 — incremental artifacts have no value for a
       # release build and only bloat the target directory.
-      - name: Build purser-agent and purser-gateway
+      - name: Build purser-agent and purser-gateway (linux/amd64)
         working-directory: rust
         env:
           CARGO_INCREMENTAL: "0"
           CARGO_TARGET_DIR: target
         run: cargo build --release -p purser-agent -p purser-gateway
 
+      - name: Build purser-agent (linux/arm64)
+        working-directory: rust
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_TARGET_DIR: target
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+          cargo build --release -p purser-agent \
+            --target aarch64-unknown-linux-gnu
+
+      # darwin/arm64: cross-compiling Rust on Linux for macOS requires osxcross.
+      # Flagged best-effort — the release succeeds even if this step fails.
+      - name: Build purser-agent (darwin/arm64)
+        id: build-rust-darwin-arm64
+        continue-on-error: true
+        working-directory: rust
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_TARGET_DIR: target
+        run: |
+          rustup target add aarch64-apple-darwin
+          cargo build --release -p purser-agent \
+            --target aarch64-apple-darwin
+
       - uses: actions/upload-artifact@v4
         with:
-          name: rust-binaries
+          name: rust-binaries-amd64
           path: |
             rust/target/release/purser-agent
             rust/target/release/purser-gateway
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-binaries-arm64
+          path: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
+
+      - uses: actions/upload-artifact@v4
+        if: steps.build-rust-darwin-arm64.outcome == 'success'
+        with:
+          name: rust-binaries-darwin-arm64
+          path: rust/target/aarch64-apple-darwin/release/purser-agent
 
   # ── Job 3: Package (.deb, .rpm, tarballs) ──────────────────────────────────
   package:
@@ -105,21 +174,49 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: go-binaries
+          name: go-binaries-amd64
           path: bin/
 
       # Place Rust binaries at the path the nfpm config expects:
-      #   packaging/nfpm/purser-agent.yaml → src: rust/target/release/purser-agent
+      #   packaging/nfpm/purser-agent.yaml     → src: rust/target/release/purser-agent
+      #   packaging/nfpm/purser-agent-arm64.yaml → src: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
       - uses: actions/download-artifact@v4
         with:
-          name: rust-binaries
+          name: rust-binaries-amd64
           path: rust/target/release/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-binaries-arm64
+          path: rust/target/aarch64-unknown-linux-gnu/release/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-binaries-arm64
+          path: bin-arm64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-binaries-darwin-arm64
+          path: bin-darwin-arm64/
+
+      # darwin Rust binary is best-effort; download may fail if cross-compile failed.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: rust-binaries-darwin-arm64
+          path: rust/target/aarch64-apple-darwin/release/
 
       - name: Fix binary permissions
         run: |
           chmod +x bin/control-plane
           chmod +x rust/target/release/purser-agent
           chmod +x rust/target/release/purser-gateway
+          chmod +x rust/target/aarch64-unknown-linux-gnu/release/purser-agent
+          chmod +x bin-arm64/control-plane
+          chmod +x bin-darwin-arm64/control-plane
+          # darwin Rust binary is best-effort; ignore if absent
+          chmod +x rust/target/aarch64-apple-darwin/release/purser-agent 2>/dev/null || true
 
       - uses: actions/setup-go@v5
         with:
@@ -142,6 +239,14 @@ jobs:
           nfpm pkg --config packaging/nfpm/purser-agent.yaml --packager deb --target dist/
           nfpm pkg --config packaging/nfpm/purser-agent.yaml --packager rpm --target dist/
 
+      - name: Build .deb and .rpm packages (arm64)
+        env:
+          VERSION: ${{ env.TAG != '' && env.TAG || inputs.tag }}
+        run: |
+          export VERSION=${VERSION#v}
+          nfpm pkg --config packaging/nfpm/purser-agent-arm64.yaml --packager deb --target dist/
+          nfpm pkg --config packaging/nfpm/purser-agent-arm64.yaml --packager rpm --target dist/
+
       # One tarball per binary, named with the full version tag.
       - name: Create binary tarballs
         run: |
@@ -153,6 +258,24 @@ jobs:
             -C rust/target/release purser-gateway
           tar -czf dist/control-plane-linux-amd64-${TAG}.tar.gz \
             -C bin control-plane
+
+      - name: Create ARM64 and darwin binary tarballs
+        run: |
+          TAG=${{ env.TAG }}
+          # linux/arm64
+          tar -czf dist/purser-agent-linux-arm64-${TAG}.tar.gz \
+            -C rust/target/aarch64-unknown-linux-gnu/release purser-agent
+          tar -czf dist/control-plane-linux-arm64-${TAG}.tar.gz \
+            -C bin-arm64 control-plane
+          # darwin/arm64 (best-effort: only package if binaries exist)
+          if [ -f rust/target/aarch64-apple-darwin/release/purser-agent ]; then
+            tar -czf dist/purser-agent-darwin-arm64-${TAG}.tar.gz \
+              -C rust/target/aarch64-apple-darwin/release purser-agent
+          fi
+          if [ -f bin-darwin-arm64/control-plane ]; then
+            tar -czf dist/control-plane-darwin-arm64-${TAG}.tar.gz \
+              -C bin-darwin-arm64 control-plane
+          fi
 
       - name: Generate SHA256SUMS
         run: |
@@ -356,6 +479,7 @@ jobs:
       - name: Sign tarballs with cosign
         run: |
           TAG=${{ env.TAG }}
+          # linux/amd64
           cosign sign-blob --yes \
             --bundle dist/purser-agent-linux-amd64-${TAG}.tar.gz.bundle \
             dist/purser-agent-linux-amd64-${TAG}.tar.gz
@@ -365,6 +489,21 @@ jobs:
           cosign sign-blob --yes \
             --bundle dist/control-plane-linux-amd64-${TAG}.tar.gz.bundle \
             dist/control-plane-linux-amd64-${TAG}.tar.gz
+          # linux/arm64
+          cosign sign-blob --yes \
+            --bundle dist/purser-agent-linux-arm64-${TAG}.tar.gz.bundle \
+            dist/purser-agent-linux-arm64-${TAG}.tar.gz
+          cosign sign-blob --yes \
+            --bundle dist/control-plane-linux-arm64-${TAG}.tar.gz.bundle \
+            dist/control-plane-linux-arm64-${TAG}.tar.gz
+          # darwin/arm64 (best-effort — only sign if the tarballs exist)
+          for f in \
+            dist/purser-agent-darwin-arm64-${TAG}.tar.gz \
+            dist/control-plane-darwin-arm64-${TAG}.tar.gz; do
+            if [ -f "$f" ]; then
+              cosign sign-blob --yes --bundle "${f}.bundle" "$f"
+            fi
+          done
 
       # Push packages to the Cloudsmith hosted apt/yum repository.
       # || true on every push so the release does not fail when

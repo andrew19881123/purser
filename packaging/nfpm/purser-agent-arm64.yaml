@@ -1,0 +1,57 @@
+# nfpm config for the purser-agent native package (.deb / .rpm) — arm64 variant.
+#
+# Build (from the repo root, after cross-compiling the arm64 binary):
+#   nfpm package -f packaging/nfpm/purser-agent-arm64.yaml -p deb -t dist/
+#   nfpm package -f packaging/nfpm/purser-agent-arm64.yaml -p rpm -t dist/
+#
+# The binary source path points at the cross-compiled output from
+# `cargo build --target aarch64-unknown-linux-gnu`. Run the CI packaging
+# step only after the arm64 binary exists at that path.
+
+name: purser-agent
+arch: arm64
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: andrew19881123 <andrew19881123@gmail.com>
+vendor: Purser
+homepage: https://github.com/purser/purser
+license: MIT
+description: |
+  Purser Fleet Agent — node-local daemon for the Purser inference fleet.
+
+  Runs on each physical fleet node: probes the host hardware, supervises the
+  local inference engine, and serves the AgentService gRPC API to the Purser
+  control plane. Installed as a systemd host service (not a container) because
+  it needs direct access to the node's GPUs/accelerators and the engine RPC
+  worker it supervises is not sandboxed.
+
+contents:
+  # arm64 cross-compiled release binary -> /usr/bin (distro-package convention).
+  - src: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
+    dst: /usr/bin/purser-agent
+    file_info:
+      mode: 0755
+
+  # systemd unit (packaged variant: ExecStart=/usr/bin/purser-agent).
+  - src: packaging/nfpm/purser-agent.service
+    dst: /lib/systemd/system/purser-agent.service
+    file_info:
+      mode: 0644
+
+  # Environment template installed as a config file. `config|noreplace` maps to
+  # dpkg conffiles / rpm %config(noreplace): an operator-edited agent.env is
+  # preserved across upgrades.
+  - src: packaging/env/agent.env.example
+    dst: /etc/purser/agent.env
+    type: config|noreplace
+    file_info:
+      mode: 0640
+      owner: root
+      group: root
+
+scripts:
+  postinstall: packaging/nfpm/scripts/postinstall.sh
+  preremove: packaging/nfpm/scripts/preremove.sh
+  postremove: packaging/nfpm/scripts/postremove.sh

@@ -24,18 +24,30 @@ After installing, continue with [Configure](#configure) to set up the agent envi
 
 ## Install from package
 
-Download the package for your distribution from the [v0.1.0 release](https://github.com/andrew19881123/purser/releases/tag/v0.1.0):
+Download the package for your distribution from the [latest release](https://github.com/andrew19881123/purser/releases/latest):
 
-=== "Debian / Ubuntu"
+=== "Debian / Ubuntu (amd64)"
 
     ```bash
     sudo apt install ./purser-agent_0.1.0_amd64.deb
     ```
 
-=== "RHEL / Fedora / openSUSE"
+=== "Debian / Ubuntu (arm64 — Graviton / Ampere)"
+
+    ```bash
+    sudo apt install ./purser-agent_0.1.0_arm64.deb
+    ```
+
+=== "RHEL / Fedora / openSUSE (amd64)"
 
     ```bash
     sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm
+    ```
+
+=== "RHEL / Fedora / openSUSE (arm64)"
+
+    ```bash
+    sudo yum install ./purser-agent-0.1.0-1.aarch64.rpm
     ```
 
 The package installs:
@@ -213,17 +225,31 @@ PURSER_SECRET_STORE_DIR=/var/lib/purser/secrets
 
 ## Install from binary tarball
 
-If you prefer not to use the native packages, grab the prebuilt binary tarball from the same release and verify the SHA-256 checksum:
+If you prefer not to use the native packages, grab the prebuilt binary tarball from the same release and verify the SHA-256 checksum.
 
-```bash
-# From the release page
-curl -LO https://github.com/andrew19881123/purser/releases/download/v0.1.0/purser-agent-0.1.0-linux-amd64.tar.gz
-curl -LO https://github.com/andrew19881123/purser/releases/download/v0.1.0/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing
+=== "linux/amd64"
 
-tar -xzf purser-agent-0.1.0-linux-amd64.tar.gz
-sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
-```
+    ```bash
+    TAG=v0.3.0
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/purser-agent-linux-amd64-${TAG}.tar.gz
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
+    sha256sum -c SHA256SUMS --ignore-missing
+
+    tar -xzf purser-agent-linux-amd64-${TAG}.tar.gz
+    sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
+    ```
+
+=== "linux/arm64 (Graviton / Ampere)"
+
+    ```bash
+    TAG=v0.3.0
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/purser-agent-linux-arm64-${TAG}.tar.gz
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
+    sha256sum -c SHA256SUMS --ignore-missing
+
+    tar -xzf purser-agent-linux-arm64-${TAG}.tar.gz
+    sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
+    ```
 
 Then install the unit file and env template from [`packaging/systemd/`](https://github.com/andrew19881123/purser/tree/main/packaging/systemd) and [`packaging/env/agent.env.example`](https://github.com/andrew19881123/purser/tree/main/packaging/env) manually.
 
