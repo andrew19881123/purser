@@ -263,9 +263,9 @@ impl AgentConfig {
         }
         cfg.model_mirror_url = non_empty(std::env::var("PURSER_MODEL_MIRROR_URL").ok());
         if let Ok(pcf) = std::env::var("PURSER_AGENT_PREFIX_CACHING_FACTOR") {
-            let v: f32 = pcf.parse().with_context(|| {
-                format!("invalid PURSER_AGENT_PREFIX_CACHING_FACTOR: {pcf:?}")
-            })?;
+            let v: f32 = pcf
+                .parse()
+                .with_context(|| format!("invalid PURSER_AGENT_PREFIX_CACHING_FACTOR: {pcf:?}"))?;
             cfg.prefix_caching_factor = v.clamp(0.0, 1.0);
         }
         cfg.http_proxy = non_empty(std::env::var("PURSER_AGENT_HTTP_PROXY").ok());
@@ -598,9 +598,6 @@ mod tests {
     fn prefix_caching_factor_clamped_below_zero() {
         // Same: test clamping math directly.
         let clamped = (-0.5_f32).clamp(0.0_f32, 1.0_f32);
-        assert!(
-            clamped >= 0.0,
-            "-0.5 must clamp to 0.0, got {clamped}"
-        );
+        assert!(clamped >= 0.0, "-0.5 must clamp to 0.0, got {clamped}");
     }
 }

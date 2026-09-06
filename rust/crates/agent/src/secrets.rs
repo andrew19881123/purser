@@ -537,8 +537,7 @@ mod tests {
         let mut tmp_key = fixed_key();
         tmp_key.zeroize();
         assert_eq!(
-            tmp_key,
-            [0u8; 32],
+            tmp_key, [0u8; 32],
             "Zeroize::zeroize() must overwrite every byte with 0"
         );
 

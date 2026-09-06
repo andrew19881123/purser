@@ -16,8 +16,7 @@ use crate::config::AgentConfig;
 /// * `PURSER_AGENT_NO_PROXY`    — comma-separated bypass list.
 /// * `PURSER_AGENT_CA_BUNDLE`   — path to a PEM file with extra trusted CAs.
 pub fn build_http_client(config: &AgentConfig) -> anyhow::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30));
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
 
     if let Some(proxy_url) = &config.https_proxy {
         let mut proxy = reqwest::Proxy::https(proxy_url)?;
@@ -85,7 +84,10 @@ mod tests {
             ..AgentConfig::default()
         };
         let client = build_http_client(&cfg);
-        assert!(client.is_ok(), "valid HTTP proxy URL must produce a valid client");
+        assert!(
+            client.is_ok(),
+            "valid HTTP proxy URL must produce a valid client"
+        );
     }
 
     #[test]
