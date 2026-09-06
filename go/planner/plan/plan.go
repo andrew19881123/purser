@@ -79,6 +79,16 @@ const (
 	// CALIBRATABLE — raise only when measured SSD offload sustains high,
 	// stable throughput at the chosen tier (design 08 §10, fase2).
 	kvSsdOffloadMaxMultiplier = 2.0
+
+	// kvSsdReadBandwidthGBs is the sustainable sequential read bandwidth of the
+	// NVMe SSD used for KV-cache offload (Tutti-style). NVMe PCIe 4.0 sustains
+	// ~6 GB/s sequential reads in practice — about 285× slower than HBM
+	// bandwidth (≈ 2000 GB/s). Used by effectiveBandwidth to penalise the
+	// decode throughput of nodes with SSD offload enabled.
+	// CALIBRATABLE: measure with `fio --rw=read --ioengine=libaio --bs=1M` on
+	// the target NVMe drive while serving a KV-cache workload (the random-read
+	// fraction matters — sequential here is the upper bound).
+	kvSsdReadBandwidthGBs = 6.0
 )
 
 // Plan is the planner entry point (design 08 §3): given the fleet state
@@ -139,8 +149,18 @@ func planInternal(ctx context.Context, nodes []Node, links []Link, model ModelSp
 	}
 
 	// KV cache is included in the fit and is often dominant on long contexts
-	// (design 08 §4, §12).
-	kv := estimateKVCache(model, model.ContextMax)
+	// (design 08 §4, §12). Apply prefix caching reduction (G2): nodes that
+	// report a non-zero PrefixCachingFactor need less resident KV because cache
+	// hits serve from previously materialised blocks. Use the minimum PCF across
+	// the fleet — conservative: if any node doesn't benefit from caching, the
+	// plan must still fit without that reduction.
+	minPCF := 0.0
+	for _, n := range nodes {
+		if n.PrefixCachingFactor > 0 && (minPCF == 0 || n.PrefixCachingFactor < minPCF) {
+			minPCF = n.PrefixCachingFactor
+		}
+	}
+	kv := kvCacheInMemory(model, model.ContextMax, minPCF)
 
 	// Phase A — quantization selection.
 	quant, err := selectQuantization(nodes, model, kv, c)
@@ -617,13 +637,21 @@ func estimateKVCache(model ModelSpec, context int) float64 {
 		bytesFP16
 
 	factor := 1.0
-	switch model.AttentionType {
-	case AttentionMHA, AttentionGQA:
-		factor = 1.0 // GQA: n_kv_heads already reduced in the metadata
-	case AttentionMLA:
-		factor = 0.10 // latent compression ~7–14x
-	case AttentionLinear:
-		factor = 0.01 // fixed-size state, ~independent of context (approx.)
+	if model.KVCompressionRatio > 0 && model.KVCompressionRatio <= 1 {
+		// Model-specific compression ratio overrides the AttentionType default.
+		// For MLA models: d_c / (n_kv_heads × head_dim).
+		//   DeepSeek-V2:  512 / (128×128) ≈ 0.031
+		//   DeepSeek-V3: 1024 / (128×128) ≈ 0.062
+		factor = model.KVCompressionRatio
+	} else {
+		switch model.AttentionType {
+		case AttentionMHA, AttentionGQA:
+			factor = 1.0 // GQA: n_kv_heads already reduced in the metadata
+		case AttentionMLA:
+			factor = 0.10 // latent compression ~7–14x (fallback default)
+		case AttentionLinear:
+			factor = 0.01 // fixed-size state, ~independent of context (approx.)
+		}
 	}
 	return base * factor / 1e9
 }
@@ -636,6 +664,23 @@ func kvCachePerNode(model ModelSpec, layersOnNode, context int) float64 {
 		return 0
 	}
 	return estimateKVCache(model, context) * (float64(layersOnNode) / float64(model.Layers))
+}
+
+// kvCacheInMemory returns the KV cache bytes (GB) that must be resident in
+// memory, accounting for prefix caching. With prefix_caching_factor f, only
+// (1-f) fraction of tokens needs their KV materialised — cache hits reduce the
+// active KV window. A factor of 0 (or >= 1) returns the full estimate.
+//
+// This implements Fix G2: the phase-A/B fit check was using the full KV cache
+// even when prefix caching was enabled, causing false rejection of deployments
+// where long shared system prompts are cached across requests.
+func kvCacheInMemory(model ModelSpec, contextLen int, prefixCachingFactor float64) float64 {
+	full := estimateKVCache(model, contextLen)
+	if prefixCachingFactor <= 0 || prefixCachingFactor >= 1 {
+		return full
+	}
+	// Conservative: the active (non-cached) portion is what must be resident.
+	return full * (1.0 - prefixCachingFactor)
 }
 
 // usefulMemory is the memory a node can actually devote to model weights + KV

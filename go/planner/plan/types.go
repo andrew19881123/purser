@@ -188,6 +188,22 @@ type ModelSpec struct {
 	ContextMax    int
 	Quantizations []Quantization
 	Draft         DraftInfo
+
+	// KVCompressionRatio is the architecture-specific KV cache compression
+	// factor in the range (0, 1]. When non-zero, it overrides the default
+	// compression factor derived from AttentionType in estimateKVCache.
+	//
+	// For MLA (Multi-head Latent Attention) models, the ratio is
+	// d_c / (n_kv_heads × head_dim), where d_c is the latent dimension:
+	//   DeepSeek-V2:  512 / (128 × 128) ≈ 0.031
+	//   DeepSeek-V3: 1024 / (128 × 128) ≈ 0.062
+	//
+	// The AttentionType=MLA default (0.10) over-estimates KV for these models
+	// by 2–3×, which can cause false rejection in the fit check. Set this field
+	// to the measured ratio to get an accurate estimate (G1 fix).
+	//
+	// Zero means "use the AttentionType default".
+	KVCompressionRatio float64 `json:"kv_compression_ratio,omitempty"`
 }
 
 // Constraints are the operator overrides that steer the planner (design 08 §14).

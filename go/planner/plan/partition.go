@@ -112,6 +112,70 @@ func lookupLink(links []Link, from, to string) *Link {
 	return nil
 }
 
+// LinkIndex is a pre-computed adjacency map for O(1) directed link lookup.
+// Build once per plan invocation with buildLinkIndex, then use throughout the
+// DP inner loop via lookup — eliminates the O(N) linear scan that lookupLink
+// performs on every call (G4 fix: O(L²·M·N) → O(L²·M) for dpPartition).
+type LinkIndex map[[2]string]*Link
+
+// buildLinkIndex creates the index from a slice of links. O(N) construction
+// amortises over the O(L²·M) DP calls that follow.
+func buildLinkIndex(links []Link) LinkIndex {
+	idx := make(LinkIndex, len(links))
+	for i := range links {
+		key := [2]string{links[i].From, links[i].To}
+		idx[key] = &links[i]
+	}
+	return idx
+}
+
+// lookup retrieves a directed link in O(1). Returns nil if no link from→to is
+// known; callers treat nil the same way as lookupLink's nil (zero comm cost).
+func (idx LinkIndex) lookup(from, to string) *Link {
+	return idx[[2]string{from, to}]
+}
+
+// effectiveBandwidth returns the sustainable read bandwidth (GB/s) for a node
+// serving the given shard, accounting for data that must be fetched from NVMe
+// SSD instead of VRAM when KV SSD offload is active (G3 fix).
+//
+// When the shard's total footprint (weights + KV) exceeds the node's VRAM, the
+// overflow is assumed to come from SSD. The effective bandwidth is the harmonic
+// mean of the VRAM and SSD bandwidths, weighted by the fraction of bytes served
+// from each tier — the harmonic mean captures the bottleneck correctly because
+// decode stalls on the slower source.
+//
+// Returns the node's reported MemBandwidthGBs (or referenceMemBandwidthGBs as
+// fallback) unchanged when:
+//   - KVSSDOffload is false, OR
+//   - n.VRAMGB is zero (unified / CPU-only nodes have no separate VRAM), OR
+//   - the full shard fits in VRAM.
+func effectiveBandwidth(n Node, shardWeightBytes, shardKVBytes float64) float64 {
+	vramBW := n.MemBandwidthGBs
+	if vramBW <= 0 {
+		vramBW = referenceMemBandwidthGBs
+	}
+
+	// No SSD offload configured, no discrete VRAM to overflow from, or all data
+	// fits in VRAM: return the reported (or fallback) bandwidth unchanged.
+	vramBytes := n.VRAMGB * 1e9
+	totalBytes := shardWeightBytes + shardKVBytes
+	if !n.KVSSDOffload || vramBytes <= 0 || totalBytes <= vramBytes {
+		return vramBW
+	}
+
+	// Overflow: some KV data must be served from SSD. Only the KV cache is
+	// spilled (weights are pinned in VRAM); cap at shardKVBytes.
+	ssdBytes := math.Min(totalBytes-vramBytes, shardKVBytes)
+	vramServed := totalBytes - ssdBytes
+
+	vramFrac := vramServed / totalBytes
+	ssdFrac := ssdBytes / totalBytes
+
+	// Harmonic mean: bottleneck is the slower tier.
+	return 1.0 / (vramFrac/vramBW + ssdFrac/kvSsdReadBandwidthGBs)
+}
+
 // commTime estimates the seconds spent receiving one token's activation from
 // the previous pipeline stage over `link` (design 08 §6, commTime). A nil link
 // (unknown / co-located / no measurement) costs nothing.
@@ -169,10 +233,17 @@ func computeTime(n Node, model ModelSpec, quant Quantization, i, j int) float64 
 		activeFraction = model.ParamsActiveB / model.ParamsTotalB
 	}
 	activeWeightBytes := quant.SizeGB * 1e9 * activeFraction * nLayers / float64(model.Layers)
-	bw := n.MemBandwidthGBs
-	if bw <= 0 {
-		bw = referenceMemBandwidthGBs // unknown bandwidth: neutral, not free
-	}
+
+	// Effective bandwidth accounts for SSD offload (G3 fix): when KVSSDOffload
+	// is set and the shard's weights+KV exceed VRAM, part of the data is served
+	// from NVMe SSD at ~6 GB/s instead of HBM — the harmonic mean of the two
+	// bandwidths (weighted by byte fraction) sets the true per-token rate.
+	// shardWeightBytes uses the FULL weight slice (all experts resident even for
+	// MoE); shardKVBytes is the KV share for this shard's layer count.
+	shardWeightBytes := quant.SizeGB * 1e9 * nLayers / float64(model.Layers)
+	shardKVBytes := kvCachePerNode(model, int(nLayers), model.ContextMax) * 1e9
+	bw := effectiveBandwidth(n, shardWeightBytes, shardKVBytes)
+
 	return activeWeightBytes / (bw * 1e9)
 }
 
@@ -217,6 +288,23 @@ func stageTimeAt(order []Node, m, i, j int, links []Link, model ModelSpec, quant
 	return computeTime(node, model, quant, i, j) + ct
 }
 
+// stageTimeAtIdx is stageTimeAt with an O(1) LinkIndex instead of the O(N)
+// linear scan of lookupLink. Used by dpPartition after the index is built once
+// for the entire DP (G4 fix). The brute-force reference still uses stageTimeAt
+// with the raw slice — both call the same stage-time model, so the
+// DP == brute-force correctness proof is unaffected.
+func stageTimeAtIdx(order []Node, m, i, j int, idx LinkIndex, model ModelSpec, quant Quantization, context int) float64 {
+	node := order[m-1]
+	if !stageFits(node, model, quant, i, j, context) {
+		return math.Inf(1)
+	}
+	ct := 0.0
+	if m >= 2 {
+		ct = commTime(model, idx.lookup(order[m-2].ID, order[m-1].ID))
+	}
+	return computeTime(node, model, quant, i, j) + ct
+}
+
 // dpPartition is phase C (design 08 §6): the throughput-aware DP that assigns
 // the L layers to a prefix of `order` as CONTIGUOUS shards, minimising the
 // bottleneck (max) stage time. `order` must be the pipeline order (order[0] is
@@ -233,6 +321,11 @@ func dpPartition(order []Node, links []Link, model ModelSpec, quant Quantization
 	L := model.Layers
 	M := len(order)
 	inf := math.Inf(1)
+
+	// Build O(1) link lookup index once; used by stageTimeAtIdx throughout the
+	// O(L²·M) inner loop. This eliminates the O(N) scan that lookupLink would
+	// perform on each of the L²·M calls (G4 fix).
+	idx := buildLinkIndex(links)
 
 	dp := make([][]float64, L+1)
 	cut := make([][]int, L+1)
@@ -252,7 +345,7 @@ func dpPartition(order []Node, links []Link, model ModelSpec, quant Quantization
 				continue
 			}
 			for j := i + 1; j <= L; j++ {
-				st := stageTimeAt(order, m, i, j, links, model, quant, context)
+				st := stageTimeAtIdx(order, m, i, j, idx, model, quant, context)
 				if math.IsInf(st, 1) {
 					// memNeed grows monotonically with j: once a shard
 					// starting at i overflows node m, every larger shard does
