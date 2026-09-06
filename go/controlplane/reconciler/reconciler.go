@@ -26,6 +26,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -243,7 +244,28 @@ type Reconciler struct {
 	log     *slog.Logger
 	now     func() time.Time
 
+	// mu protects tracker against concurrent reads (Status) and writes (Reconcile).
+	mu      sync.RWMutex
 	tracker map[string]*discState
+}
+
+// TrackerStatus is a snapshot of the discrepancy tracker at a point in time.
+type TrackerStatus struct {
+	// ActiveKeys holds the active discrepancy keys and their observation counts.
+	// The map is a copy — callers may read it freely without holding any lock.
+	ActiveKeys map[string]int
+}
+
+// Status returns a point-in-time snapshot of the current tracker state.
+// It is safe to call concurrently with Reconcile.
+func (rc *Reconciler) Status() TrackerStatus {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	keys := make(map[string]int, len(rc.tracker))
+	for k, v := range rc.tracker {
+		keys[k] = v.count
+	}
+	return TrackerStatus{ActiveKeys: keys}
 }
 
 // New builds a Reconciler. act may be nil for NotifyOnly-only operation.
@@ -324,6 +346,11 @@ func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
 	}
 
 	observed := rc.observe(ctx, deps, byID, now)
+
+	// Hold the write lock while reading and modifying the tracker so concurrent
+	// calls to Status() always see a consistent snapshot.
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 
 	// Update tracker: mark observed, register new, then act on eligible ones.
 	for _, st := range rc.tracker {

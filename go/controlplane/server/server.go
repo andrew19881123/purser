@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -211,6 +213,14 @@ type Config struct {
 	VertexAI *importer.VertexAIClient
 }
 
+// rateLimiterEntry tracks per-key sliding-window rate-limit state.
+// The struct is stored in the ipLimiters / keyLimiters maps; unused entries
+// are evicted by cleanupLimiters after ipLimiterIdleTimeout.
+type rateLimiterEntry struct {
+	count  int
+	window time.Time
+}
+
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
 	reg           registry.Registry
@@ -242,6 +252,16 @@ type Server struct {
 	gaugeDeploymentsActive metric.Int64Gauge
 	gaugeNodesReady        metric.Int64Gauge
 	gaugeNodesTotal        metric.Int64Gauge
+
+	// Per-IP and per-API-key rate limiter maps. Each entry is keyed by the
+	// client IP or API key ID; the *Access maps record the last-used timestamp
+	// so cleanupLimiters can evict stale entries and prevent unbounded growth.
+	ipLimitersMu      sync.Mutex
+	ipLimiters        map[string]*rateLimiterEntry
+	ipLimitersAccess  map[string]time.Time
+	keyLimitersMu     sync.Mutex
+	keyLimiters       map[string]*rateLimiterEntry
+	keyLimitersAccess map[string]time.Time
 }
 
 // New builds a Server backed by reg.
@@ -267,22 +287,26 @@ func New(reg registry.Registry, cfg Config) *Server {
 		lic = license.Community()
 	}
 	s := &Server{
-		reg:           reg,
-		log:           logger,
-		mux:           http.NewServeMux(),
-		deployer:      cfg.Deployer,
-		metrics:       cfg.Metrics,
-		nodeMetrics:   cfg.NodeMetrics,
-		metricTO:      interval,
-		planner:       cfg.Planner,
-		fleet:         cfg.Fleet,
-		clusterID:     clusterID,
-		publicAddr:    publicAddr,
-		license:       lic,
-		internalToken: cfg.InternalToken,
-		hfToken:       cfg.HFToken,
-		hfBaseURL:     cfg.HFBaseURL,
-		vertexai:      cfg.VertexAI,
+		reg:               reg,
+		log:               logger,
+		mux:               http.NewServeMux(),
+		deployer:          cfg.Deployer,
+		metrics:           cfg.Metrics,
+		nodeMetrics:       cfg.NodeMetrics,
+		metricTO:          interval,
+		planner:           cfg.Planner,
+		fleet:             cfg.Fleet,
+		clusterID:         clusterID,
+		publicAddr:        publicAddr,
+		license:           lic,
+		internalToken:     cfg.InternalToken,
+		hfToken:           cfg.HFToken,
+		hfBaseURL:         cfg.HFBaseURL,
+		vertexai:          cfg.VertexAI,
+		ipLimiters:        make(map[string]*rateLimiterEntry),
+		ipLimitersAccess:  make(map[string]time.Time),
+		keyLimiters:       make(map[string]*rateLimiterEntry),
+		keyLimitersAccess: make(map[string]time.Time),
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -338,11 +362,58 @@ func New(reg registry.Registry, cfg Config) *Server {
 // middleware. All three are transparent no-ops when not configured.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// ListenAndServe starts serving and blocks until the server stops.
-func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
+// ListenAndServe starts background maintenance goroutines and then serves
+// HTTP until the server stops.
+func (s *Server) ListenAndServe() error {
+	go s.cleanupLimiters()
+	return s.server.ListenAndServe()
+}
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
+
+// validateInternalToken returns true when provided matches s.internalToken
+// using a constant-time comparison (prevents timing-based token enumeration).
+// Returns false whenever s.internalToken is empty so that unconfigured
+// deployments do not accidentally grant access.
+func (s *Server) validateInternalToken(provided string) bool {
+	if s.internalToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.internalToken)) == 1
+}
+
+// cleanupLimiters sweeps the IP and API-key rate-limiter maps every 5 minutes,
+// removing entries that have not been accessed for more than 10 minutes. This
+// prevents the maps from growing without bound under a long-lived server.
+func (s *Server) cleanupLimiters() {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("panic in cleanupLimiters goroutine", "recovered", r)
+		}
+	}()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-10 * time.Minute)
+		s.ipLimitersMu.Lock()
+		for k, t := range s.ipLimitersAccess {
+			if t.Before(cutoff) {
+				delete(s.ipLimiters, k)
+				delete(s.ipLimitersAccess, k)
+			}
+		}
+		s.ipLimitersMu.Unlock()
+		s.keyLimitersMu.Lock()
+		for k, t := range s.keyLimitersAccess {
+			if t.Before(cutoff) {
+				delete(s.keyLimiters, k)
+				delete(s.keyLimitersAccess, k)
+			}
+		}
+		s.keyLimitersMu.Unlock()
+	}
+}
 
 // oidcMiddleware returns an http.Handler that enforces OIDC authentication
 // before delegating to next. It is a pass-through when s.oidcVerifier is nil
@@ -365,8 +436,8 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		}
 		// 2. Gateway internal-token exemption: the gateway sends route-sync
 		// requests with X-Purser-Internal-Token; those must not require a
-		// human OIDC token.
-		if s.internalToken != "" && r.Header.Get("X-Purser-Internal-Token") == s.internalToken {
+		// human OIDC token. Use constant-time comparison to prevent timing attacks.
+		if s.validateInternalToken(r.Header.Get("X-Purser-Internal-Token")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -430,7 +501,8 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 		token := bearerToken(r)
 
 		// 2a. Internal token passes through unconditionally.
-		if s.internalToken != "" && token == s.internalToken {
+		// Constant-time comparison prevents timing-based enumeration.
+		if s.validateInternalToken(token) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -441,26 +513,16 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 4. Look up the key by hash; pass through on any registry error or miss.
+		// 4. Look up the key by hash via an indexed single-row query (O(1)).
 		if s.reg == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		keys, err := s.reg.ListAPIKeys(r.Context())
-		if err != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
 		sum := sha256.Sum256([]byte(token))
 		hashHex := hex.EncodeToString(sum[:])
-		var matched *registry.APIKey
-		for _, k := range keys {
-			if k.KeyHash == hashHex {
-				matched = k
-				break
-			}
-		}
-		if matched == nil {
+		matched, err := s.reg.GetAPIKeyByHash(r.Context(), hashHex)
+		if err != nil {
+			// ErrNotFound or any registry error — pass through, handler enforces.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -2091,9 +2153,11 @@ type usageRequest struct {
 // handleRecordUsage is the internal gateway callback for usage accounting.
 // When InternalToken is set, the caller must present the same value in
 // X-Purser-Internal-Token; if not set, the endpoint is open (dev/single-node).
+// The comparison uses constant-time equality to prevent timing side-channels.
 func (s *Server) handleRecordUsage(w http.ResponseWriter, r *http.Request) {
 	if s.internalToken != "" {
-		if tok := r.Header.Get("X-Purser-Internal-Token"); tok != s.internalToken {
+		tok := r.Header.Get("X-Purser-Internal-Token")
+		if !s.validateInternalToken(tok) {
 			s.writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing internal token")
 			return
 		}
@@ -2539,9 +2603,16 @@ func otelMiddleware(next http.Handler) http.Handler {
 // StartInfraMetrics runs a background goroutine that samples infrastructure
 // gauges (deployments.active, nodes.ready, nodes.total) every 30 seconds and
 // pushes them to the configured MeterProvider (no-op when OTEL is not
-// configured). The goroutine exits when ctx is cancelled.
+// configured). The goroutine exits when ctx is cancelled. A deferred recover
+// catches any unexpected panics and logs them so a single bad sample does not
+// bring down the whole server.
 func (s *Server) StartInfraMetrics(ctx context.Context) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.log.Error("panic in background goroutine", "recovered", r)
+			}
+		}()
 		s.collectInfraMetrics(ctx) // initial sample immediately
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
