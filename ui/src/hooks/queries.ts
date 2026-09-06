@@ -89,6 +89,19 @@ export function useImportModel() {
   });
 }
 
+/**
+ * Mutation: delete a model from the catalog.
+ * On success the catalog cache is invalidated. On 409 the error is surfaced to the caller
+ * (model is referenced by active deployments — tear them down first).
+ */
+export function useDeleteModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (modelId: string) => api.deleteModel(modelId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.catalog }),
+  });
+}
+
 /** Mutation: compute a plan-preview for an already-imported model. */
 export function usePreviewModelPlan() {
   return useMutation({

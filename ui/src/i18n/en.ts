@@ -127,6 +127,14 @@ export const en = {
   'catalog.params': '{active}B active / {total}B total',
   'catalog.action.deploy': 'Deploy',
   'catalog.action.plan': 'Preview plan',
+  'catalog.action.delete': 'Delete',
+  'catalog.deleteConfirm': 'Delete model {model}? This cannot be undone.',
+  'catalog.deleteError.inUse': 'Cannot delete: model is used by an active deployment',
+  'catalog.action.previewSplit': 'Preview Split',
+  'catalog.preview.title': 'Fleet split preview',
+  'catalog.preview.pipeline': 'Pipeline order',
+  'catalog.preview.deploy': 'Deploy',
+  'catalog.preview.infeasible': 'Cannot be deployed on this fleet',
 
   // deploy
   'deploy.title': 'Deploy: {model}',

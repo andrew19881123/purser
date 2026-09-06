@@ -286,6 +286,12 @@ Removes a model from the catalog.
 
 **Response `204`:** No content. Model deleted.
 
+**Response `404`:**
+
+```json
+{"error": "not_found", "message": "model not found"}
+```
+
 **Response `409`:**
 
 ```json
@@ -296,9 +302,12 @@ Removes a model from the catalog.
 }
 ```
 
+!!! note "Dashboard behaviour"
+    The operator dashboard shows an inline error when a `409` is returned: _"Cannot delete: model is used by an active deployment"_. Tear down the referencing deployments from the **Deployments** page first.
+
 ### `POST /api/v1/models/{id}/plan`
 
-Read-only Planner dry run: computes the layer-split plan for the model against the current fleet without persisting anything or deploying.
+Read-only Planner dry run: computes the layer-split plan for the model against the current fleet without persisting anything or deploying. The dashboard **Preview Split** button calls this endpoint.
 
 **Response `200` (feasible):**
 
@@ -307,9 +316,26 @@ Read-only Planner dry run: computes the layer-split plan for the model against t
   "feasible": true,
   "id": "plan-abc123",
   "model_id": "llama-8b",
-  "quantization": "q4_k_m",
+  "quantization": "Q4_K_M",
   "cost": 1.23,
-  "plan": { ... }
+  "assignments": [
+    {
+      "node_id": "node-gpu-01",
+      "role": "host",
+      "layer_start": 0,
+      "layer_end": 31,
+      "draft": false
+    }
+  ],
+  "pipeline_order": ["node-gpu-01"],
+  "estimated": {
+    "decode_tok_s_min": 30,
+    "decode_tok_s_max": 50,
+    "prefill_tok_s_min": 100,
+    "prefill_tok_s_max": 200,
+    "headroom_gb": 2.0
+  },
+  "explanation": ["Single node fits all layers"]
 }
 ```
 
@@ -318,7 +344,7 @@ Read-only Planner dry run: computes the layer-split plan for the model against t
 ```json
 {
   "feasible": false,
-  "reason": "insufficient memory: need 16GB, fleet has 8GB"
+  "reason": "insufficient memory: need 16 GB, fleet has 8 GB"
 }
 ```
 

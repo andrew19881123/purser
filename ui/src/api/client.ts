@@ -62,6 +62,8 @@ export interface PurserApi {
   previewModelPlan(modelId: string): Promise<PlanPreviewResult>;
   /** GET /api/v1/models/{id}/health — operational health of a deployed model. */
   getModelHealth(modelId: string): Promise<ModelHealth>;
+  /** DELETE /api/v1/models/{id} — remove a model from the catalog. 409 if it has active deployments. */
+  deleteModel(modelId: string): Promise<void>;
 
   // --- deployments ---
   planDeployment(modelId: string, overrides: DeployOverrides): Promise<DeploymentPlan>;
