@@ -1,6 +1,9 @@
 package plan
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // This file is the correctness gate for phase E (design 08 §8): speculative
 // draft placement. With a draft available, EXACTLY ONE assignment must carry the
@@ -29,7 +32,7 @@ func TestPlaceDraft_SingleNode(t *testing.T) {
 	model, _ := dpTestModel(6, 12)
 	model.Draft = DraftInfo{Available: true, Type: "mtp", TailLayers: 2}
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -55,7 +58,7 @@ func TestPlaceDraft_MultiNodeTail(t *testing.T) {
 	model, _ := dpTestModel(8, 40)
 	model.Draft = DraftInfo{Available: true, Type: "eagle", TailLayers: 3}
 
-	dp, err := Plan(nodes, links, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestPlaceDraft_NoDraft(t *testing.T) {
 	links := []Link{{From: "A", To: "B", RTTms: 3, BandwidthGBs: 12}}
 	model, _ := dpTestModel(8, 40) // Draft zero-value: not available
 
-	dp, err := Plan(nodes, links, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}

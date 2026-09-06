@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"sort"
@@ -442,7 +443,7 @@ func TestPlan_MultiNodeInvariants(t *testing.T) {
 		t.Run(f.name, func(t *testing.T) {
 			model, quant := dpTestModel(f.layers, f.sizeGB)
 
-			dp, err := Plan(f.nodes, f.links, model, Constraints{})
+			dp, err := Plan(context.Background(), f.nodes, f.links, model, Constraints{})
 			if err != nil {
 				t.Fatalf("expected a plan, got error: %v", err)
 			}

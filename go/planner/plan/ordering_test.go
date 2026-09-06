@@ -1,6 +1,8 @@
 package plan
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"testing"
 )
@@ -230,7 +232,7 @@ func TestOrderNodes_ForceHost(t *testing.T) {
 	}
 
 	// End-to-end: Plan must put B at PipelineOrder[0] and mark it HOST.
-	dp, err := Plan(nodes, links, model, Constraints{ForceHost: &forced})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{ForceHost: &forced})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -273,7 +275,7 @@ func TestMultiNodePlan_CoOptimization(t *testing.T) {
 		t.Fatalf("orderNodes not idempotent: %v then %v", orderIDs(o1), orderIDs(o2))
 	}
 
-	dp, err := Plan(nodes, links, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -293,5 +295,65 @@ func TestMultiNodePlan_CoOptimization(t *testing.T) {
 	}
 	if hosts != 1 {
 		t.Fatalf("expected exactly 1 HOST, got %d", hosts)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M1 — PURSER_PLANNER_ORDERING_THRESHOLD safety bounds
+// ---------------------------------------------------------------------------
+
+// TestGetEnvInt_UpperBound verifies that a value above orderingThresholdMax (20)
+// is rejected and the default is returned, preventing OOM from an oversized
+// Held-Karp allocation.
+func TestGetEnvInt_UpperBound(t *testing.T) {
+	t.Setenv("PURSER_PLANNER_ORDERING_THRESHOLD", "30")
+	got := getEnvInt("PURSER_PLANNER_ORDERING_THRESHOLD", HeldKarpMaxNodes)
+	if got != HeldKarpMaxNodes {
+		t.Errorf("getEnvInt(30) = %d, want default %d (upper bound is %d)",
+			got, HeldKarpMaxNodes, orderingThresholdMax)
+	}
+}
+
+// TestGetEnvInt_AtUpperBound verifies that exactly orderingThresholdMax (20) is
+// accepted (boundary value must not be rejected).
+func TestGetEnvInt_AtUpperBound(t *testing.T) {
+	t.Setenv("PURSER_PLANNER_ORDERING_THRESHOLD", "20")
+	got := getEnvInt("PURSER_PLANNER_ORDERING_THRESHOLD", HeldKarpMaxNodes)
+	if got != 20 {
+		t.Errorf("getEnvInt(20) = %d, want 20 (boundary value must be accepted)", got)
+	}
+}
+
+// TestGetEnvInt_LowerBound verifies that 0 (< 1) is rejected.
+func TestGetEnvInt_LowerBound(t *testing.T) {
+	t.Setenv("PURSER_PLANNER_ORDERING_THRESHOLD", "0")
+	got := getEnvInt("PURSER_PLANNER_ORDERING_THRESHOLD", HeldKarpMaxNodes)
+	if got != HeldKarpMaxNodes {
+		t.Errorf("getEnvInt(0) = %d, want default %d (lower bound is 1)", got, HeldKarpMaxNodes)
+	}
+}
+
+// TestHeldKarpPath_DoesNotPanicWithLargeN verifies the defence-in-depth guard:
+// calling heldKarpPath directly with n > orderingThresholdMax must not panic (it
+// falls back to the 2-opt heuristic) and must return a valid permutation of the
+// input nodes.
+func TestHeldKarpPath_DoesNotPanicWithLargeN(t *testing.T) {
+	const n = 25 // well above orderingThresholdMax=20
+	nodes := make([]Node, n)
+	for i := range nodes {
+		nodes[i] = Node{
+			ID:              fmt.Sprintf("n%d", i),
+			RAMAvailableGB:  32,
+			MemBandwidthGBs: 100,
+		}
+	}
+	model, _ := dpTestModel(8, 10)
+	// Should not panic; the defensive guard redirects to nearestNeighbor2Opt.
+	result := heldKarpPath(nodes, model, nil)
+	if len(result) != n {
+		t.Errorf("expected %d nodes in result, got %d", n, len(result))
+	}
+	if !sameSet(result, nodes) {
+		t.Errorf("heldKarpPath result is not a permutation of the input nodes")
 	}
 }

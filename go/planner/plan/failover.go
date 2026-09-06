@@ -1,6 +1,9 @@
 package plan
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // This file implements phase F of the planner (design 08 §9): per-node failover
 // alternatives.
@@ -30,7 +33,11 @@ import "fmt"
 //
 // It must be called only from the top-level (computeFailover) path; the
 // alternatives are planned non-recursively so they never re-enter this function.
-func computeFailoverPlans(plan *DeploymentPlan, nodes []Node, links []Link, model ModelSpec, c Constraints) {
+//
+// ctx cancellation: if the context is cancelled mid-loop the function returns
+// early; already-computed failover alternatives are preserved in plan.FailoverAlt
+// and the primary plan itself is still valid.
+func computeFailoverPlans(ctx context.Context, plan *DeploymentPlan, nodes []Node, links []Link, model ModelSpec, c Constraints) {
 	if plan == nil {
 		return
 	}
@@ -46,10 +53,13 @@ func computeFailoverPlans(plan *DeploymentPlan, nodes []Node, links []Link, mode
 		if _, done := plan.FailoverAlt[dead]; done {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return // context cancelled — primary plan is valid; failover is partial
+		}
 
 		remaining := nodesExcluding(nodes, dead)
 		// Non-recursive: computeFailover == false, so alt.FailoverAlt stays empty.
-		alt, err := planInternal(remaining, links, model, c, false)
+		alt, err := planInternal(ctx, remaining, links, model, c, false)
 		if err != nil {
 			// Degrade/notify: the fleet cannot absorb losing this node.
 			plan.FailoverAlt[dead] = nil
