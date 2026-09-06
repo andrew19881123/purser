@@ -74,6 +74,7 @@ nav:
     - Tamper-Evident Audit Log: enterprise/audit-log.md
     - Usage Accounting (Chargeback): enterprise/usage-accounting.md
   - Integrations:
+    - Ansible (Fleet Enrollment): integrations/ansible.md
     - LiteLLM: integrations/litellm.md
     - HuggingFace Hub: integrations/huggingface.md
     - AWS SageMaker: integrations/sagemaker.md

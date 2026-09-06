@@ -138,58 +138,47 @@ Mirror the `.deb` / `.rpm` packages into an internal repository and push the con
 reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.1.0_amd64.deb
 ```
 
-### Ansible example
+### Fleet enrollment with Ansible
 
-```yaml
----
-- name: Install and configure Purser Agent
-  hosts: fleet_nodes
-  become: true
+The repository ships a production-ready Ansible role at
+[`ansible/roles/purser_agent/`](https://github.com/andrew19881123/purser/tree/main/ansible/roles/purser_agent)
+that handles repository setup, package or binary installation, env-file
+templating, service management, and post-install verification — all
+idempotent.
 
-  vars:
-    purser_control_plane_addr: "http://cp.internal:9443"
-    purser_cluster_id: "default"
-    # join_token is fetched from the control plane and stored securely
+**Quick start:**
 
-  tasks:
-    - name: Install purser-agent package
-      apt:
-        deb: "https://releases.example.com/purser/purser-agent_0.1.0_amd64.deb"
-      when: ansible_os_family == "Debian"
+```bash
+git clone https://github.com/andrew19881123/purser.git
+cd purser/ansible
 
-    - name: Write agent.env
-      template:
-        src: agent.env.j2
-        dest: /etc/purser/agent.env
-        owner: root
-        group: purser
-        mode: "0640"
-      notify: restart purser-agent
+# Option A: mint a token automatically and enroll in one run
+export PURSER_CP_ADDR=http://cp.internal:8080
+export PURSER_API_TOKEN=<admin-token>
+ansible-playbook -i inventory/ playbooks/enroll_nodes.yml
 
-    - name: Enable and start purser-agent
-      systemd:
-        name: purser-agent
-        enabled: true
-        state: started
-        daemon_reload: true
-
-  handlers:
-    - name: restart purser-agent
-      systemd:
-        name: purser-agent
-        state: restarted
+# Option B: supply a pre-existing token
+export PURSER_CP_ADDR=http://cp.internal:8080
+export PURSER_JOIN_TOKEN=psk_your-token-here
+ansible-playbook -i inventory/ playbooks/install_purser_agents.yml
 ```
 
-`agent.env.j2` template:
+**Example inventory (`ansible/inventory/hosts.ini`):**
 
+```ini
+[gpu_nodes]
+node1.internal  ansible_host=192.168.1.10
+node2.internal  ansible_host=192.168.1.11
+
+[gpu_nodes:vars]
+ansible_user=ubuntu
+purser_cluster_id=production
 ```
-PURSER_AGENT_BIND=0.0.0.0:50151
-PURSER_INFERENCE_PORT=8000
-PURSER_CONTROL_PLANE_ADDR={{ purser_control_plane_addr }}
-PURSER_CLUSTER_ID={{ purser_cluster_id }}
-PURSER_JOIN_TOKEN={{ purser_join_token }}
-PURSER_SECRET_STORE_DIR=/var/lib/purser/secrets
-```
+
+For air-gap installs, set `purser_install_method: "binary"` and
+`purser_binary_url` to a mirrored tarball URL. Full variable reference,
+secrets-manager integration, and GPU device-access notes are in the
+[Ansible integration guide](../integrations/ansible.md).
 
 ## Install from binary tarball
 

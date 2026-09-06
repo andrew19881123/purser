@@ -1,0 +1,36 @@
+---
+# Purser control plane
+purser_control_plane_addr: ""     # Required: e.g. http://cp.internal:8080
+purser_join_token: ""             # Required: obtain from dashboard or POST /api/v1/join-token
+purser_cluster_id: "default"
+
+# Agent configuration
+purser_agent_bind: "0.0.0.0:50151"
+purser_inference_port: 8000
+purser_engine_backend: "mock"     # "mock" or "llamacpp"
+purser_llamacpp_bin: ""           # Path to llama.cpp binary (when engine_backend=llamacpp)
+
+# Optional: explicit advertised addresses for nodes behind NAT / multi-homed hosts.
+# When unset the agent derives them from purser_agent_bind and the primary local IPv4.
+purser_agent_advertised_addr: ""          # e.g. 192.168.1.10:50151
+purser_inference_advertised_addr: ""      # e.g. 192.168.1.10:8000
+
+# Optional: secret store
+purser_secret_store_dir: "/var/lib/purser/secrets"
+purser_secret_key: ""             # 32-byte AES-256 key (hex or base64).
+                                  # Leave empty to let the agent auto-generate one.
+
+# Optional: discovery and telemetry
+purser_health_interval_secs: 5
+purser_seeds: ""                  # Comma-separated extra seed peers beyond LAN mDNS
+purser_rust_log: "info"
+
+# Package installation
+purser_version: "0.3.0"
+purser_install_method: "package"  # "package" (apt/yum) or "binary" (tarball)
+purser_apt_repo_url: "https://dl.cloudsmith.io/public/andrew19881123/purser"
+purser_binary_url: ""             # Override for air-gap: direct URL to tarball
+
+# Service
+purser_service_enabled: true
+purser_service_state: started

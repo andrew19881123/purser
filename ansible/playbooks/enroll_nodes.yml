@@ -1,0 +1,69 @@
+---
+# enroll_nodes.yml — Mint a join token from the control plane, then install
+# and enroll all GPU nodes in a single run.
+#
+# Prerequisites:
+#   - The Purser control plane must be reachable from the Ansible controller.
+#   - Set PURSER_CP_ADDR to the control plane REST address (default port 8080).
+#   - Set PURSER_API_TOKEN if the control plane requires API authentication.
+#
+# Usage:
+#   export PURSER_CP_ADDR=http://cp.internal:8080
+#   export PURSER_API_TOKEN=<admin-token>       # omit if auth not required
+#   export PURSER_CLUSTER_ID=production          # optional, defaults to "default"
+#   ansible-playbook -i inventory/ playbooks/enroll_nodes.yml
+
+# ── Play 1: Mint a join token from the Purser control plane ───────────────
+- name: Generate join token from Purser control plane
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    _cp_api: "{{ lookup('env', 'PURSER_CP_ADDR') | default('http://cp.internal:8080', true) }}"
+    _api_token: "{{ lookup('env', 'PURSER_API_TOKEN') | default('', true) }}"
+    _cluster_id: "{{ lookup('env', 'PURSER_CLUSTER_ID') | default('default', true) }}"
+
+  tasks:
+    - name: Assert control plane address is configured
+      ansible.builtin.assert:
+        that: _cp_api | length > 0
+        fail_msg: >
+          PURSER_CP_ADDR environment variable is not set.
+          Export it before running this playbook:
+            export PURSER_CP_ADDR=http://cp.internal:8080
+
+    - name: Request a join token from the control plane (POST /api/v1/join-token)
+      ansible.builtin.uri:
+        url: "{{ _cp_api }}/api/v1/join-token"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{ _api_token }}"
+        body_format: json
+        body:
+          cluster_id: "{{ _cluster_id }}"
+          ttl: "1h"
+        return_content: true
+        status_code: 201
+      register: _join_token_response
+
+    - name: Expose join token for subsequent plays
+      ansible.builtin.set_fact:
+        purser_generated_join_token: "{{ _join_token_response.json.token }}"
+
+    - name: Confirm token was minted
+      ansible.builtin.debug:
+        msg: "Join token minted for cluster '{{ _cluster_id }}' (TTL 1h). Proceeding to enroll {{ groups['gpu_nodes'] | default([]) | length }} node(s)."
+
+# ── Play 2: Install and enroll GPU nodes ──────────────────────────────────
+- name: Enroll GPU nodes with the Purser Fleet Agent
+  hosts: gpu_nodes
+  become: true
+
+  roles:
+    - purser_agent
+
+  vars:
+    purser_control_plane_addr: "{{ lookup('env', 'PURSER_CP_ADDR') | default('http://cp.internal:8080', true) }}"
+    purser_join_token: "{{ hostvars['localhost']['purser_generated_join_token'] }}"
+    purser_cluster_id: "{{ lookup('env', 'PURSER_CLUSTER_ID') | default('default', true) }}"
