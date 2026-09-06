@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -206,6 +207,15 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("OIDC discovery failed for issuer %s: %w", oidcIssuer, err)
 		}
 		oidcCfg = &server.OIDCConfig{Issuer: oidcIssuer, ClientID: oidcClientID}
+		// Load optional group-claim → role mappings from the environment.
+		if raw := os.Getenv("PURSER_OIDC_GROUP_MAPPINGS"); raw != "" {
+			var m map[string]string
+			if err := json.Unmarshal([]byte(raw), &m); err != nil {
+				return fmt.Errorf("PURSER_OIDC_GROUP_MAPPINGS: invalid JSON: %w", err)
+			}
+			oidcCfg.GroupMappings = m
+			logger.Info("OIDC group-claim mapping enabled", "groups", len(m))
+		}
 		oidcVerifier = server.NewOIDCVerifierAdapter(
 			provider.Verifier(&oidc.Config{ClientID: oidcClientID}),
 		)

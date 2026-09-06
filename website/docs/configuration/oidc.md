@@ -27,6 +27,7 @@ What is **exempt** from OIDC:
 | `PURSER_OIDC_ISSUER` | OIDC issuer URL (the provider's discovery document root). Examples: `https://login.microsoftonline.com/<tenant-id>/v2.0`, `https://<tenant>.okta.com`, `https://keycloak.example.com/realms/<realm>` |
 | `PURSER_OIDC_CLIENT_ID` | OAuth2 application (client) ID registered with the provider. |
 | `PURSER_OIDC_CLIENT_SECRET` | OAuth2 client secret (for confidential clients). |
+| `PURSER_OIDC_GROUP_MAPPINGS` | JSON object mapping OIDC group/role claim values to Purser roles. See [Group claim mapping](#group-claim-mapping) below. |
 | `PURSER_LICENSE_KEY` | Enterprise license key — OIDC requires a valid license with the SSO/OIDC feature entitlement. |
 
 ---
@@ -149,6 +150,86 @@ controlPlane:
           name: purser-oidc
           key: client-secret
 ```
+
+---
+
+---
+
+## Group claim mapping
+
+When your IdP assigns users to groups (or grants them app roles), Purser can
+automatically derive an RBAC role from the token's `groups` or `roles` claim —
+no API key required.
+
+### How it works
+
+1. The token is verified by the IdP as usual.
+2. `oidcMiddleware` extracts the `groups` **and** `roles` arrays from the token.
+3. Each value is looked up in the `PURSER_OIDC_GROUP_MAPPINGS` dictionary.
+4. If one or more matches are found, the highest-privilege mapping wins:
+   `admin > inference > viewer`.
+5. The resolved role is injected into the request context. `rbacMiddleware`
+   enforces it exactly like an API-key role — no additional API key lookup.
+6. If no mapping matches, the request falls through to the API-key RBAC path
+   (the user is OIDC-authenticated but has no automatic RBAC assignment).
+
+### Configuration
+
+Set `PURSER_OIDC_GROUP_MAPPINGS` to a JSON object:
+
+```bash
+PURSER_OIDC_GROUP_MAPPINGS='{"purser-admins":"admin","purser-viewers":"viewer"}'
+```
+
+The keys are the exact string values from the token's `groups` or `roles` claim.
+The values are Purser roles: `admin`, `viewer`, or `inference`.
+
+### Provider examples
+
+=== "Microsoft EntraID"
+
+    EntraID populates the `groups` claim with Object IDs (GUIDs) by default, or
+    with group names if the `groupMembershipClaims` manifest setting is
+    `"SecurityGroup"` and the group names are included. The `roles` claim carries
+    app-role assignment values. Use whichever your IdP emits:
+
+    ```bash
+    # Using app roles (recommended — human-readable, stable)
+    PURSER_OIDC_GROUP_MAPPINGS='{"Purser.Admin":"admin","Purser.Viewer":"viewer"}'
+
+    # Using group Object IDs
+    PURSER_OIDC_GROUP_MAPPINGS='{"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee":"admin"}'
+    ```
+
+=== "Okta"
+
+    Okta populates the `groups` claim with group names when the OIDC app's
+    **Group claims filter** is configured:
+
+    ```bash
+    PURSER_OIDC_GROUP_MAPPINGS='{"Purser-Admins":"admin","Purser-Viewers":"viewer"}'
+    ```
+
+=== "Keycloak"
+
+    Keycloak populates `groups` with group paths (e.g. `/purser/admins`) or
+    `roles` with realm/client role names depending on your mapper config:
+
+    ```bash
+    PURSER_OIDC_GROUP_MAPPINGS='{"purser-admins":"admin","purser-viewers":"viewer"}'
+    ```
+
+### Tenant scoping
+
+When the OIDC token carries a `tid` (EntraID) or `tenant_id` claim, Purser
+stores it in the request context. Viewer-role tokens with a tenant claim receive
+scoped list responses:
+
+- `GET /api/v1/deployments` — returns only deployments whose `Detail.tenant`
+  field matches the token's tenant.
+
+This is the foundational isolation layer; models and API keys will be scoped
+in follow-up releases.
 
 ---
 

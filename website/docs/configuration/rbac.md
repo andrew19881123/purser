@@ -66,6 +66,44 @@ purser apikeys create --name my-viewer --role viewer
 - A viewer key attempting a `POST`, `PUT`, `PATCH`, or `DELETE` request also
   receives `403 Forbidden` before the request reaches any handler.
 
+## OIDC-sourced roles
+
+When OIDC authentication is enabled and `PURSER_OIDC_GROUP_MAPPINGS` is
+configured, roles can be derived automatically from the token's `groups` or
+`roles` claims — no API key is needed for human operators.
+
+### How the resolution works
+
+1. The OIDC token is verified as normal.
+2. Purser extracts the `groups` **and** `roles` arrays from the ID token claims.
+3. Each value is looked up in the `PURSER_OIDC_GROUP_MAPPINGS` JSON dictionary.
+4. If one or more matches are found, the **highest-privilege** mapping wins:
+   `admin > inference > viewer`.
+5. The resolved role is injected into the request context and enforced by the
+   same RBAC rules as API key roles (see the table above).
+6. If no group/role claim matches any mapping, the request falls through to
+   API-key RBAC. If no API key is presented either, the request is anonymous
+   and each handler decides whether to accept or reject it.
+
+### Example
+
+```bash
+# Map EntraID app roles to Purser roles
+PURSER_OIDC_GROUP_MAPPINGS='{"Purser.Admin":"admin","Purser.Viewer":"viewer"}'
+```
+
+An operator whose token carries `"roles": ["Purser.Admin"]` gets `admin`
+access to all control-plane endpoints — without creating an API key.
+
+A read-only user whose token carries `"groups": ["purser-viewers"]` (after
+mapping to `viewer`) can call any `GET /api/v1/*` endpoint but is blocked on
+`POST`, `PUT`, `PATCH`, and `DELETE` with `403 Forbidden`.
+
+See [OIDC Group Claim Mapping](oidc.md#group-claim-mapping) for full IdP
+examples and tenant-scoping details.
+
+---
+
 ## Backward Compatibility
 
 Keys created before RBAC was introduced have `role = "admin"` in the database
