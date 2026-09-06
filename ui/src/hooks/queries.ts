@@ -291,6 +291,22 @@ export function useUsageSummary() {
   return useQuery({ queryKey: ['usageSummary'], queryFn: () => api.getUsageSummary() });
 }
 
+// --- billing / chargeback ---
+
+/**
+ * GET /api/v1/billing/report — chargeback usage aggregated by tenant+model.
+ * Returns 402 when the "billing" enterprise feature is not licensed; callers
+ * should detect ApiError with status 402 and show an upgrade prompt.
+ */
+export function useBillingReport(params: { days: number; tenantId?: string }) {
+  const end = new Date().toISOString();
+  const start = new Date(Date.now() - params.days * 86400000).toISOString();
+  return useQuery({
+    queryKey: ['billing', params],
+    queryFn: () => api.getBillingReport(start, end, params.tenantId),
+  });
+}
+
 export function useEnterpriseStatus() {
   return useQuery({ queryKey: ['enterpriseStatus'], queryFn: () => api.getEnterpriseStatus() });
 }

@@ -397,6 +397,32 @@ export const en = {
   'settings.license.community.link': 'See Enterprise features →',
   'settings.license.no.features': 'None',
 
+  'error.billing': 'Could not load the billing report.',
+
+  // chargeback / billing
+  'nav.chargeback': 'Chargeback',
+  'chargeback.title': 'Chargeback',
+  'chargeback.subtitle': 'Token usage and request counts by team and model.',
+  'chargeback.enterprise.required': 'Enterprise license required for chargeback reports.',
+  'chargeback.period.label': 'Period',
+  'chargeback.empty': 'No usage recorded in this period.',
+  'chargeback.action.exportCsv': 'Export CSV',
+  'chargeback.stat.totalRequests': 'Total requests',
+  'chargeback.stat.totalTokens': 'Total tokens',
+  'chargeback.stat.activeTenants': 'Active tenants',
+  'chargeback.col.tenant': 'Tenant',
+  'chargeback.col.tenant.hint': 'Team or tenant identifier from the API key',
+  'chargeback.col.model': 'Model',
+  'chargeback.col.model.hint': 'Model served for these requests',
+  'chargeback.col.requests': 'Requests',
+  'chargeback.col.requests.hint': 'Total inference requests in the selected period',
+  'chargeback.col.promptTokens': 'Prompt tokens',
+  'chargeback.col.promptTokens.hint': 'Sum of input/prompt tokens across all requests',
+  'chargeback.col.completionTokens': 'Completion tokens',
+  'chargeback.col.completionTokens.hint': 'Sum of output/completion tokens across all requests',
+  'chargeback.col.avgLatency': 'Avg latency',
+  'chargeback.col.avgLatency.hint': 'Average end-to-end latency per request (ms)',
+
   // enterprise audit log
   'nav.audit': 'Audit Log',
   'audit.title': 'Audit Log',

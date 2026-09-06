@@ -10,6 +10,8 @@ import type {
   ApiKeyWithSecret,
   AuditEntry,
   AuditLog,
+  BillingReport,
+  BillingSummary,
   CatalogEntry,
   ClusterCapacity,
   Deployment,
@@ -483,6 +485,28 @@ export const mockBackend: PurserApi = {
     );
   },
 
+  // --- billing / chargeback (mock: returns empty report — no enterprise in mock) ---
+  getBillingReport(): Promise<BillingReport> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
+  getBillingCsvUrl(): string {
+    // In mock mode there is no real CSV endpoint; return an empty data URL.
+    return 'data:text/csv;charset=utf-8,tenant_id%2Cmodel_id%2Crequest_count%0A';
+  },
+
+  getBillingSummary(): Promise<BillingSummary> {
+    const now = new Date().toISOString();
+    return Promise.resolve({
+      period_start: now,
+      period_end: now,
+      total_requests: 0,
+      total_tokens: 0,
+      active_tenants: 0,
+    });
+  },
 
   streamMetrics(handlers: MetricsStreamHandlers): () => void {
     const emit = () => {

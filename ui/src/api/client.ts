@@ -19,6 +19,8 @@ import type {
   ApiKey,
   ApiKeyWithSecret,
   AuditLog,
+  BillingReport,
+  BillingSummary,
   CatalogEntry,
   ClusterCapacity,
   DeployOverrides,
@@ -121,6 +123,20 @@ export interface PurserApi {
   approveDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
   /** POST /api/v1/approvals/{id}/reject — admin-only. */
   rejectDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
+
+  // --- billing / chargeback ---
+  /**
+   * GET /api/v1/billing/report — 402 without the "billing" feature.
+   * Returns chargeback report grouped by tenant+model for the given window.
+   */
+  getBillingReport(start: string, end: string, tenantId?: string): Promise<BillingReport>;
+  /**
+   * Returns the URL for CSV download (format=csv). Callers create a link and
+   * navigate to it directly — no fetch needed.
+   */
+  getBillingCsvUrl(start: string, end: string, tenantId?: string): string;
+  /** GET /api/v1/billing/summary — quick stats, not enterprise-gated. */
+  getBillingSummary(tenantId?: string): Promise<BillingSummary>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

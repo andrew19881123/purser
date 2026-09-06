@@ -105,6 +105,9 @@ type Registry interface {
 	// GetUsageSummary returns usage grouped by tenant since the given time.
 	// A zero since means "all time".
 	GetUsageSummary(ctx context.Context, since time.Time) ([]TenantUsage, error)
+	// GetBillingReport returns a chargeback report for the given time window,
+	// optionally filtered to a single tenant. An empty tenantID means all tenants.
+	GetBillingReport(ctx context.Context, start, end time.Time, tenantID string) (*BillingReport, error)
 
 	// --- Inference audit log (AI Act Art.12) --------------------------------
 	// RecordInferenceEvent appends an inference event to the audit log.

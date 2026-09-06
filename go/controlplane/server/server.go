@@ -1117,6 +1117,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/approvals/{deploymentId}", s.handleGetApproval)
 	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/approve", s.handleApproveDeployment)
 	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/reject", s.handleRejectDeployment)
+
+	// Billing / chargeback — GET /billing/report is enterprise-gated ("billing"
+	// feature); GET /billing/summary is open for all viewer/admin roles.
+	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
+	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log

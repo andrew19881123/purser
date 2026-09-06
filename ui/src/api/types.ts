@@ -589,3 +589,40 @@ export interface DeploymentApproval {
 export interface DeploymentApprovalsResponse {
   approvals: DeploymentApproval[];
 }
+
+// ---------------------------------------------------------------------------
+// Billing / chargeback — GET /api/v1/billing/report.
+// Enterprise-gated: requires the "billing" feature (402 without).
+// GET /api/v1/billing/summary is not gated and used by the Settings-page stats.
+// ---------------------------------------------------------------------------
+
+/** Aggregate inference activity for one tenant+model pair in a billing window. */
+export interface BillingTenantUsage {
+  tenant_id: string;
+  model_id: string;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  avg_latency_ms: number;
+  period_start: string; // ISO-8601
+  period_end: string;   // ISO-8601
+}
+
+/** Full chargeback report for a configurable time window. */
+export interface BillingReport {
+  period_start: string;  // ISO-8601
+  period_end: string;    // ISO-8601
+  tenants: BillingTenantUsage[];
+  total_requests: number;
+  total_tokens: number;
+}
+
+/** Quick billing summary (non-gated) for the Settings QuickStatsBar. */
+export interface BillingSummary {
+  period_start: string;
+  period_end: string;
+  total_requests: number;
+  total_tokens: number;
+  active_tenants: number;
+}
