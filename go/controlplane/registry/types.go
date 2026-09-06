@@ -179,6 +179,22 @@ type TenantUsage struct {
 	OutputTokens  int64  `json:"output_tokens"`
 }
 
+// DeploymentApproval is one row of the human-oversight approval queue
+// (AI Act Art.14). When the "deployment_approvals" enterprise feature is
+// enabled, every deploy request creates a pending record here; the real
+// rollout is held until an admin approves via the REST API.
+type DeploymentApproval struct {
+	ID           int64      `json:"id"`
+	DeploymentID string     `json:"deployment_id"`
+	ModelID      string     `json:"model_id"`
+	Requester    string     `json:"requester"` // api_key_hash
+	RequestedAt  time.Time  `json:"requested_at"`
+	Status       string     `json:"status"` // "pending" | "approved" | "rejected"
+	Reviewer     string     `json:"reviewer,omitempty"`
+	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+	Notes        string     `json:"notes,omitempty"`
+}
+
 // Cert tracks a certificate issued by the internal CA (see package pki).
 type Cert struct {
 	Serial    string    `json:"serial"`

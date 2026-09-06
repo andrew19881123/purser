@@ -235,6 +235,58 @@ export function useGatewayModels(chatClient: ChatClient) {
   });
 }
 
+// --- deployment approvals (AI Act Art.14) -----------------------------------
+
+export const approvalQk = {
+  list: (status?: string) => ['approvals', status ?? ''] as const,
+  detail: (id: string) => ['approval', id] as const,
+};
+
+/**
+ * GET /api/v1/approvals — list approval records.
+ * Returns 402 when the deployment_approvals feature is not licensed;
+ * the page should detect ApiError with status 402 and show an upgrade prompt.
+ */
+export function useApprovals(status?: string, limit = 50) {
+  return useQuery({
+    queryKey: approvalQk.list(status),
+    queryFn: () => api.listDeploymentApprovals(status, limit),
+    // Approvals are operator-facing; refresh every 10s when the page is open.
+    refetchInterval: 10_000,
+  });
+}
+
+export function useApproval(deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: approvalQk.detail(deploymentId ?? ''),
+    queryFn: () => api.getDeploymentApproval(deploymentId!),
+    enabled: Boolean(deploymentId),
+  });
+}
+
+export function useApproveDeployment() {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ['approvals'] });
+    void qc.invalidateQueries({ queryKey: qk.deployments });
+  };
+  return useMutation({
+    mutationFn: ({ deploymentId, notes }: { deploymentId: string; notes?: string }) =>
+      api.approveDeployment(deploymentId, notes),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRejectDeployment() {
+  const qc = useQueryClient();
+  const invalidate = () => void qc.invalidateQueries({ queryKey: ['approvals'] });
+  return useMutation({
+    mutationFn: ({ deploymentId, notes }: { deploymentId: string; notes?: string }) =>
+      api.rejectDeployment(deploymentId, notes),
+    onSuccess: invalidate,
+  });
+}
+
 // --- live metrics (SSE) -----------------------------------------------------
 
 /**

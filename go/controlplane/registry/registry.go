@@ -77,6 +77,21 @@ type Registry interface {
 	// limit (limit <= 0 means "a sane default").
 	ListAudit(ctx context.Context, limit int) ([]*AuditEntry, error)
 
+	// --- Deployment approval queue (AI Act Art.14 human oversight) --------
+	// RequestDeploymentApproval inserts a new approval record with status
+	// "pending". The ID is written back into approval.
+	RequestDeploymentApproval(ctx context.Context, approval *DeploymentApproval) error
+	// GetDeploymentApproval returns the approval record for deploymentID.
+	// Returns ErrNotFound when no matching record exists.
+	GetDeploymentApproval(ctx context.Context, deploymentID string) (*DeploymentApproval, error)
+	// ListDeploymentApprovals returns approval records, optionally filtered by
+	// status ("pending", "approved", "rejected", or "" for all).
+	// Results are newest-first, capped at limit (limit <= 0 → default 50).
+	ListDeploymentApprovals(ctx context.Context, status string, limit int) ([]*DeploymentApproval, error)
+	// UpdateDeploymentApprovalStatus transitions the approval for deploymentID
+	// to the given status, recording the reviewer and optional notes.
+	UpdateDeploymentApprovalStatus(ctx context.Context, deploymentID, status, reviewer, notes string) error
+
 	// --- Usage log ---------------------------------------------------------
 	// RecordUsage records one inference request's token usage.
 	RecordUsage(ctx context.Context, apiKeyID, modelID string, inputTokens, outputTokens int64) error

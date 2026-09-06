@@ -22,6 +22,7 @@ import type {
   ClusterCapacity,
   DeployOverrides,
   Deployment,
+  DeploymentApproval,
   DeploymentPlan,
   ImportSource,
   JoinInfo,
@@ -82,6 +83,16 @@ export interface PurserApi {
   // --- live metrics (SSE) ---
   /** Subscribe to GET /api/v1/metrics; returns an unsubscribe/close function. */
   streamMetrics(handlers: MetricsStreamHandlers): () => void;
+
+  // --- deployment approvals (AI Act Art.14) ---
+  /** GET /api/v1/approvals — 402 without deployment_approvals feature. */
+  listDeploymentApprovals(status?: string, limit?: number): Promise<DeploymentApproval[]>;
+  /** GET /api/v1/approvals/{id} — single approval record. */
+  getDeploymentApproval(deploymentId: string): Promise<DeploymentApproval>;
+  /** POST /api/v1/approvals/{id}/approve — admin-only. */
+  approveDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
+  /** POST /api/v1/approvals/{id}/reject — admin-only. */
+  rejectDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

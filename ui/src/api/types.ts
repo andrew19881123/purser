@@ -450,3 +450,24 @@ export interface PlanPreviewResult {
   reason?: string;
   plan?: DeploymentPlan;
 }
+
+/**
+ * One row from the deployment approval queue (AI Act Art.14 human oversight).
+ * Enterprise-gated: requires the "deployment_approvals" feature.
+ */
+export interface DeploymentApproval {
+  id: number;
+  deploymentId: string;
+  modelId: string;
+  requester: string;   // api_key_hash
+  requestedAt: string; // ISO8601
+  status: 'pending' | 'approved' | 'rejected';
+  reviewer?: string;
+  reviewedAt?: string;
+  notes?: string;
+}
+
+/** Response shape for GET /api/v1/approvals */
+export interface DeploymentApprovalsResponse {
+  approvals: DeploymentApproval[];
+}

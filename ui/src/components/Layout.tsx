@@ -13,6 +13,7 @@ import {
   IconLayers,
   IconChat,
   IconSettings,
+  IconShield,
   IconMoon,
   IconSun,
 } from './icons';
@@ -32,6 +33,7 @@ const OPERATE: NavItem[] = [
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
   { to: '/model-studio', labelKey: 'nav.modelStudio', icon: <IconBox /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
+  { to: '/approvals', labelKey: 'nav.approvals', icon: <IconShield /> },
   { to: '/join-token', labelKey: 'nav.joinTokens', icon: <IconKey /> },
 ];
 const USE: NavItem[] = [

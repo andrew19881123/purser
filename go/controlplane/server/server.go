@@ -545,6 +545,14 @@ func (s *Server) routes() {
 	// valid, offline-verified license key (see enterprise/license).
 	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
 	s.mux.HandleFunc("GET /api/v1/enterprise/audit-log", s.handleEnterpriseAuditLog)
+
+	// Deployment approval gates (AI Act Art.14 human oversight).
+	// Enterprise-gated ("deployment_approvals" feature). GET is viewer-accessible;
+	// POST approve/reject is admin-only (enforced inside the handler).
+	s.mux.HandleFunc("GET /api/v1/approvals", s.handleListApprovals)
+	s.mux.HandleFunc("GET /api/v1/approvals/{deploymentId}", s.handleGetApproval)
+	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/approve", s.handleApproveDeployment)
+	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/reject", s.handleRejectDeployment)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -1512,6 +1520,34 @@ func (s *Server) handleDeployModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if plan.ModelId == "" {
 		plan.ModelId = modelID
+	}
+
+	// Deployment approval gate (AI Act Art.14). When the enterprise feature
+	// "deployment_approvals" is active, queue an approval record and return
+	// a pending_approval status — the actual rollout runs only after an admin
+	// calls POST /api/v1/approvals/{id}/approve.
+	if s.licenseAllows(featureDeploymentApprovals) {
+		pendingDepID := randHex(8)
+		requester := apiKeyHashFromRequest(r)
+		approval := &registry.DeploymentApproval{
+			DeploymentID: pendingDepID,
+			ModelID:      plan.ModelId,
+			Requester:    requester,
+		}
+		if err := s.reg.RequestDeploymentApproval(r.Context(), approval); err != nil {
+			s.writeError(w, http.StatusInternalServerError, "approval_queue_failed", err.Error())
+			return
+		}
+		_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+			Actor: requester, Action: "deployment.approval.requested", Target: pendingDepID,
+		})
+		s.writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":        "pending_approval",
+			"deployment_id": pendingDepID,
+			"model_id":      plan.ModelId,
+			"message":       "deployment queued for admin approval (AI Act Art.14); call POST /api/v1/approvals/" + pendingDepID + "/approve to proceed",
+		})
+		return
 	}
 
 	depID, err := s.deployer.Apply(r.Context(), plan)
