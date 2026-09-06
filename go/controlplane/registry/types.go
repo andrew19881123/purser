@@ -20,6 +20,10 @@ import (
 // entity does not exist.
 var ErrNotFound = errors.New("registry: not found")
 
+// ErrConflict is returned by Create operations when a unique constraint is
+// violated (e.g. duplicate (org_id, name) on a custom role).
+var ErrConflict = errors.New("registry: conflict")
+
 // Node is a single enrolled machine in the fleet. The full, evolving hardware
 // and liveness detail lives in HardwareProfile (a JSON-encoded
 // purserv1.HardwareProfile); the promoted columns exist for cheap querying and
@@ -475,4 +479,73 @@ type ServiceAccount struct {
 	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+// =============================================================================
+// Platform v0.4 types — Orgs, Teams, Custom Roles, Memberships
+// =============================================================================
+
+// PlatformOrg is a top-level organisational unit that groups teams and owns
+// custom roles. Created automatically when a tenant first calls the org-scoped
+// endpoints; Wave 3 will add a formal creation API.
+type PlatformOrg struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PlatformTeam is a group of users within an org that shares a node pool,
+// model catalog, and access control policy.
+type PlatformTeam struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// CustomRole is a named set of permission strings scoped to an org.
+// System roles (is_system=true) are seeded by the control plane at startup;
+// they cannot be modified or deleted. Custom roles (is_system=false) are
+// created by org_admin users via POST /api/v1/platform/orgs/{orgId}/roles.
+type CustomRole struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Permissions []string  `json:"permissions"`
+	IsSystem    bool      `json:"is_system"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// OrgMember records a user's membership in a PlatformOrg.
+// UserSub is the stable identity string: "oidc:<sub>" or "apikey:<hash8>".
+type OrgMember struct {
+	OrgID    string    `json:"org_id"`
+	UserSub  string    `json:"user_sub"`
+	Role     string    `json:"role"` // "org_admin" | "member"
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// TeamMember records a user's membership in a PlatformTeam and their assigned
+// custom role. RoleID references CustomRole.ID (empty = no explicit role).
+type TeamMember struct {
+	TeamID   string    `json:"team_id"`
+	UserSub  string    `json:"user_sub"`
+	RoleID   string    `json:"role_id"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// EffectivePermissions is the resolved permission set for a user within a
+// specific team, derived from their assigned role's permission list.
+type EffectivePermissions struct {
+	TeamID      string   `json:"team_id"`
+	UserSub     string   `json:"user_sub"`
+	RoleID      string   `json:"role_id,omitempty"`
+	RoleName    string   `json:"role_name,omitempty"`
+	Permissions []string `json:"permissions"`
 }

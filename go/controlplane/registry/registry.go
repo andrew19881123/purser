@@ -268,4 +268,56 @@ type Registry interface {
 	// inference_audit_log rows whose api_key_hash matches subjectHash with
 	// empty/zero values. Returns the number of rows affected.
 	EraseInferenceEventsBySubject(ctx context.Context, subjectHash string) (int64, error)
+
+	// ==========================================================================
+	// Platform v0.4 — Orgs, Teams, Custom Roles, Memberships
+	// ==========================================================================
+
+	// --- Platform Orgs --------------------------------------------------------
+	// UpsertPlatformOrg inserts or updates a PlatformOrg. Used by the server to
+	// ensure a default org exists before creating roles inside it.
+	UpsertPlatformOrg(ctx context.Context, org *PlatformOrg) error
+	// GetPlatformOrg returns the org with the given id, or ErrNotFound.
+	GetPlatformOrg(ctx context.Context, id string) (*PlatformOrg, error)
+
+	// --- Platform Teams -------------------------------------------------------
+	// UpsertPlatformTeam inserts or updates a PlatformTeam.
+	UpsertPlatformTeam(ctx context.Context, team *PlatformTeam) error
+	// GetPlatformTeam returns the team with the given id, or ErrNotFound.
+	GetPlatformTeam(ctx context.Context, id string) (*PlatformTeam, error)
+
+	// --- Custom Roles ---------------------------------------------------------
+	// CreateCustomRole inserts a new custom role. Returns ErrConflict if a role
+	// with the same (org_id, name) already exists.
+	CreateCustomRole(ctx context.Context, role *CustomRole) error
+	// GetCustomRole returns the role identified by (orgID, roleID), or ErrNotFound.
+	GetCustomRole(ctx context.Context, orgID, roleID string) (*CustomRole, error)
+	// ListCustomRoles returns all roles (system and custom) for orgID.
+	ListCustomRoles(ctx context.Context, orgID string) ([]*CustomRole, error)
+	// UpdateCustomRole replaces the mutable fields of a custom role. Returns
+	// ErrNotFound when the role does not exist. Callers must guard against
+	// updating system roles (is_system=true) before calling this.
+	UpdateCustomRole(ctx context.Context, role *CustomRole) error
+	// DeleteCustomRole removes a custom role. Returns ErrNotFound when absent.
+	// Callers must check is_system and IsCustomRoleInUse before calling.
+	DeleteCustomRole(ctx context.Context, orgID, roleID string) error
+	// IsCustomRoleInUse returns true when at least one team_member row references
+	// roleID. Used by the DELETE handler to return 409 Conflict.
+	IsCustomRoleInUse(ctx context.Context, roleID string) (bool, error)
+
+	// --- Org Members ----------------------------------------------------------
+	// ListOrgMembers returns all OrgMember rows for orgID.
+	ListOrgMembers(ctx context.Context, orgID string) ([]*OrgMember, error)
+	// GetOrgMembershipsByUser returns all orgs the user belongs to.
+	GetOrgMembershipsByUser(ctx context.Context, userSub string) ([]*OrgMember, error)
+	// UpsertOrgMember inserts or updates an OrgMember row.
+	UpsertOrgMember(ctx context.Context, m *OrgMember) error
+
+	// --- Team Members ---------------------------------------------------------
+	// GetTeamMember returns the TeamMember row for (teamID, userSub), or ErrNotFound.
+	GetTeamMember(ctx context.Context, teamID, userSub string) (*TeamMember, error)
+	// GetTeamMembershipsByUser returns all teams the user belongs to.
+	GetTeamMembershipsByUser(ctx context.Context, userSub string) ([]*TeamMember, error)
+	// UpsertTeamMember inserts or updates a TeamMember row.
+	UpsertTeamMember(ctx context.Context, m *TeamMember) error
 }
