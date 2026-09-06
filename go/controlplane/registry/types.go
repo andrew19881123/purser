@@ -179,6 +179,46 @@ type TenantUsage struct {
 	OutputTokens  int64  `json:"output_tokens"`
 }
 
+// DeploymentApproval is one row of the human-oversight approval queue
+// (AI Act Art.14). When the "deployment_approvals" enterprise feature is
+// enabled, every deploy request creates a pending record here; the real
+// rollout is held until an admin approves via the REST API.
+type DeploymentApproval struct {
+	ID           int64      `json:"id"`
+	DeploymentID string     `json:"deployment_id"`
+	ModelID      string     `json:"model_id"`
+	Requester    string     `json:"requester"` // api_key_hash
+	RequestedAt  time.Time  `json:"requested_at"`
+	Status       string     `json:"status"` // "pending" | "approved" | "rejected"
+	Reviewer     string     `json:"reviewer,omitempty"`
+	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+	Notes        string     `json:"notes,omitempty"`
+}
+
+// BillingTenantUsage aggregates inference activity for a single tenant+model
+// pair inside a billing window. It is the row type inside BillingReport.
+type BillingTenantUsage struct {
+	TenantID         string    `json:"tenant_id"`
+	ModelID          string    `json:"model_id"`
+	RequestCount     int64     `json:"request_count"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	TotalTokens      int64     `json:"total_tokens"`
+	AvgLatencyMs     float64   `json:"avg_latency_ms"`
+	PeriodStart      time.Time `json:"period_start"`
+	PeriodEnd        time.Time `json:"period_end"`
+}
+
+// BillingReport is the full chargeback report for a configurable time window.
+// It is returned by GetBillingReport and served by GET /api/v1/billing/report.
+type BillingReport struct {
+	PeriodStart   time.Time            `json:"period_start"`
+	PeriodEnd     time.Time            `json:"period_end"`
+	Tenants       []BillingTenantUsage `json:"tenants"`
+	TotalRequests int64                `json:"total_requests"`
+	TotalTokens   int64                `json:"total_tokens"`
+}
+
 // Cert tracks a certificate issued by the internal CA (see package pki).
 type Cert struct {
 	Serial    string    `json:"serial"`
@@ -189,4 +229,58 @@ type Cert struct {
 	NotAfter  time.Time `json:"not_after"`
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// InferenceEvent is one row of the append-only inference audit log.
+// It satisfies AI Act Art.12: who requested what, when, using which model.
+// Prompt content is NEVER stored (GDPR Article 5 data minimisation).
+// RequestId carries a gateway-generated UUID v4; INSERT OR IGNORE on it
+// makes RecordInferenceEvent idempotent against duplicate submissions.
+type InferenceEvent struct {
+	ID               int64     `json:"id"`
+	RequestID        string    `json:"request_id"`
+	APIKeyHash       string    `json:"api_key_hash"`
+	ModelID          string    `json:"model_id"`
+	TenantID         string    `json:"tenant_id"`
+	Timestamp        time.Time `json:"timestamp"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	// Endpoint is the inference protocol used: "openai", "anthropic", or "embeddings".
+	Endpoint string `json:"endpoint"`
+	// ClientIPPrefix is the CIDR /24 prefix of the caller — the full IP is
+	// never stored (GDPR data minimisation).
+	ClientIPPrefix string  `json:"client_ip_prefix"`
+	LatencyMs      float64 `json:"latency_ms"`
+	// FinishReason is "stop", "length", or "error".
+	FinishReason string `json:"finish_reason"`
+}
+
+// ListInferenceEventsRequest is the filter and pagination spec for
+// ListInferenceEvents. All filter fields are optional (zero value = no filter).
+type ListInferenceEventsRequest struct {
+	APIKeyHash string    `json:"api_key_hash"` // filter by key hash
+	ModelID    string    `json:"model_id"`     // filter by model
+	TenantID   string    `json:"tenant_id"`    // filter by tenant
+	After      time.Time `json:"after"`        // exclusive lower bound on timestamp
+	Before     time.Time `json:"before"`       // exclusive upper bound on timestamp
+	Limit      int32     `json:"limit"`        // default 100, max 1000
+	PageToken  string    `json:"page_token"`   // cursor (opaque, decimal row id)
+}
+
+// ListInferenceEventsResponse is the paged result of ListInferenceEvents.
+type ListInferenceEventsResponse struct {
+	Events        []*InferenceEvent `json:"events"`
+	NextPageToken string            `json:"next_page_token,omitempty"`
+}
+
+// Policy is a Rego policy document stored in the registry and evaluated by the
+// embedded OPA engine. Only enabled policies are loaded into the engine; the
+// `name` field serves as the human-readable identifier and upsert key.
+type Policy struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Rego      string    `json:"rego"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

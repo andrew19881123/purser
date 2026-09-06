@@ -8,20 +8,31 @@
 import type {
   ApiKey,
   ApiKeyWithSecret,
+  AuditEntry,
+  AuditLog,
+  BillingReport,
+  BillingSummary,
   CatalogEntry,
   ClusterCapacity,
   Deployment,
   DeploymentPlan,
+  EnterpriseStatus,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   MetricsSnapshot,
   MetricsStreamHandlers,
+  ModelHealth,
+  ModelHealthStatus,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
+  UsageSummary,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
+import { ApiError } from '../api/http';
 import { clamp } from '../lib/format';
 import {
   mockApiKeys,
@@ -178,10 +189,64 @@ export const mockBackend: PurserApi = {
     return delay(structuredClone(spec), 700);
   },
 
+  getModelHealth(modelId: string): Promise<ModelHealth> {
+    // Find the most-recent deployment for this model.
+    let latest: Deployment | undefined;
+    for (const dep of deployments.values()) {
+      if (dep.plan.modelId === modelId) {
+        if (!latest || new Date(dep.createdAt) > new Date(latest.createdAt)) {
+          latest = dep;
+        }
+      }
+    }
+    if (!latest) {
+      return delay<ModelHealth>({
+        modelId,
+        status: 'unavailable',
+        deploymentId: '',
+        deploymentState: '',
+        nodeCount: 0,
+        errorMessage: 'no deployment found for this model',
+      });
+    }
+    let status: ModelHealthStatus = 'unavailable';
+    if (latest.state === 'active') status = 'healthy';
+    else if (latest.state === 'provisioning' || latest.state === 'stopping') status = 'degraded';
+    return delay<ModelHealth>({
+      modelId,
+      status,
+      deploymentId: latest.id,
+      deploymentState: latest.state,
+      nodeCount: latest.nodeStatus.length,
+    });
+  },
+
   previewModelPlan(modelId: string): Promise<PlanPreviewResult> {
     const m = allModels().find((x) => x.modelId === modelId);
     if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
     return delay(mockPreviewPlan(m, nodes), 600);
+  },
+
+  deleteModel(modelId: string): Promise<void> {
+    const m = allModels().find((x) => x.modelId === modelId);
+    if (!m) throw new NotFoundError(`Model ${modelId} is not in the catalog.`);
+    // Refuse deletion if any active (non-terminal) deployment references this model.
+    for (const dep of deployments.values()) {
+      if (
+        dep.plan.modelId === modelId &&
+        dep.state !== 'stopped' &&
+        dep.state !== 'failed'
+      ) {
+        return Promise.reject(
+          new ApiError(
+            409,
+            'model is referenced by one or more active deployments; tear them down first',
+          ),
+        );
+      }
+    }
+    importedModels = importedModels.filter((x) => x.modelId !== modelId);
+    return delay(undefined, 350);
   },
 
   planDeployment(modelId, overrides): Promise<DeploymentPlan> {
@@ -294,6 +359,153 @@ export const mockBackend: PurserApi = {
     if (!key) throw new NotFoundError(`API key ${id} was not found.`);
     key.revoked = true;
     return delay(structuredClone(key), 350);
+  },
+
+  // --- usage ---
+
+  getKeyUsage(keyId: string): Promise<KeyUsage> {
+    const key = apiKeys.find((k) => k.id === keyId);
+    if (!key) throw new NotFoundError(`API key ${keyId} was not found.`);
+    // Deterministic fake counts derived from the key id.
+    const seed = keyId.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    return delay(
+      {
+        apiKeyId: keyId,
+        totalRequests: (seed * 37) % 50_000,
+        inputTokens: (seed * 1_301) % 5_000_000,
+        outputTokens: (seed * 613) % 2_000_000,
+      },
+      200,
+    );
+  },
+
+  getUsageSummary(): Promise<UsageSummary> {
+    const teams = Array.from(new Set(apiKeys.map((k) => k.team)));
+    return delay(
+      {
+        tenants: teams.map((team) => {
+          const seed = team.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+          return {
+            tenant: team,
+            totalRequests: (seed * 41) % 100_000,
+            inputTokens: (seed * 1_409) % 10_000_000,
+            outputTokens: (seed * 709) % 4_000_000,
+          };
+        }),
+      },
+      260,
+    );
+  },
+
+  getEnterpriseStatus(): Promise<EnterpriseStatus> {
+    return delay({ edition: 'community', licensee: 'community', features: [] }, 180);
+  },
+
+  // --- enterprise ---
+
+  getAuditLog: async (limit = 100): Promise<AuditLog> => {
+    const now = Date.now();
+    const mockEntries: AuditEntry[] = [
+      {
+        seq: 1,
+        actor: 'api',
+        action: 'join_token.minted',
+        target: 'default',
+        prevHash: '0'.repeat(64),
+        hash: 'a3f8c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9',
+        createdAt: new Date(now - 7_200_000).toISOString(),
+      },
+      {
+        seq: 2,
+        actor: 'api',
+        action: 'model.created',
+        target: 'llama-3.1-8b',
+        details: { source: 'huggingface' },
+        prevHash: 'a3f8c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9',
+        hash: '9c21b3a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5',
+        createdAt: new Date(now - 3_600_000).toISOString(),
+      },
+      {
+        seq: 3,
+        actor: 'api',
+        action: 'apikey.created',
+        target: 'dev-key-1',
+        details: { team: 'engineering' },
+        prevHash: '9c21b3a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5',
+        hash: '7b44e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8',
+        createdAt: new Date(now - 1_800_000).toISOString(),
+      },
+      {
+        seq: 4,
+        actor: 'api',
+        action: 'fleet.node.draining',
+        target: 'node-02',
+        prevHash: '7b44e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8',
+        hash: '2e99c1a3b8f4d7e2c1a3b8f4d7e2c1a3b8f4d7e2c1a3b8f4d7e2c1a3b8f4d7e2',
+        createdAt: new Date(now - 600_000).toISOString(),
+      },
+    ];
+    const entries = mockEntries.slice(0, limit);
+    return {
+      feature: 'audit',
+      licensee: 'Demo Corp (Mock Mode)',
+      entries,
+      chain: { verified: true, length: entries.length },
+    };
+  },
+
+  // --- reconciler ---
+
+  getReconcilerStatus(): Promise<ReconcilerStatus> {
+    return delay<ReconcilerStatus>({
+      config: { intervalS: 10, nodeTimeoutS: 45, hysteresisS: 30, actionCooldownS: 120 },
+      tracker: {},
+    }, 150);
+  },
+
+  // --- deployment approvals (mock: no enterprise license in mock mode) ---
+  listDeploymentApprovals(): Promise<import('../api/types').DeploymentApproval[]> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+  getDeploymentApproval(): Promise<import('../api/types').DeploymentApproval> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+  approveDeployment(): Promise<import('../api/types').DeploymentApproval> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+  rejectDeployment(): Promise<import('../api/types').DeploymentApproval> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
+  // --- billing / chargeback (mock: returns empty report — no enterprise in mock) ---
+  getBillingReport(): Promise<BillingReport> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
+  getBillingCsvUrl(): string {
+    // In mock mode there is no real CSV endpoint; return an empty data URL.
+    return 'data:text/csv;charset=utf-8,tenant_id%2Cmodel_id%2Crequest_count%0A';
+  },
+
+  getBillingSummary(): Promise<BillingSummary> {
+    const now = new Date().toISOString();
+    return Promise.resolve({
+      period_start: now,
+      period_end: now,
+      total_requests: 0,
+      total_tokens: 0,
+      active_tenants: 0,
+    });
   },
 
   streamMetrics(handlers: MetricsStreamHandlers): () => void {

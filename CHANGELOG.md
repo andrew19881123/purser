@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-06
+
+> **v0.3 — "Enterprise-Ready"** — major feature release.
+>
+> Highlights: Anthropic Messages API compatibility (Claude Code / Cursor),
+> configuration-as-code with GitOps reconciler, inference audit log (AI Act Art.12),
+> deployment approval gates (AI Act Art.14), embedded OPA policy engine,
+> HA Raft foundation, multi-tenancy chargeback, HTTP proxy + custom CA support,
+> backup/restore CLI, full UX audit with bookmarkable URLs and 17 UX fixes,
+> comprehensive hardening across all 6 components.
+
+### Added — API & Compatibility
+- **Anthropic Messages API** (`POST /v1/messages`) — full translation layer for Claude Code, Cursor, and `@anthropic-ai/sdk`; `x-api-key` auth; streaming SSE in Anthropic format (`content_block_delta`); non-streaming `message` envelope; errors in Anthropic shape
+- Quota, rate-limiting, Prometheus metrics all reuse the existing OpenAI inference plane
+
+### Added — Enterprise Network
+- **HTTP proxy support** — `PURSER_AGENT_HTTP(S)_PROXY` / `NO_PROXY` / `CA_BUNDLE` for agent and gateway (reqwest client factory); `PURSER_CA_BUNDLE` + `http.ProxyFromEnvironment` for control-plane (`go/controlplane/transport`)
+- Enables operation behind corporate proxies and with private CA certificates
+
+### Added — Configuration-as-Code (GitOps)
+- **`purser.yaml` schema** (`go/controlplane/config/`) — `ClusterConfig` with models, deployments, quotas, gateway; `Load` / `Validate` / `Diff` functions
+- **`POST /api/v1/config/apply`** — idempotent apply from YAML body; `POST /config/diff` dry-run; `GET /config/export` exports current state
+- **`--config` flag** / `PURSER_CONFIG` env — applies `purser.yaml` at startup
+- **GitOps watcher** — SHA-256 polling loop (30s, `PURSER_CONFIG_INTERVAL`) re-applies on file change; non-fatal on missing file (K8s ConfigMap late-mount)
+
+### Added — Compliance (AI Act / GDPR / DORA)
+- **Inference audit log** — `InferenceEvent` proto + `inference_audit_log` SQLite table with 3 compound indexes; prompt content never stored (GDPR Art.5 minimisation); AI Act Art.12
+- **`POST /api/v1/inference-events`** (internal, gateway→CP) + **`GET /api/v1/inference-audit`** (enterprise-gated); gateway emits fire-and-forget events after each inference
+- **Deployment approval gates** — admin must approve before a model deploys; `GET/POST /api/v1/approvals`; `ApprovalsPage` UI; AI Act Art.14 human oversight; enterprise feature `deployment_approvals`
+- **Backup/restore CLI** — `purser backup --output` / `purser restore --input --confirm` via SQLite `VACUUM INTO`; DORA Art.12 compliant; Kubernetes CronJob example in docs
+
+### Added — Policy-as-Code
+- **Embedded OPA engine** (`go/controlplane/policy/`) — Rego policies stored in SQLite, atomically reloaded under `sync.RWMutex`; evaluates `data.purser.allow` on every deploy
+- **CRUD API** — `GET/PUT/DELETE /api/v1/policies/{name}` + `POST /api/v1/policies/eval` dry-run
+- Open-by-default (no policies = allow everything); enterprise feature `policy_engine`
+
+### Added — High Availability
+- **Raft consensus foundation** (`hashicorp/raft` + BoltDB) — `PurserFSM` applies log entries to `SQLiteRegistry`; TCP transport; bootstrap + join support; single-node mode preserved when `PURSER_RAFT_NODE_ID` unset
+- **`GET /api/v1/cluster/status`** — leader/follower state, Raft stats
+
+### Added — FinOps / Multi-tenancy
+- **Chargeback reports** — `GET /api/v1/billing/report` (JSON + CSV) aggregates `inference_audit_log` by tenant+model for configurable windows; `GET /api/v1/billing/summary` (no enterprise gate)
+- **`ChargebackPage`** UI — period picker (7/30/90 days), usage table sorted by tokens, CSV export; enterprise feature `billing`
+- FOCUS spec alignment and FinOps integration docs
+
+### Added — UI (UX Audit)
+- History routing (`createBrowserRouter`) — clean bookmarkable URLs (`/fleet`, not `/#/fleet`); nginx `try_files` already in place
+- Audit Log nav link moved from "Use" to "Operate" section
+- `ApprovalsPage` and `ChargebackPage` added to sidebar nav
+- Model Studio 4-step progress stepper (`done` / `active` / `pending`, `aria-current`)
+- Settings `QuickStatsBar` above fold (edition, active keys, monthly requests)
+- Catalog: empty state with link to Model Studio; spec-list `title` tooltips (params/layers/context/quant)
+- Onboarding: join token expiry shows absolute timestamp on hover
+- Playground: "Ignored in mock mode" hidden in production (`import.meta.env.DEV` only)
+- Fleet: `ReconcilerStatusCard` shows "Status unknown" on API error instead of disappearing; link quality and FP4 tooltips
+- Deployments: subtitle added to `PageHeader`
+
+### Added — Hardening (Security)
+- **Rust agent**: AES-256 key `zeroize` on drop; probe benchmark runs outside mutex lock; heartbeat exponential backoff reconnect (1s→60s); `NodeMetrics` populated from sysinfo (was always `None`)
+- **Rust gateway**: body size limit 4 MB; constant-time bearer token comparison (`subtle`); sanitized upstream error messages (no IP:port leak); semaphore cleanup on route removal; bounded usage-report spawn (256 permits); mid-stream SSE error frame
+- **Go control-plane**: `crypto/subtle.ConstantTimeCompare` for internal token; `GetAPIKeyByHash` O(1) RBAC (was O(n) full scan); `sync.RWMutex` on reconciler tracker; `pkceStateStore` bounded at 1000 entries; rate-limiter LRU eviction; goroutine panic recovery via `defer recover()`
+- **Go planner**: `PURSER_PLANNER_ORDERING_THRESHOLD` capped at 20 (OOM guard); `Plan()` accepts `context.Context`; KV SSD offload modeled in fit check
+- **CI/Docker**: nginx UI runs as non-root (UID 65532); security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy); CI job timeouts; `npm test` step; `dependabot.yml` weekly updates
+- **UI**: confirm dialogs for drain/remove/revoke; `handleUnauthorized()` on 401; `sessionStorage` for gateway key; SSE stream error visible to user
+
+### Added — Infrastructure
+- OIDC Authorization Code Flow + PKCE: endpoint `/auth/login` e `/auth/callback`; session cookie HttpOnly; browser SSO funzionante end-to-end
+- RBAC: mapping claim OIDC (groups/roles) → ruoli Purser via `PURSER_OIDC_GROUP_MAPPINGS`; tenant-scoped list deployments
+- TLS opzionale sul management API (`PURSER_TLS_AUTO` usa la PKI interna)
+- Rate limiting sul management API (per-IP e per-key, 100/50 RPS default)
+- Webhook notification quando il reconciler richiede approvazione manuale (`PURSER_RECONCILER_WEBHOOK_URL`)
+- Fleet Capacity Headroom API (`GET /api/v1/fleet/capacity`)
+- NodeMetrics → OTEL bridge: 5 gauge per-nodo (CPU, GPU, bandwidth, tok/s, inference alive)
+- Reconciler OTEL metrics: counter eventi, gauge pending-approval, histogram loop duration
+- Configurable OTEL trace sampler (`OTEL_TRACES_SAMPLER`)
+- Reconciler config status endpoint (`GET /api/v1/reconciler/status`)
+- Periodic bandwidth re-calibration (`PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`)
+- llama.cpp backend registrato in BackendRegistry (feature-gated `--features llamacpp`)
+- ModelCache cablato nel path StartEngine: model_ref risolto a path GGUF locale
+- HttpFetcher attivato di default (`PURSER_MODEL_MIRROR_URL`)
+- `prefix_caching_factor` e `kv_ssd_offload` in HardwareProfile proto; planner usa le capability reali
+- Flash attention come campo esplicito in EngineParams (`flash_attn: bool`)
+- ARM64 build matrix: linux/arm64 + darwin/arm64 (Apple Silicon M2/M3)
+- `docker-compose.yml` demo mode: `docker compose up`, 3 servizi mock, no GPU
+- `devcontainer.json` + `make dev` + good-first-issue guide in CONTRIBUTING.md
+- `GET /api/v1/models/{id}` endpoint server-side
+- Python SDK: `AsyncPurserClient` + `stream_metrics()` SSE generator
+- TypeScript SDK: `@purser/sdk 0.3.0` (native fetch, zero dipendenze runtime)
+- Planner micro-benchmark suite con dati baseline reali
+- Ansible role `purser_agent` per fleet enrollment
+- Webhook notifications + Ansible integration in GitHub Pages docs
+- apt/yum hosted repository via Cloudsmith (step CI pronto)
+- SLSA L2 provenance + cosign SBOM attestazioni + chart signing
+- Production license trust root (chiave reale, modello open-core commercialmente funzionale)
+- Fix ROOT hardcoded in e2e scripts: auto-detection via `${BASH_SOURCE[0]}`
+
+### Fixed
+- `purser-license keygen` output ora include guida step-by-step con chiave di produzione
+- OIDC: `PURSER_OIDC_CLIENT_SECRET` implementato (era documentato ma non letto)
+- `bench_test.go`: `Plan()` updated to pass `context.Context` as first argument
+
+### Changed
+- Release pipeline: ARM64 artifacts, SLSA provenance, SBOM come attestazioni cosign
+- Planner: calibrazione più precisa con prefix caching e KV SSD offload dai profili hardware reali
+
 ## [0.2.0] - 2026-09-05
 
 > **v0.2 — "Production-Grade Enterprise"** — major feature release.

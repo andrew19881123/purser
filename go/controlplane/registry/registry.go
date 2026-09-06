@@ -59,6 +59,11 @@ type Registry interface {
 	// --- API keys ----------------------------------------------------------
 	CreateAPIKey(ctx context.Context, k *APIKey) error
 	GetAPIKey(ctx context.Context, id string) (*APIKey, error)
+	// GetAPIKeyByHash returns the single enabled API key whose key_hash equals
+	// keyHash (SHA-256 hex of the raw token). Returns ErrNotFound when no
+	// enabled key matches. The single-row indexed query is O(1) vs. the O(n)
+	// full-scan that ListAPIKeys + loop would require.
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
 	ListAPIKeys(ctx context.Context) ([]*APIKey, error)
 	UpdateAPIKey(ctx context.Context, k *APIKey) error
 	DeleteAPIKey(ctx context.Context, id string) error
@@ -77,6 +82,21 @@ type Registry interface {
 	// limit (limit <= 0 means "a sane default").
 	ListAudit(ctx context.Context, limit int) ([]*AuditEntry, error)
 
+	// --- Deployment approval queue (AI Act Art.14 human oversight) --------
+	// RequestDeploymentApproval inserts a new approval record with status
+	// "pending". The ID is written back into approval.
+	RequestDeploymentApproval(ctx context.Context, approval *DeploymentApproval) error
+	// GetDeploymentApproval returns the approval record for deploymentID.
+	// Returns ErrNotFound when no matching record exists.
+	GetDeploymentApproval(ctx context.Context, deploymentID string) (*DeploymentApproval, error)
+	// ListDeploymentApprovals returns approval records, optionally filtered by
+	// status ("pending", "approved", "rejected", or "" for all).
+	// Results are newest-first, capped at limit (limit <= 0 → default 50).
+	ListDeploymentApprovals(ctx context.Context, status string, limit int) ([]*DeploymentApproval, error)
+	// UpdateDeploymentApprovalStatus transitions the approval for deploymentID
+	// to the given status, recording the reviewer and optional notes.
+	UpdateDeploymentApprovalStatus(ctx context.Context, deploymentID, status, reviewer, notes string) error
+
 	// --- Usage log ---------------------------------------------------------
 	// RecordUsage records one inference request's token usage.
 	RecordUsage(ctx context.Context, apiKeyID, modelID string, inputTokens, outputTokens int64) error
@@ -85,4 +105,29 @@ type Registry interface {
 	// GetUsageSummary returns usage grouped by tenant since the given time.
 	// A zero since means "all time".
 	GetUsageSummary(ctx context.Context, since time.Time) ([]TenantUsage, error)
+	// GetBillingReport returns a chargeback report for the given time window,
+	// optionally filtered to a single tenant. An empty tenantID means all tenants.
+	GetBillingReport(ctx context.Context, start, end time.Time, tenantID string) (*BillingReport, error)
+
+	// --- Inference audit log (AI Act Art.12) --------------------------------
+	// RecordInferenceEvent appends an inference event to the audit log.
+	// The operation is idempotent: a duplicate RequestID is silently ignored.
+	// A nil event is a no-op and returns nil.
+	RecordInferenceEvent(ctx context.Context, event *InferenceEvent) error
+	// ListInferenceEvents returns paginated inference audit events matching
+	// the filter described in req. Unset filter fields are ignored. The
+	// default limit is 100; the maximum is 1000.
+	ListInferenceEvents(ctx context.Context, req *ListInferenceEventsRequest) (*ListInferenceEventsResponse, error)
+
+	// --- Policies (OPA/Rego) -----------------------------------------------
+	// UpsertPolicy inserts or replaces a policy by name. The updated_at
+	// timestamp is set by the implementation.
+	UpsertPolicy(ctx context.Context, p *Policy) error
+	// GetPolicy returns the policy with the given name, or ErrNotFound.
+	GetPolicy(ctx context.Context, name string) (*Policy, error)
+	// ListPolicies returns all stored policies (enabled and disabled).
+	ListPolicies(ctx context.Context) ([]*Policy, error)
+	// DeletePolicy removes the policy with the given name. Returns ErrNotFound
+	// when no such policy exists.
+	DeletePolicy(ctx context.Context, name string) error
 }

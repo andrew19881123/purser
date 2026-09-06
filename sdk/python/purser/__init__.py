@@ -1,6 +1,7 @@
 """Purser Python SDK — management client for Purser cluster administration."""
 from __future__ import annotations
 
+from .async_client import AsyncPurserClient
 from .client import PurserClient
 from .exceptions import (
     ConflictError,
@@ -29,8 +30,9 @@ from .types import (
 __version__ = "0.2.0"
 
 __all__ = [
-    # Client
+    # Clients
     "PurserClient",
+    "AsyncPurserClient",
     # Exceptions
     "PurserError",
     "NotFoundError",

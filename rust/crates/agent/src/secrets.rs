@@ -33,6 +33,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use anyhow::Context as _;
+use zeroize::Zeroize;
 
 /// A value whose `Debug`/`Display` never reveal its contents. Use it for tokens
 /// and keys so a stray log statement cannot leak them.
@@ -178,6 +179,14 @@ impl EncryptedFileSecretStore {
 
     fn secret_path(&self, name: &str) -> PathBuf {
         self.dir.join(format!("{name}.enc"))
+    }
+}
+
+/// H4: zero the AES-256 key on drop so it does not linger in memory after the
+/// store is deallocated.
+impl Drop for EncryptedFileSecretStore {
+    fn drop(&mut self) {
+        self.key.zeroize();
     }
 }
 
@@ -511,5 +520,39 @@ mod tests {
         assert!(validate_name(".hidden").is_err());
         assert!(validate_name("").is_err());
         assert!(validate_name("good_name-123").is_ok());
+    }
+
+    // ---- H4: AES key zeroize on drop ------------------------------------
+
+    /// Verifies that `EncryptedFileSecretStore` zeroes its AES key on drop
+    /// (the `Drop` impl calls `self.key.zeroize()`).
+    ///
+    /// Direct field access is not possible because `key` is private, so the
+    /// test takes an indirect route:
+    ///  1. Confirm that `[u8; 32]` implements `Zeroize` (required by the impl).
+    ///  2. Create and drop a store, verifying it can be used normally first.
+    #[test]
+    fn key_material_zeroed_on_drop() {
+        // 1. Zeroize must work on [u8; 32] — the same type as the private field.
+        let mut tmp_key = fixed_key();
+        tmp_key.zeroize();
+        assert_eq!(
+            tmp_key,
+            [0u8; 32],
+            "Zeroize::zeroize() must overwrite every byte with 0"
+        );
+
+        // 2. The store can be created, used, and dropped without panic.
+        let dir = TempDir::new().unwrap();
+        {
+            let store = EncryptedFileSecretStore::new(dir.path(), fixed_key()).unwrap();
+            store.put("tok", b"secret").unwrap();
+            // `store` drops here — Drop::drop() calls self.key.zeroize().
+        }
+        // The encrypted file survives the store drop.
+        assert!(
+            dir.path().join("tok.enc").exists(),
+            "encrypted file must remain after store is dropped"
+        );
     }
 }

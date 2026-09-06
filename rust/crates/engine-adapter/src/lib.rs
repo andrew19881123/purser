@@ -27,6 +27,27 @@ pub use backend::{
 pub use error::{EngineError, Result};
 pub use mock::{MockConfig, MockEngine};
 
+/// Parameters for starting an engine instance.
+///
+/// Carries both the logical model reference and the optional on-disk GGUF path
+/// resolved by the agent's model cache. Real backends (e.g. llama.cpp, DwarfStar)
+/// read `model_path` when set and pass it directly to the engine's `--model` flag
+/// (see `flags.rs` in those adapters); the [`MockEngine`] ignores both fields.
+///
+/// This type is the source of truth for the "what to load" side of a start request.
+/// The supervision layer passes it as part of an `EngineSpec` — the `model_path`
+/// field is populated by the agent's `ModelCache` before the spec reaches the
+/// backend, so adapters do not need to resolve model references themselves.
+#[derive(Clone, Debug, Default)]
+pub struct StartRequest {
+    /// Logical model reference (e.g. `"llama-3.1-8b:Q4_K_M"`).
+    pub model_ref: String,
+    /// Resolved on-disk GGUF path from the model cache. `None` means the cache
+    /// did not hold the artifact at start time; the backend must locate the file
+    /// itself (e.g. via a configured model directory or the model_ref directly).
+    pub model_path: Option<std::path::PathBuf>,
+}
+
 // Re-export the shared proto types adapters speak in, so downstream crates need
 // only depend on `purser-engine-adapter`.
 pub use purser_proto::v1::{EngineEvent, EngineEventKind, EngineMetrics, EngineParams, Role};

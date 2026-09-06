@@ -134,3 +134,55 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log (api_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_request_at ON usage_log (request_at);
+
+-- inference_audit_log: append-only record of every inference request for AI Act
+-- Art.12 compliance. Prompt content is NEVER stored (GDPR Article 5 data
+-- minimisation). request_id has a UNIQUE constraint so duplicate submissions
+-- (gateway retries, at-least-once delivery) are silently ignored.
+CREATE TABLE IF NOT EXISTS inference_audit_log (
+    id                INTEGER  PRIMARY KEY AUTOINCREMENT,
+    request_id        TEXT     NOT NULL UNIQUE,
+    api_key_hash      TEXT     NOT NULL,
+    model_id          TEXT     NOT NULL,
+    tenant_id         TEXT     NOT NULL DEFAULT '',
+    timestamp         TEXT     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    prompt_tokens     INTEGER  NOT NULL DEFAULT 0,
+    completion_tokens INTEGER  NOT NULL DEFAULT 0,
+    endpoint          TEXT     NOT NULL DEFAULT 'openai',
+    client_ip_prefix  TEXT     NOT NULL DEFAULT '',
+    latency_ms        REAL     NOT NULL DEFAULT 0,
+    finish_reason     TEXT     NOT NULL DEFAULT 'stop'
+);
+CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
+CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_inference_audit_tenant_ts ON inference_audit_log(tenant_id, timestamp);
+
+-- policies: Rego policy documents evaluated by the embedded OPA engine.
+-- The engine is reloaded on every PUT/DELETE so the `enabled` flag takes
+-- effect without a restart.
+CREATE TABLE IF NOT EXISTS policies (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    rego       TEXT NOT NULL,           -- Rego source code
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- deployment_approvals: human-oversight gate for AI Act Art.14 compliance.
+-- When the "deployment_approvals" enterprise feature is active, every deploy
+-- request creates a "pending" row here; the actual rollout is held until an
+-- admin approves via POST /api/v1/approvals/{deploymentId}/approve.
+CREATE TABLE IF NOT EXISTS deployment_approvals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deployment_id TEXT NOT NULL,
+    model_id      TEXT NOT NULL,
+    requester     TEXT NOT NULL,   -- api_key_hash of the deploy requester
+    requested_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status        TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
+    reviewer      TEXT,            -- api_key_hash of the admin who approved/rejected
+    reviewed_at   TEXT,
+    notes         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON deployment_approvals(status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_approvals_model  ON deployment_approvals(model_id);

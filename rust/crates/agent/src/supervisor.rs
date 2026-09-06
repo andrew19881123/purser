@@ -60,10 +60,16 @@ impl BackendRegistry {
         Self::default()
     }
 
-    /// A registry pre-populated with the built-in GPU-free `mock` backend.
+    /// A registry pre-populated with the built-in GPU-free `mock` backend and,
+    /// when the crate is compiled with `--features llamacpp`, the real
+    /// llama.cpp backend.
     pub fn with_builtins() -> Self {
         let mut reg = Self::new();
         reg.register("mock", || Arc::new(MockEngine::new()));
+        #[cfg(feature = "llamacpp")]
+        reg.register("llamacpp", || {
+            Arc::new(purser_adapter_llamacpp::LlamaCppBackend::default())
+        });
         reg
     }
 
@@ -88,6 +94,26 @@ impl BackendRegistry {
     }
 }
 
+/// Build a human-readable error message for an unrecognised (or feature-gated)
+/// backend name.
+///
+/// When the binary was *not* compiled with `--features llamacpp` and the caller
+/// requests the `llamacpp` backend, the generic "unknown engine backend" message
+/// would be confusing — this returns the specific compilation hint instead.
+pub fn backend_error_msg(name: &str, registry: &BackendRegistry) -> String {
+    #[cfg(not(feature = "llamacpp"))]
+    if name == "llamacpp" {
+        return "llama.cpp backend requested but binary was not compiled with \
+                --features llamacpp"
+            .to_string();
+    }
+    format!(
+        "unknown engine backend {:?}; known: {:?}",
+        name,
+        registry.names()
+    )
+}
+
 /// What to start and how, distilled from a `StartEngineRequest`.
 #[derive(Clone, Debug)]
 pub struct EngineSpec {
@@ -105,6 +131,11 @@ pub struct EngineSpec {
     pub bind_addr: String,
     /// Engine tuning parameters (host only).
     pub params: EngineParams,
+    /// Resolved on-disk GGUF path from the agent's model cache. `None` if the
+    /// cache did not hold the artifact at request time; the backend falls back to
+    /// locating the model itself. Populated by `AgentSvc::start_engine` before
+    /// the spec reaches the supervisor.
+    pub model_path: Option<std::path::PathBuf>,
 }
 
 impl EngineSpec {
@@ -118,6 +149,7 @@ impl EngineSpec {
             peers: Vec::new(),
             bind_addr: "127.0.0.1:0".to_string(),
             params: EngineParams::default(),
+            model_path: None,
         }
     }
 }
@@ -832,9 +864,56 @@ mod tests {
     #[test]
     fn registry_builds_mock() {
         let reg = BackendRegistry::with_builtins();
-        assert_eq!(reg.names(), vec!["mock".to_string()]);
         assert!(reg.build("mock").is_some());
         assert!(reg.build("nope").is_none());
+    }
+
+    /// `mock` must always be present regardless of which features are compiled in.
+    #[test]
+    fn test_mock_always_registered() {
+        let reg = BackendRegistry::with_builtins();
+        assert!(
+            reg.build("mock").is_some(),
+            "mock backend must always be registered"
+        );
+        assert!(
+            reg.names().contains(&"mock".to_string()),
+            "mock must appear in names()"
+        );
+    }
+
+    /// When compiled *with* `--features llamacpp`, the registry must contain the
+    /// llamacpp backend.
+    #[cfg(feature = "llamacpp")]
+    #[test]
+    fn test_llamacpp_registered_with_feature() {
+        let reg = BackendRegistry::with_builtins();
+        assert!(
+            reg.build("llamacpp").is_some(),
+            "llamacpp backend must be registered when compiled with --features llamacpp"
+        );
+        assert!(
+            reg.names().contains(&"llamacpp".to_string()),
+            "llamacpp must appear in names() when feature is active"
+        );
+    }
+
+    /// Without the llamacpp feature, requesting that backend must produce the
+    /// helpful compilation-hint message rather than the generic "unknown backend".
+    #[cfg(not(feature = "llamacpp"))]
+    #[test]
+    fn test_unknown_backend_error_message() {
+        let reg = BackendRegistry::with_builtins();
+        // llamacpp is not registered when the feature is absent.
+        assert!(
+            reg.build("llamacpp").is_none(),
+            "llamacpp must not be registered without --features llamacpp"
+        );
+        let msg = backend_error_msg("llamacpp", &reg);
+        assert!(
+            msg.contains("--features llamacpp"),
+            "error message should mention the missing feature flag; got: {msg}"
+        );
     }
 
     // Happy path: start -> READY -> metrics -> stop.
@@ -983,6 +1062,7 @@ mod tests {
             peers: Vec::new(),
             bind_addr: "0.0.0.0:0".to_string(),
             params: EngineParams::default(),
+            model_path: None,
         };
         let mut rx = sup.start(host_spec);
 

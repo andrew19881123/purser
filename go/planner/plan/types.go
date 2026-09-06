@@ -136,16 +136,17 @@ type Node struct {
 
 	// KVSSDOffload reports that the engine supports spilling cold KV-cache
 	// blocks to SSD (Tutti-style offload), increasing the effective memory
-	// available for the KV pool.
-	// TODO: add kv_ssd_offload to NodeCapabilities proto (fase2 follow-up);
-	// for now, callers set this field directly.
+	// available for the KV pool. Populated from HardwareProfile.kv_ssd_offload
+	// via NodeFromHardwareProfile (I6). Agents report it via the proto field
+	// when their engine backend supports SSD offload.
 	KVSSDOffload bool
 
 	// PrefixCachingFactor is the expected fraction of input tokens that will
 	// be KV-cache hits (0–1). A non-zero value reduces the effective prefill
-	// compute, raising reported prefill throughput.
-	// TODO: add prefix_caching_factor to NodeCapabilities proto (fase2 follow-up);
-	// for now, callers set this field directly.
+	// compute, raising reported prefill throughput. Populated from
+	// HardwareProfile.prefix_caching_factor via NodeFromHardwareProfile (I4).
+	// Agents report it via PURSER_AGENT_PREFIX_CACHING_FACTOR when their engine
+	// supports prefix caching (e.g. vLLM PagedAttention, llama.cpp slot reuse).
 	PrefixCachingFactor float64
 }
 

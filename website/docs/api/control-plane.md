@@ -191,6 +191,26 @@ Registers a model in the catalog. Request body is a protojson-encoded `purser.v1
 
 **Response `409`:** Model already exists.
 
+### `GET /api/v1/models/{id}`
+
+Returns a single model by ID.
+
+**Response `200`:**
+
+```json
+{
+  "id": "llama-8b",
+  "family": "llama",
+  "architecture": "transformer",
+  "params_total_b": 8.0,
+  "engine": "mock",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:00Z"
+}
+```
+
+**Response `404`:** Model not found.
+
 ### `POST /api/v1/models/import`
 
 Imports a model from an external source into the catalog. Dispatches by the `source` field.
@@ -266,6 +286,12 @@ Removes a model from the catalog.
 
 **Response `204`:** No content. Model deleted.
 
+**Response `404`:**
+
+```json
+{"error": "not_found", "message": "model not found"}
+```
+
 **Response `409`:**
 
 ```json
@@ -276,9 +302,12 @@ Removes a model from the catalog.
 }
 ```
 
+!!! note "Dashboard behaviour"
+    The operator dashboard shows an inline error when a `409` is returned: _"Cannot delete: model is used by an active deployment"_. Tear down the referencing deployments from the **Deployments** page first.
+
 ### `POST /api/v1/models/{id}/plan`
 
-Read-only Planner dry run: computes the layer-split plan for the model against the current fleet without persisting anything or deploying.
+Read-only Planner dry run: computes the layer-split plan for the model against the current fleet without persisting anything or deploying. The dashboard **Preview Split** button calls this endpoint.
 
 **Response `200` (feasible):**
 
@@ -287,9 +316,26 @@ Read-only Planner dry run: computes the layer-split plan for the model against t
   "feasible": true,
   "id": "plan-abc123",
   "model_id": "llama-8b",
-  "quantization": "q4_k_m",
+  "quantization": "Q4_K_M",
   "cost": 1.23,
-  "plan": { ... }
+  "assignments": [
+    {
+      "node_id": "node-gpu-01",
+      "role": "host",
+      "layer_start": 0,
+      "layer_end": 31,
+      "draft": false
+    }
+  ],
+  "pipeline_order": ["node-gpu-01"],
+  "estimated": {
+    "decode_tok_s_min": 30,
+    "decode_tok_s_max": 50,
+    "prefill_tok_s_min": 100,
+    "prefill_tok_s_max": 200,
+    "headroom_gb": 2.0
+  },
+  "explanation": ["Single node fits all layers"]
 }
 ```
 
@@ -298,7 +344,7 @@ Read-only Planner dry run: computes the layer-split plan for the model against t
 ```json
 {
   "feasible": false,
-  "reason": "insufficient memory: need 16GB, fleet has 8GB"
+  "reason": "insufficient memory: need 16 GB, fleet has 8 GB"
 }
 ```
 
@@ -674,6 +720,53 @@ source.onmessage = (ev) => {
 
 ---
 
+## Reconciler Status
+
+### `GET /api/v1/reconciler/status`
+
+Returns the current config snapshot and pending-approval event tracker for the
+self-healing control loop. The operator dashboard's **Reconciler Status** panel
+polls this endpoint every 15 seconds.
+
+**Response `200`:**
+
+```json
+{
+  "config": {
+    "interval_s": 10,
+    "node_timeout_s": 45,
+    "hysteresis_s": 30,
+    "action_cooldown_s": 120
+  },
+  "tracker": {
+    "node_down": {
+      "tracked": 1,
+      "oldest_age_s": 38
+    }
+  }
+}
+```
+
+`tracker` is keyed by event type (see table below). An empty `tracker` object
+means the reconciler has detected no discrepancies.
+
+**Event types:**
+
+| Key | Meaning | Default automation level |
+|-----|---------|--------------------------|
+| `engine_down` | Node is alive but its engine is not running | `auto` — restarted immediately |
+| `node_down` | Node hosting an engine is unreachable | `approval_required` |
+| `new_node` | A ready node is not part of any deployment | `notify_only` |
+| `orphan_deployment` | Deployment references missing model/nodes | `approval_required` |
+
+`approval_required` events accumulate in `tracker` (with `tracked > 0` and a
+growing `oldest_age_s`) until an operator approves the corrective action via
+the dashboard or a future `POST /api/v1/reconciler/approve` endpoint.
+
+**Response `503`:** Database or reconciler not reachable.
+
+---
+
 ## Usage Accounting
 
 These endpoints are used by the gateway to record token usage and by operators to query chargeback data. See [Usage Accounting](../enterprise/usage-accounting.md) for the full guide.
@@ -711,6 +804,62 @@ Returns usage grouped by tenant. Accepts optional `?since=<RFC3339>` query param
 ```json
 {"tenants": [{"tenant": "acme", "total_requests": 1042, "input_tokens": 412000, "output_tokens": 980000}]}
 ```
+
+---
+
+## Fleet
+
+### `GET /api/v1/fleet/capacity`
+
+Returns an aggregate view of available hardware resources across all READY and
+RUNNING nodes, minus what is already consumed by active deployments. Use this
+to quickly answer "do I have room to deploy another model?" without running the
+full planner.
+
+**RBAC:** viewer-accessible (GET).
+
+**Response `200`:**
+
+```json
+{
+  "vram_total_gb": 48.0,
+  "vram_used_gb": 20.0,
+  "vram_headroom_gb": 28.0,
+  "ram_total_gb": 256.0,
+  "ram_headroom_gb": 180.0,
+  "mem_bandwidth_total_gbs": 800.0,
+  "mem_bandwidth_headroom_gbs": 600.0,
+  "ready_nodes": 4,
+  "bottleneck": "vram",
+  "can_fit_models": ["llama-3.1-8b:Q4_K_M", "mistral-7b:Q4_K_M"]
+}
+```
+
+| Field | Type | Unit | Description |
+|---|---|---|---|
+| `vram_total_gb` | number | GB | Sum of VRAM across all READY/RUNNING nodes. |
+| `vram_used_gb` | number | GB | VRAM on nodes currently hosting active deployments. |
+| `vram_headroom_gb` | number | GB | `vram_total_gb − vram_used_gb`. |
+| `ram_total_gb` | number | GB | Sum of system RAM across all READY/RUNNING nodes. |
+| `ram_headroom_gb` | number | GB | RAM on nodes not currently occupied by active deployments. |
+| `mem_bandwidth_total_gbs` | number | GB/s | Sum of memory bandwidth from hardware profiles. |
+| `mem_bandwidth_headroom_gbs` | number | GB/s | Bandwidth on unoccupied nodes. |
+| `ready_nodes` | integer | — | Number of nodes in READY or RUNNING state. |
+| `bottleneck` | string | — | Most-constrained resource: `"vram"`, `"ram"`, `"mem_bandwidth"`, or `"none"`. Determined by the lowest headroom-to-total ratio. |
+| `can_fit_models` | array of strings | — | Model IDs from the catalog that the Planner can currently deploy on the fleet. Empty when no Planner is configured or no models fit. |
+
+**Notes:**
+
+- *Used* is computed at node granularity: when a deployment's engines occupy
+  a node, that node's full resource contribution is counted as used. This is a
+  conservative estimate — partial consumption is not yet tracked at layer
+  granularity.
+- `can_fit_models` calls the same Planner pipeline as `POST /api/v1/models/{id}/deploy`.
+  If the Planner is not configured (no `Config.Planner`), the field is always
+  an empty array.
+- With zero nodes the response is `{"ready_nodes":0,...,"bottleneck":"none","can_fit_models":[]}`.
+
+**Response `500`:** Registry unreachable.
 
 ---
 
@@ -788,6 +937,7 @@ Serves the embedded OpenAPI 3.0 specification as JSON. The spec is compiled from
 | GET | `/api/v1/models` | List the model catalog (with fit verdicts) |
 | POST | `/api/v1/models` | Register a model (protojson ModelSpec) |
 | POST | `/api/v1/models/import` | Import from HuggingFace, S3/GCS/Azure, SageMaker, Vertex AI, or Azure ML |
+| GET | `/api/v1/models/{id}` | Get a single model by ID |
 | DELETE | `/api/v1/models/{id}` | Remove a model (guarded — refuses if deployed) |
 | GET | `/api/v1/models/{id}/health` | Operational health of a deployed model |
 | POST | `/api/v1/models/{id}/plan` | Dry-run plan preview (no side effects) |

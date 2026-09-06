@@ -26,12 +26,13 @@
 // # Trust root
 //
 // Verify checks signatures against [VerificationKey], which is initialized from
-// the embedded [DevPublicKeyBase64]. The shipped value is a DEVELOPMENT key
-// whose private half was discarded at generation time — no one can mint a key
-// that validates against it. To issue real licenses a maintainer runs
-// `purser-license keygen`, replaces DevPublicKeyBase64 with the printed public
-// key, and keeps the generated private key OFF the repository (it is
-// .gitignored). See cmd/purser-license.
+// [ProductionPublicKeyBase64]. Starting in v0.3 this is a REAL production trust
+// root — its private half is stored in purser-license-signing.key (.gitignored)
+// and must live in a secret manager. The package also exposes
+// [DevPublicKeyBase64] / [DevVerificationKey] for development and testing
+// (--dev flag on purser-license verify); the dev key is a fixed constant whose
+// private half was discarded, so no real license can validate against it.
+// See cmd/purser-license.
 package license
 
 import (
@@ -55,16 +56,15 @@ const EnvVar = "PURSER_LICENSE_KEY"
 const DevPublicKeyBase64 = "u0M8yOk/o4XkSNTnHY5+ZcmGrv/f8+cVh61uuO33p68="
 
 // ProductionPublicKeyBase64 is the standard-base64 ed25519 public key embedded
-// in production builds.
+// in production builds. This is a REAL trust root provisioned for v0.3 — its
+// private half is stored in purser-license-signing.key (gitignored) and must
+// be kept in a secret manager. Only keys signed with that private half will
+// validate in production builds.
 //
-// SECURITY: this is a placeholder DEVELOPMENT key — enterprise features stay
-// off until a maintainer provisions a real trust root. To go to production:
-//
-//  1. run `purser-license keygen --output-key` (prints step-by-step instructions
-//     and writes the private key to the .gitignored purser-license-signing.key);
-//  2. replace the value of this constant with the printed public key;
-//  3. store the private key in a secret manager — NEVER commit it.
-const ProductionPublicKeyBase64 = "u0M8yOk/o4XkSNTnHY5+ZcmGrv/f8+cVh61uuO33p68="
+// To re-provision (e.g. key rotation): run `purser-license keygen --output-key`,
+// replace this constant with the printed public key, store the new private key
+// securely, and cut a new release.
+const ProductionPublicKeyBase64 = "ds2wAsShz+UwQ4mdnjiXRFLlhh9c6pW8V92f7RBUj0s="
 
 // VerificationKey is the ed25519 public key [Verify] checks signatures against.
 // It is initialized from [ProductionPublicKeyBase64].

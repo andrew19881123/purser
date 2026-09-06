@@ -314,4 +314,15 @@ impl ModelQueueSemaphores {
         sem.try_acquire_owned()
             .map_err(|_| in_flight.saturating_add(1))
     }
+
+    /// Remove the semaphore for `model`, freeing memory when a model is
+    /// deregistered from the routing table. Any in-flight permits already
+    /// issued remain valid; only new `try_acquire` calls for this model will
+    /// create a fresh semaphore. (Fix M1)
+    pub fn remove_model(&self, model: &str) {
+        self.semaphores
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(model);
+    }
 }

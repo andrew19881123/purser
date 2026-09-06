@@ -87,7 +87,7 @@ func (s *RegistrationServer) applyHeartbeat(ctx context.Context, hb *purserv1.He
 	if hb.GetTs() != nil {
 		ts = hb.GetTs().AsTime().UTC()
 	}
-	s.metrics.Update(nodeID, hb.GetState().String(), hb.GetMetrics(), ts)
+	s.metrics.Update(nodeID, hb.GetState().String(), hb.GetMetrics(), hb.GetNodeMetrics(), ts)
 
 	n, err := s.reg.GetNode(ctx, nodeID)
 	if err != nil {
@@ -107,6 +107,10 @@ func (s *RegistrationServer) applyHeartbeat(ctx context.Context, hb *purserv1.He
 // --- Live metrics cache ----------------------------------------------------
 
 // NodeMetrics is the latest heartbeat sample for a node.
+// The EngineMetrics fields (PrefillTps … AcceptedTokensRatio) come from the
+// legacy purserv1.EngineMetrics payload; the hardware fields
+// (CpuUtilizationPct … InferencePortAlive) come from purserv1.NodeMetrics,
+// which agents started emitting in the v0.3 heartbeat extension.
 type NodeMetrics struct {
 	NodeID              string    `json:"node_id"`
 	State               string    `json:"state"`
@@ -117,6 +121,13 @@ type NodeMetrics struct {
 	QueueDepth          uint32    `json:"queue_depth"`
 	AcceptedTokensRatio float64   `json:"accepted_tokens_ratio"`
 	UpdatedAt           time.Time `json:"updated_at"`
+
+	// Hardware metrics from purserv1.NodeMetrics (0–100 for percentage fields).
+	CpuUtilizationPct   float64 `json:"cpu_utilization_pct"`
+	GpuUtilizationPct   float64 `json:"gpu_utilization_pct"`
+	MemBandwidthUtilPct float64 `json:"mem_bandwidth_util_pct"`
+	TokensPerSecond     float64 `json:"tokens_per_second"`
+	InferencePortAlive  bool    `json:"inference_port_alive"`
 }
 
 // LiveMetrics is a concurrency-safe cache of the latest per-node metrics,
@@ -131,16 +142,27 @@ func NewLiveMetrics() *LiveMetrics {
 	return &LiveMetrics{byID: map[string]NodeMetrics{}}
 }
 
-// Update records the latest sample for a node.
-func (l *LiveMetrics) Update(nodeID, state string, m *purserv1.EngineMetrics, ts time.Time) {
+// Update records the latest sample for a node. em carries the engine-level
+// metrics (inference throughput, VRAM usage, queue depth); hw carries the
+// per-node hardware metrics (CPU/GPU utilization, memory bandwidth,
+// inference-port liveness). Either may be nil; absent fields are left at their
+// zero values.
+func (l *LiveMetrics) Update(nodeID, state string, em *purserv1.EngineMetrics, hw *purserv1.NodeMetrics, ts time.Time) {
 	nm := NodeMetrics{NodeID: nodeID, State: state, UpdatedAt: ts}
-	if m != nil {
-		nm.PrefillTps = m.GetPrefillTokS()
-		nm.DecodeTps = m.GetDecodeTokS()
-		nm.RAMUsedGB = m.GetRamUsedGb()
-		nm.VRAMUsedGB = m.GetVramUsedGb()
-		nm.QueueDepth = m.GetQueueDepth()
-		nm.AcceptedTokensRatio = m.GetAcceptedTokensRatio()
+	if em != nil {
+		nm.PrefillTps = em.GetPrefillTokS()
+		nm.DecodeTps = em.GetDecodeTokS()
+		nm.RAMUsedGB = em.GetRamUsedGb()
+		nm.VRAMUsedGB = em.GetVramUsedGb()
+		nm.QueueDepth = em.GetQueueDepth()
+		nm.AcceptedTokensRatio = em.GetAcceptedTokensRatio()
+	}
+	if hw != nil {
+		nm.CpuUtilizationPct = float64(hw.GetCpuUtilizationPct())
+		nm.GpuUtilizationPct = float64(hw.GetGpuUtilizationPct())
+		nm.MemBandwidthUtilPct = float64(hw.GetMemBandwidthUtilPct())
+		nm.TokensPerSecond = float64(hw.GetTokensPerSecond())
+		nm.InferencePortAlive = hw.GetInferencePortAlive()
 	}
 	l.mu.Lock()
 	l.byID[nodeID] = nm

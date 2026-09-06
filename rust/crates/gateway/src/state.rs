@@ -186,8 +186,15 @@ impl AppState {
     }
 
     /// Remove a route; returns whether one existed.
+    ///
+    /// Also evicts the model's per-model queue semaphore so the memory is
+    /// reclaimed immediately (Fix M1).
     pub async fn remove_route(&self, model_id: &str) -> bool {
-        self.models.write().await.remove(model_id).is_some()
+        let removed = self.models.write().await.remove(model_id).is_some();
+        if removed {
+            self.queue.remove_model(model_id);
+        }
+        removed
     }
 
     /// Resolve an **active** route for `model`.

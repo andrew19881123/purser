@@ -24,6 +24,7 @@ use crate::config::AgentConfig;
 use crate::discovery::HeartbeatSource;
 use crate::healing::{RejectingVerifier, UpdateVerifier};
 use crate::linkbench::LinkBencher;
+use crate::modelcache::ModelCache;
 use crate::probe::HardwareProbe;
 use crate::state::NodeStateMachine;
 use crate::supervisor::{EngineSpec, Supervisor};
@@ -39,15 +40,25 @@ pub struct AgentSvc {
     supervisor: Arc<Supervisor>,
     machine: Arc<Mutex<NodeStateMachine>>,
     bencher: Arc<LinkBencher>,
+    /// Local model-weight cache. When `Some`, `start_engine` resolves the
+    /// logical `model_ref` to a GGUF file path before handing the spec to the
+    /// supervisor. `None` disables cache lookup (no-op, backward-compatible).
+    model_cache: Option<Arc<ModelCache>>,
 }
 
 impl AgentSvc {
     /// Assemble the service from its collaborators.
+    ///
+    /// Pass `model_cache: Some(cache)` to enable model-ref → GGUF-path
+    /// resolution in `StartEngine`. Pass `None` to leave resolution disabled
+    /// (the engine adapter will locate weights itself, or ignore the ref if it
+    /// is a mock).
     pub fn new(
         probe: Arc<dyn HardwareProbe>,
         config: Arc<AgentConfig>,
         supervisor: Arc<Supervisor>,
         machine: Arc<Mutex<NodeStateMachine>>,
+        model_cache: Option<Arc<ModelCache>>,
     ) -> Self {
         let from_node = config
             .node_id
@@ -60,6 +71,7 @@ impl AgentSvc {
             supervisor,
             machine,
             bencher,
+            model_cache,
         }
     }
 
@@ -77,7 +89,7 @@ pub fn composed_node_state(
     machine: &Arc<Mutex<NodeStateMachine>>,
     supervisor: &Arc<Supervisor>,
 ) -> NodeState {
-    let base = machine.lock().unwrap().current();
+    let base = machine.lock().unwrap_or_else(|p| p.into_inner()).current();
     match base {
         NodeState::Provisioning
         | NodeState::Enrolled
@@ -173,7 +185,7 @@ impl AgentService for AgentSvc {
         // Fast-forward the lifecycle to READY for a locally-driven start so the
         // supervisor's LOADING/RUNNING transitions are valid.
         {
-            let mut sm = self.machine.lock().unwrap();
+            let mut sm = self.machine.lock().unwrap_or_else(|p| p.into_inner());
             if sm.current() == NodeState::Provisioning {
                 let _ = sm.enrolled();
             }
@@ -181,6 +193,36 @@ impl AgentService for AgentSvc {
                 let _ = sm.ready();
             }
         }
+
+        // Resolve the logical model_ref to a local GGUF file path via the
+        // model cache (if one is wired). The model_ref is expected to be in
+        // "model_id:quantization" form, e.g. "llama-3.1-8b:Q4_K_M".
+        //
+        // On a cache hit the resolved path is embedded in the EngineSpec so
+        // real backends (llama.cpp, DwarfStar) can pass it directly as the
+        // --model flag without re-resolving. On a miss a warning is logged and
+        // the spec carries None — the mock backend ignores the path entirely,
+        // and future real backends fall back to their own resolution strategy.
+        let model_path = match &self.model_cache {
+            Some(cache) => match cache.get(&req.model_ref) {
+                Some(path) => {
+                    tracing::debug!(
+                        model_ref = %req.model_ref,
+                        path = %path.display(),
+                        "model cache hit — resolved to local GGUF path"
+                    );
+                    Some(path)
+                }
+                None => {
+                    tracing::warn!(
+                        model_ref = %req.model_ref,
+                        "model not found in cache; engine adapter will locate weights itself"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
 
         // Allocate a free TCP port for the engine: bind to port 0 so the OS
         // assigns a free port, read it back, then drop the listener so the
@@ -208,6 +250,7 @@ impl AgentService for AgentSvc {
             peers: req.peers,
             bind_addr: format!("0.0.0.0:{port}"),
             params: req.params.unwrap_or_default(),
+            model_path,
         };
 
         let rx = self.supervisor.start(spec);
@@ -260,7 +303,7 @@ impl AgentService for AgentSvc {
     async fn drain(&self, _request: Request<DrainRequest>) -> Result<Response<DrainReply>, Status> {
         tracing::info!("drain requested");
         {
-            let mut sm = self.machine.lock().unwrap();
+            let mut sm = self.machine.lock().unwrap_or_else(|p| p.into_inner());
             if let Err(e) = sm.draining() {
                 tracing::warn!(%e, "drain transition rejected");
             }
@@ -291,10 +334,12 @@ impl AgentService for AgentSvc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modelcache::{sha256_bytes, FileMirrorFetcher, ModelArtifact, ModelCache};
     use crate::probe::DefaultProbe;
     use crate::supervisor::RestartPolicy;
     use purser_engine_adapter::MockEngine;
     use purser_proto::v1::EngineEventKind;
+    use tempfile::tempdir;
 
     fn svc() -> AgentSvc {
         let machine = Arc::new(Mutex::new(NodeStateMachine::starting_at(NodeState::Ready)));
@@ -308,7 +353,59 @@ mod tests {
             Arc::new(AgentConfig::default()),
             supervisor,
             machine,
+            None, // no model cache — backward-compatible baseline
         )
+    }
+
+    /// Build an `AgentSvc` with a `ModelCache` that already holds `model_ref`.
+    /// Returns the service and the two `TempDir` guards (must stay alive for the
+    /// duration of the test so the cache directory is not removed).
+    async fn svc_with_cached_model(
+        model_ref: &str,
+    ) -> (AgentSvc, tempfile::TempDir, tempfile::TempDir) {
+        let mirror = tempdir().unwrap();
+        let cache_dir = tempdir().unwrap();
+
+        // Write a small stand-in "GGUF" blob to the mirror.
+        let content = b"mock gguf weights";
+        let fname = "model.gguf";
+        tokio::fs::write(mirror.path().join(fname), content)
+            .await
+            .unwrap();
+        let sha = sha256_bytes(content);
+
+        let cache = ModelCache::open(
+            cache_dir.path(),
+            1_000_000,
+            Box::new(FileMirrorFetcher::new(mirror.path())),
+        )
+        .await
+        .unwrap();
+
+        // Pre-populate the cache entry so `get()` returns immediately.
+        cache
+            .get_or_fetch(&ModelArtifact {
+                model_ref: model_ref.to_string(),
+                url: fname.to_string(),
+                sha256: sha,
+            })
+            .await
+            .unwrap();
+
+        let machine = Arc::new(Mutex::new(NodeStateMachine::starting_at(NodeState::Ready)));
+        let supervisor = Supervisor::with_state_machine(
+            Arc::new(MockEngine::new()),
+            RestartPolicy::default(),
+            Arc::clone(&machine),
+        );
+        let svc = AgentSvc::new(
+            Arc::new(DefaultProbe::new("unit-test-node")),
+            Arc::new(AgentConfig::default()),
+            supervisor,
+            machine,
+            Some(Arc::new(cache)),
+        );
+        (svc, mirror, cache_dir)
     }
 
     #[tokio::test]
@@ -415,6 +512,120 @@ mod tests {
         assert!(
             port > 1024,
             "OS-allocated engine port {port} must be in the non-privileged range (> 1024)"
+        );
+    }
+
+    /// When the model cache has a pre-populated entry matching the request's
+    /// `model_ref`, `start_engine` resolves the path and the engine starts
+    /// successfully (mock backend ignores the path but must not crash).
+    ///
+    /// Validates the cache-hit branch: the GGUF file must exist on disk and the
+    /// engine must reach READY.
+    #[tokio::test]
+    async fn test_start_engine_resolves_model_path() {
+        let model_ref = "llama-3.1-8b:Q4_K_M";
+        let (s, _mirror, _cache_dir) = svc_with_cached_model(model_ref).await;
+
+        // The cache must hold the artifact before start_engine is called.
+        assert!(
+            s.model_cache.as_ref().unwrap().contains(model_ref),
+            "pre-condition: cache must hold the model_ref"
+        );
+
+        // The resolved path must exist on disk.
+        let resolved = s
+            .model_cache
+            .as_ref()
+            .unwrap()
+            .get(model_ref)
+            .expect("cache hit expected");
+        assert!(
+            resolved.exists(),
+            "resolved GGUF path {resolved:?} must exist on disk"
+        );
+
+        // start_engine must succeed and stream a READY event.
+        let resp = s
+            .start_engine(Request::new(StartEngineRequest {
+                model_ref: model_ref.into(),
+                role: Role::Worker as i32,
+                layer_start: 0,
+                layer_end: 3,
+                peers: vec![],
+                quantization: String::new(),
+                draft: false,
+                params: None,
+            }))
+            .await
+            .expect("start_engine with cached model must succeed");
+
+        let mut stream = resp.into_inner();
+        let mut saw_ready = false;
+        for _ in 0..8 {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), stream.next()).await {
+                Ok(Some(Ok(ev))) => {
+                    if EngineEventKind::try_from(ev.kind).unwrap_or_default()
+                        == EngineEventKind::Ready
+                    {
+                        saw_ready = true;
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(
+            saw_ready,
+            "engine must reach READY even when model path is resolved from cache"
+        );
+    }
+
+    /// When the model cache is empty (no entry for the requested model_ref),
+    /// `start_engine` logs a warning and falls through — the mock engine must
+    /// still start successfully (it ignores the model path entirely).
+    ///
+    /// Validates the cache-miss / fall-through branch.
+    #[tokio::test]
+    async fn test_start_engine_fallthrough_no_cache() {
+        // Service with no model_cache wired at all — simulates the cache-disabled path.
+        let s = svc();
+        assert!(
+            s.model_cache.is_none(),
+            "pre-condition: baseline svc() has no cache"
+        );
+
+        let resp = s
+            .start_engine(Request::new(StartEngineRequest {
+                model_ref: "llama-3.1-8b:Q4_K_M".into(),
+                role: Role::Worker as i32,
+                layer_start: 0,
+                layer_end: 3,
+                peers: vec![],
+                quantization: String::new(),
+                draft: false,
+                params: None,
+            }))
+            .await
+            .expect("start_engine must succeed even without a model cache");
+
+        let mut stream = resp.into_inner();
+        let mut saw_ready = false;
+        for _ in 0..8 {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), stream.next()).await {
+                Ok(Some(Ok(ev))) => {
+                    if EngineEventKind::try_from(ev.kind).unwrap_or_default()
+                        == EngineEventKind::Ready
+                    {
+                        saw_ready = true;
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(
+            saw_ready,
+            "engine must reach READY when cache is absent (mock backend)"
         );
     }
 }

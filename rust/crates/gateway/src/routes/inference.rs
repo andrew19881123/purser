@@ -16,18 +16,18 @@
 //!
 //! `GET /v1/models` reflects the currently **active** routes.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::response::{Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument as _;
 
 use crate::auth::ApiKey;
@@ -36,6 +36,111 @@ use crate::metrics::record_request;
 use crate::openai::{gen_id, unix_now, ModelList, ModelObject};
 use crate::state::{AppState, OWNED_BY};
 use crate::upstream::{count_sse_tokens, json_completion_tokens};
+
+// ---------------------------------------------------------------------------
+// Global bounded semaphore for fire-and-forget usage reports (Fix M3).
+// Caps the number of concurrent reporting tasks so a slow Control Plane cannot
+// grow an unbounded task list; exceeding the limit silently drops the report
+// (usage accounting is best-effort, not transactional).
+static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(256)));
+
+// Global bounded semaphore for inference audit emits — same rationale as the
+// usage semaphore: a slow Control Plane must not grow an unbounded task list.
+static AUDIT_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(256)));
+
+// ---------------------------------------------------------------------------
+// Inference audit helpers
+// ---------------------------------------------------------------------------
+
+/// Payload for `POST /api/v1/inference-events` on the Control Plane.
+/// Serialised as JSON; field names mirror the Go `InferenceEvent` struct.
+#[derive(serde::Serialize)]
+struct InferenceEventPayload {
+    request_id: String,
+    api_key_hash: String,
+    model_id: String,
+    tenant_id: String,
+    /// RFC 3339 UTC timestamp.
+    timestamp: String,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    /// Inference protocol: `"openai"` | `"anthropic"` | `"embeddings"`.
+    endpoint: String,
+    /// CIDR `/24` prefix of the caller's IP — never the full address.
+    client_ip_prefix: String,
+    latency_ms: f32,
+    /// `"stop"`, `"length"`, or `"error"`.
+    finish_reason: String,
+}
+
+/// Format the current UTC instant as an RFC 3339 string (`YYYY-MM-DDTHH:MM:SSZ`).
+///
+/// Uses Howard Hinnant's civil-calendar algorithm to avoid a `chrono` dependency.
+fn rfc3339_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Civil calendar from Unix days (Howard Hinnant's algorithm).
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    let tod = secs % 86_400;
+    let h = tod / 3_600;
+    let mn = (tod % 3_600) / 60;
+    let s = tod % 60;
+    format!("{year:04}-{m:02}-{d:02}T{h:02}:{mn:02}:{s:02}Z")
+}
+
+/// Fire-and-forget: POST an inference audit event to the Control Plane.
+///
+/// Bounded by [`AUDIT_SEMAPHORE`]: at most 256 tasks in-flight simultaneously.
+/// Failures are logged at debug level and never propagated — the inference
+/// response is already delivered to the client.
+fn emit_inference_event(
+    client: reqwest::Client,
+    cp_url: Arc<String>,
+    internal_token: Option<String>,
+    event: InferenceEventPayload,
+) {
+    match AUDIT_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit;
+                let url = format!(
+                    "{}/api/v1/inference-events",
+                    cp_url.trim_end_matches('/')
+                );
+                let mut builder = client.post(&url).json(&event);
+                if let Some(tok) = internal_token.as_deref() {
+                    builder = builder.header("X-Purser-Internal-Token", tok);
+                }
+                if let Err(e) = builder.send().await {
+                    tracing::debug!(
+                        error = %e,
+                        "inference audit emit failed (non-fatal)"
+                    );
+                }
+            });
+        }
+        Err(_) => {
+            tracing::debug!(
+                model = event.model_id,
+                "audit semaphore full; dropping inference audit event"
+            );
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Usage reporting helpers
@@ -65,8 +170,11 @@ fn estimate_input_tokens(body: &[u8]) -> u64 {
 }
 
 /// Fire-and-forget: POST token usage to the Control Plane.
-/// Errors are logged at debug level and otherwise ignored so they never
-/// affect the inference response path.
+///
+/// Bounded by [`USAGE_SEMAPHORE`]: at most 256 reporting tasks can be
+/// in-flight simultaneously. When the semaphore is exhausted the report is
+/// dropped with a debug log rather than spawning another task (usage
+/// accounting is best-effort, not transactional).
 fn spawn_usage_report(
     client: reqwest::Client,
     cp_url: Arc<String>,
@@ -76,30 +184,42 @@ fn spawn_usage_report(
     input_tokens: u64,
     output_tokens: u64,
 ) {
-    tokio::spawn(async move {
-        let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "api_key_id": api_key_id,
-            "model_id":   model_id,
-            "input_tokens":  input_tokens,
-            "output_tokens": output_tokens,
-        });
-        let mut builder = client.post(&url).json(&body);
-        if let Some(tok) = internal_token.as_deref() {
-            builder = builder.header("X-Purser-Internal-Token", tok);
+    match USAGE_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit; // released when the task completes
+                let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "api_key_id": api_key_id,
+                    "model_id":   model_id,
+                    "input_tokens":  input_tokens,
+                    "output_tokens": output_tokens,
+                });
+                let mut builder = client.post(&url).json(&body);
+                if let Some(tok) = internal_token.as_deref() {
+                    builder = builder.header("X-Purser-Internal-Token", tok);
+                }
+                if let Err(e) = builder.send().await {
+                    tracing::debug!(error = %e, "usage report to control plane failed (fire-and-forget)");
+                }
+            });
         }
-        if let Err(e) = builder.send().await {
-            tracing::debug!(error = %e, "usage report to control plane failed (fire-and-forget)");
+        Err(_) => {
+            tracing::debug!("usage semaphore full; dropping usage report for model {model_id}");
         }
-    });
+    }
 }
 
 /// Routes under `/v1`.
+///
+/// A 4 MB body-size cap is applied to the POST inference endpoints. `GET
+/// /v1/models` has no body so the cap does not restrict it.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/completions", post(completions))
         .route("/embeddings", post(embeddings))
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024)) // 4 MB cap (Fix H1)
         .route("/models", get(models))
 }
 
@@ -289,6 +409,7 @@ async fn proxy_inference(
             api_key,
             &model,
             session_id,
+            upstream_path,
             start,
             prompt_tokens,
             input_tokens_for_usage,
@@ -305,6 +426,8 @@ async fn proxy_inference(
             state,
             api_key,
             &model,
+            session_id,
+            upstream_path,
             start,
             prompt_tokens,
             input_tokens_for_usage,
@@ -329,6 +452,7 @@ fn stream_response(
     api_key: &ApiKey,
     model: &str,
     session_id: String,
+    endpoint: &'static str,
     start: Instant,
     prompt_tokens: u64,
     input_tokens_for_usage: u64,
@@ -373,7 +497,12 @@ fn stream_response(
                     yield Ok(chunk);
                 }
                 Ok(Some(Err(err))) => {
-                    tracing::warn!(session_id = %session_id, error = %err, "upstream stream error");
+                    tracing::warn!(session_id = %session_id, error = %err, "upstream stream failed mid-flight");
+                    // Notify the client with a structured SSE error frame so it
+                    // knows the stream ended abnormally, not cleanly (Fix M2).
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                        b"data: {\"error\":{\"message\":\"upstream stream interrupted\",\"type\":\"api_error\",\"code\":\"upstream_error\"}}\n\n",
+                    ));
                     break;
                 }
             }
@@ -388,16 +517,37 @@ fn stream_response(
             prompt_tokens,
             out_tokens,
         );
-        // Fire-and-forget usage report to the Control Plane.
+        // Fire-and-forget usage report + inference audit to the Control Plane.
         if let Some(url) = cp_url {
+            let audit_url = Arc::clone(&url);
+            let audit_token = cp_token.clone();
             spawn_usage_report(
-                http_client,
+                http_client.clone(),
                 url,
                 cp_token,
                 key_id.clone(),
                 model.clone(),
                 input_tokens_for_usage,
                 out_tokens,
+            );
+            let finish_reason = if status.is_success() { "stop" } else { "error" };
+            emit_inference_event(
+                http_client,
+                audit_url,
+                audit_token,
+                InferenceEventPayload {
+                    request_id: session_id.clone(),
+                    api_key_hash: key_id.clone(),
+                    model_id: model.clone(),
+                    tenant_id: tenant.clone(),
+                    timestamp: rfc3339_now(),
+                    prompt_tokens: input_tokens_for_usage as i64,
+                    completion_tokens: out_tokens as i64,
+                    endpoint: endpoint.to_string(),
+                    client_ip_prefix: String::new(),
+                    latency_ms: start.elapsed().as_secs_f32() * 1000.0,
+                    finish_reason: finish_reason.to_string(),
+                },
             );
         }
     };
@@ -417,6 +567,8 @@ async fn buffered_response(
     state: &AppState,
     api_key: &ApiKey,
     model: &str,
+    request_id: String,
+    endpoint: &'static str,
     start: Instant,
     prompt_tokens: u64,
     input_tokens_for_usage: u64,
@@ -445,6 +597,7 @@ async fn buffered_response(
             ));
         }
         Ok(Err(err)) => {
+            tracing::warn!(err = %err, model = %model, "upstream body read failed");
             drop(guard);
             record_request(
                 model,
@@ -454,9 +607,10 @@ async fn buffered_response(
                 prompt_tokens,
                 0,
             );
-            return Err(ApiError::NodeUnavailable(format!(
-                "The deployment host failed while sending the response: {err}"
-            )));
+            return Err(ApiError::NodeUnavailable(
+                "The inference backend failed while sending the response; retry shortly."
+                    .to_string(),
+            ));
         }
         Ok(Ok(bytes)) => bytes,
     };
@@ -471,8 +625,10 @@ async fn buffered_response(
         prompt_tokens,
         out_tokens,
     );
-    // Fire-and-forget usage report to the Control Plane.
+    // Fire-and-forget usage report + inference audit to the Control Plane.
     if let Some(url) = cp_url {
+        let audit_url = Arc::clone(&url);
+        let audit_token = cp_token.clone();
         spawn_usage_report(
             state.http.client.clone(),
             url,
@@ -481,6 +637,25 @@ async fn buffered_response(
             model.to_owned(),
             input_tokens_for_usage,
             out_tokens,
+        );
+        let finish_reason = if status.is_success() { "stop" } else { "error" };
+        emit_inference_event(
+            state.http.client.clone(),
+            audit_url,
+            audit_token,
+            InferenceEventPayload {
+                request_id,
+                api_key_hash: api_key.id.clone(),
+                model_id: model.to_owned(),
+                tenant_id: api_key.tenant.clone(),
+                timestamp: rfc3339_now(),
+                prompt_tokens: input_tokens_for_usage as i64,
+                completion_tokens: out_tokens as i64,
+                endpoint: endpoint.to_string(),
+                client_ip_prefix: String::new(),
+                latency_ms: start.elapsed().as_secs_f32() * 1000.0,
+                finish_reason: finish_reason.to_string(),
+            },
         );
     }
     drop(guard);

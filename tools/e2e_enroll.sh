@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # E2E step 1: real agent enrollment into the control-plane over gRPC.
 set -uo pipefail
-ROOT=/home/andrea/ideas/purser
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/env.sh" >/dev/null 2>&1
 CP_HTTP=127.0.0.1:18080
 CP_GRPC=127.0.0.1:19443

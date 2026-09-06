@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestFailover_EntryPerNodeAndNoRecursion(t *testing.T) {
 	}
 	model, _ := dpTestModel(8, 40)
 
-	dp, err := Plan(nodes, links, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestFailover_SingleNodeDegrade(t *testing.T) {
 	nodes := []Node{node("solo", 64, 400)}
 	model, _ := dpTestModel(6, 12) // fits comfortably on one node
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestFailover_TwoNodeBothRequiredDegrade(t *testing.T) {
 	links := []Link{{From: "A", To: "B", RTTms: 3, BandwidthGBs: 12}}
 	model, _ := dpTestModel(8, 40)
 
-	dp, err := Plan(nodes, links, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestFailover_RecruitsSpareNode(t *testing.T) {
 	}
 	model, _ := dpTestModel(8, 44)
 
-	dp, err := Plan(nodes, links, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}

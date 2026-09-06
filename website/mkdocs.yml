@@ -60,7 +60,9 @@ nav:
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md
   - Configuration:
+    - purser.yaml (Declarative Config): configuration/purser-yaml.md
     - Environment Variables: configuration/env-vars.md
+    - Network Proxy & Custom CA: configuration/network-proxy.md
     - OIDC (EntraID / Okta / Keycloak): configuration/oidc.md
     - OpenTelemetry: configuration/otel.md
     - RBAC (API Key Roles): configuration/rbac.md
@@ -68,19 +70,32 @@ nav:
     - Certificate Management (cert-manager): configuration/cert-manager.md
     - Model Sources (S3 / GCS / Azure): configuration/model-sources.md
     - SWIM Gossip Discovery: configuration/swim.md
+    - Webhook Notifications: configuration/webhook.md
   - Enterprise:
     - Open-Core Model: enterprise/overview.md
     - Licensing & Key Management: enterprise/licensing.md
     - Tamper-Evident Audit Log: enterprise/audit-log.md
+    - Inference Audit Log (AI Act): enterprise/inference-audit.md
+    - Deployment Approval Gates: enterprise/deployment-approvals.md
     - Usage Accounting (Chargeback): enterprise/usage-accounting.md
+    - Chargeback Reports (Multi-Tenant): enterprise/chargeback.md
+    - Policy-as-Code (OPA/Rego): enterprise/policy-as-code.md
+    - HA Control Plane (Raft): enterprise/ha-control-plane.md
   - Integrations:
+    - Ansible (Fleet Enrollment): integrations/ansible.md
     - LiteLLM: integrations/litellm.md
     - HuggingFace Hub: integrations/huggingface.md
     - AWS SageMaker: integrations/sagemaker.md
     - GCP Vertex AI: integrations/vertexai.md
     - Azure ML: integrations/azureml.md
     - Python SDK: integrations/python-sdk.md
+    - TypeScript SDK: integrations/typescript-sdk.md
+  - Operations:
+    - Backup & Restore: operations/backup-restore.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Gateway (/v1 OpenAI): api/gateway.md
+    - Anthropic Compatibility (/v1/messages): api/anthropic-compatibility.md
+  - Development:
+    - Benchmarking the Planner: development/benchmarking.md
   - Changelog: changelog.md

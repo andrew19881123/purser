@@ -31,6 +31,14 @@ const (
 	// states — cheap — and real Purser fleets rarely exceed a handful of nodes.
 	HeldKarpMaxNodes = 10
 
+	// orderingThresholdMax is the safety upper bound for
+	// PURSER_PLANNER_ORDERING_THRESHOLD. Held-Karp is O(2^N · N²): at N = 20
+	// the DP tables need 2^20 × 20 = ~20 M entries (~160 MB for float64).
+	// N ≥ 32 would attempt to allocate 2^32 entries, causing an OOM panic. This
+	// hard cap means the planner refuses any configured value above 20 and falls
+	// back to the compiled default rather than silently risking a crash.
+	orderingThresholdMax = 20
+
 	// missingLinkPenaltyMs is the edgeCost charged for a hop whose directed link
 	// was never measured (design 08 §7). It is HIGH — so orderNodes routes
 	// around unknown hops whenever a measured alternative exists — but FINITE, so
@@ -70,14 +78,16 @@ const (
 var orderingThreshold = getEnvInt("PURSER_PLANNER_ORDERING_THRESHOLD", HeldKarpMaxNodes)
 
 // getEnvInt reads an environment variable as a positive integer. It returns
-// def if the variable is unset, empty, unparseable, or < 1.
+// def if the variable is unset, empty, unparseable, < 1, or > orderingThresholdMax.
+// The upper bound is a safety cap: Held-Karp is O(2^N · N²), and values above
+// orderingThresholdMax would risk OOM at runtime (see orderingThresholdMax).
 func getEnvInt(key string, def int) int {
 	v := os.Getenv(key)
 	if v == "" {
 		return def
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 {
+	if err != nil || n < 1 || n > orderingThresholdMax {
 		return def
 	}
 	return n
@@ -186,8 +196,18 @@ func chooseHostIndex(nodes []Node, c Constraints) int {
 //	               set `mask` (which always contains 0 and j), and ending at j.
 //
 // Complexity O(2^n·n²) time, O(2^n·n) memory — used only for n <= HeldKarpMaxNodes.
+//
+// Defence in depth: if n > orderingThresholdMax the function falls back to the
+// nearest-neighbour + 2-opt heuristic rather than allocating a 2^n-entry table.
+// getEnvInt already ensures orderingThreshold ≤ orderingThresholdMax, so this
+// branch is never reached through the normal orderNodes code path; it only guards
+// against direct calls or future code that might bypass the threshold check.
 func heldKarpPath(nodes []Node, model ModelSpec, links []Link) []Node {
 	n := len(nodes)
+	if n > orderingThresholdMax {
+		// Fallback: 2-opt is safe for any n; Held-Karp would OOM at n >= 32.
+		return nearestNeighbor2Opt(nodes, model, links)
+	}
 	full := (1 << uint(n)) - 1
 	inf := math.Inf(1)
 

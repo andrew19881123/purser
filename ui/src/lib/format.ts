@@ -57,3 +57,13 @@ export function billions(value: number): string {
 export function clamp(value: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, value));
 }
+
+/**
+ * Format a token count compactly: 0–999 as-is, 1000+ as "1.2K", 1M+ as "1.2M".
+ * Used for token usage cells in the Settings page.
+ */
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}

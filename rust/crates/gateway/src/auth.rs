@@ -21,6 +21,8 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use subtle::ConstantTimeEq;
+
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
@@ -143,7 +145,19 @@ impl AuthConfig {
                 "Empty API key. Provide a valid key via 'Authorization: Bearer <key>'.".to_string(),
             ));
         }
-        if let Some(info) = self.keys.get(token) {
+        // Constant-time search: iterate ALL configured keys so the number of
+        // comparisons does not reveal whether the token is a valid prefix of
+        // any key. `subtle::ConstantTimeEq` prevents early-exit on content
+        // mismatch; the length comparison before it is unavoidable but
+        // acceptable (key lengths are not secret in practice). (Fix H2)
+        let token_bytes = token.as_bytes();
+        let found = self.keys.iter().find(|(k, _)| {
+            let key_bytes = k.as_bytes();
+            let len_ok = (key_bytes.len() == token_bytes.len()) as u8;
+            let content_ok = key_bytes.ct_eq(token_bytes).unwrap_u8();
+            (len_ok & content_ok) == 1
+        });
+        if let Some((_, info)) = found {
             return Ok(ApiKey {
                 id: info.id.clone(),
                 tenant: info.tenant.clone(),

@@ -1,0 +1,10 @@
+---
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart purser-agent
+  ansible.builtin.systemd:
+    name: purser-agent
+    state: restarted
+    daemon_reload: true

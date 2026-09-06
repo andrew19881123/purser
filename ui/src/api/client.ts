@@ -18,18 +18,27 @@
 import type {
   ApiKey,
   ApiKeyWithSecret,
+  AuditLog,
+  BillingReport,
+  BillingSummary,
   CatalogEntry,
   ClusterCapacity,
   DeployOverrides,
   Deployment,
+  DeploymentApproval,
   DeploymentPlan,
+  EnterpriseStatus,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   MetricsStreamHandlers,
+  ModelHealth,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
+  UsageSummary,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -59,6 +68,10 @@ export interface PurserApi {
   importModel(source: ImportSource): Promise<ModelSpec>;
   /** POST /api/v1/models/{id}/plan — dry-run plan; returns feasibility + split diagram. */
   previewModelPlan(modelId: string): Promise<PlanPreviewResult>;
+  /** GET /api/v1/models/{id}/health — operational health of a deployed model. */
+  getModelHealth(modelId: string): Promise<ModelHealth>;
+  /** DELETE /api/v1/models/{id} — remove a model from the catalog. 409 if it has active deployments. */
+  deleteModel(modelId: string): Promise<void>;
 
   // --- deployments ---
   planDeployment(modelId: string, overrides: DeployOverrides): Promise<DeploymentPlan>;
@@ -79,9 +92,51 @@ export interface PurserApi {
   createApiKey(input: CreateApiKeyInput): Promise<ApiKeyWithSecret>;
   revokeApiKey(id: string): Promise<ApiKey>;
 
+  // --- usage ---
+  /** GET /api/v1/apikeys/{id}/usage — token and request counters for one key. */
+  getKeyUsage(keyId: string): Promise<KeyUsage>;
+  /** GET /api/v1/usage/summary — cross-tenant usage totals. */
+  getUsageSummary(): Promise<UsageSummary>;
+
+  // --- enterprise ---
+  /** GET /api/v1/enterprise/status — edition, licensee, features, expiry. */
+  getEnterpriseStatus(): Promise<EnterpriseStatus>;
+
   // --- live metrics (SSE) ---
   /** Subscribe to GET /api/v1/metrics; returns an unsubscribe/close function. */
   streamMetrics(handlers: MetricsStreamHandlers): () => void;
+
+  // --- enterprise ---
+  /** GET /api/v1/enterprise/audit-log — 402 without a valid license. */
+  getAuditLog(limit?: number): Promise<AuditLog>;
+
+  // --- reconciler ---
+  /** GET /api/v1/reconciler/status — live reconciler config + pending event tracker. */
+  getReconcilerStatus(): Promise<ReconcilerStatus>;
+
+  // --- deployment approvals (AI Act Art.14) ---
+  /** GET /api/v1/approvals — 402 without deployment_approvals feature. */
+  listDeploymentApprovals(status?: string, limit?: number): Promise<DeploymentApproval[]>;
+  /** GET /api/v1/approvals/{id} — single approval record. */
+  getDeploymentApproval(deploymentId: string): Promise<DeploymentApproval>;
+  /** POST /api/v1/approvals/{id}/approve — admin-only. */
+  approveDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
+  /** POST /api/v1/approvals/{id}/reject — admin-only. */
+  rejectDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
+
+  // --- billing / chargeback ---
+  /**
+   * GET /api/v1/billing/report — 402 without the "billing" feature.
+   * Returns chargeback report grouped by tenant+model for the given window.
+   */
+  getBillingReport(start: string, end: string, tenantId?: string): Promise<BillingReport>;
+  /**
+   * Returns the URL for CSV download (format=csv). Callers create a link and
+   * navigate to it directly — no fetch needed.
+   */
+  getBillingCsvUrl(start: string, end: string, tenantId?: string): string;
+  /** GET /api/v1/billing/summary — quick stats, not enterprise-gated. */
+  getBillingSummary(tenantId?: string): Promise<BillingSummary>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

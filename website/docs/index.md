@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/andrew19881123/purser/blob/main/LICENSE)
 [![CI](https://github.com/andrew19881123/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/andrew19881123/purser/actions/workflows/ci.yml)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/andrew19881123/purser/blob/main/PROJECT_STATUS.md)
+[![Status: v0.3 candidate](https://img.shields.io/badge/status-v0.3_candidate-brightgreen)](https://github.com/andrew19881123/purser/blob/main/CHANGELOG.md)
 
 ## What is Purser?
 
@@ -20,12 +20,30 @@ If you know Kubernetes, the mental model is familiar:
 | Container runtime | **Engine** (via Adapter) | The thing that actually executes inference |
 | Ingress | **API Gateway** | Single OpenAI-compatible front door |
 
+## Dashboard
+
+![Purser Dashboard](assets/screenshots/dashboard-home.png)
+*The operator dashboard — fleet nodes, deployed models, live metrics.*
+
+![Fleet Nodes](assets/screenshots/fleet-nodes.png)
+*Fleet view: per-node status, hardware profile, active deployments.*
+
+![Models Catalog](assets/screenshots/models-catalog.png)
+*Models catalog — register, deploy, and manage model versions.*
+
 ## Why use Purser?
 
 - **Zero-config** — turn on the machines, deploy a model, get a private ChatGPT-style API. The Planner figures out the split; you don't hand-tune it.
 - **Pipeline parallelism over LAN** — only activations (~KB per token) cross the network between stages, so commodity **10GbE** is plenty. No NVLink or InfiniBand required.
 - **Private / on-prem** — no data leaves your network by design; air-gap friendly.
 - **Bring your own engine** — the Engine Adapter abstracts the backend, so the orchestrator never hard-codes model or engine specifics.
+- **OIDC SSO (PKCE)** — EntraID, Okta, and Keycloak supported out of the box; RBAC roles scoped per API key.
+- **Tamper-evident audit log** — hash-chained, offline-verifiable compliance trail (enterprise).
+- **ARM64 support** — native builds for Apple Silicon and Graviton nodes.
+- **Python & TypeScript SDKs** — typed client libraries wrapping the OpenAI-compatible Gateway.
+- **llama.cpp backend** — real GPU inference via feature-gated `--features llamacpp` build.
+- **Docker Compose demo** — full stack up in two commands, no GPU or Kubernetes required.
+- **Webhook notifications** — lifecycle events (deploy, fail, scale) pushed to any HTTP endpoint.
 
 ## How it works
 
@@ -68,14 +86,22 @@ If you know Kubernetes, the mental model is familiar:
 
 **Deploy flow:** `enroll` (agent joins over gRPC, becomes `READY`) → **Planner** checks fit and produces a layer-split **plan** → **Orchestrator** calls `StartEngine` on the **worker(s) first, then the host** → the deployment reaches `ACTIVE` → routes **sync** to the Gateway so clients can hit the model.
 
-## Install in 60 seconds
+## Try it in 2 minutes
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
-  --set controlPlane.service.type=LoadBalancer
+git clone https://github.com/andrew19881123/purser.git
+cd purser
+docker compose up -d
+open http://localhost:3000
 ```
 
-That single command pulls the chart and all three container images from GHCR (public, no pull secret needed). Then [enroll an agent](getting-started/quickstart.md) and deploy a model.
+No GPU required — the demo uses the built-in mock engine.
+
+```bash
+curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'
+```
+
+For production Kubernetes deployments see the [Quickstart guide](getting-started/quickstart.md).
 
 ## Component ports
 
@@ -87,6 +113,8 @@ That single command pulls the chart and all three container images from GHCR (pu
 
 ## Status
 
-**Alpha — v0.1.1.** The complete zero-config vertical — *enroll → deploy → chat* — is implemented and demonstrated end-to-end, single-node and split across a multi-node pipeline, driven by the built-in **mock engine**. The live llama.cpp path and validation on real GPU hardware are still in progress.
+**v0.3 candidate — "Production-Grade Enterprise".** The complete zero-config vertical — *enroll → deploy → chat* — is demonstrated end-to-end, single-node and split across a multi-node pipeline. v0.3 ships: OIDC SSO (PKCE), RBAC, TLS everywhere, webhook notifications, ARM64 builds, Python and TypeScript SDKs, llama.cpp backend (feature-gated), and a Planner calibrated with real engine capabilities. HA/Raft is targeted for v0.4.
+
+See the full [Changelog](changelog.md) for details.
 
 [Get started now →](getting-started/quickstart.md)

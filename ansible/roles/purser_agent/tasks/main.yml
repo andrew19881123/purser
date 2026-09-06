@@ -1,0 +1,152 @@
+---
+# tasks/main.yml — Install, configure, and verify the Purser Fleet Agent.
+
+# ── Pre-flight assertions ──────────────────────────────────────────────────
+- name: Assert required variables are set
+  ansible.builtin.assert:
+    that:
+      - purser_control_plane_addr | length > 0
+      - purser_join_token | length > 0
+    fail_msg: >
+      Both purser_control_plane_addr and purser_join_token must be set.
+      Set them in your playbook vars, group_vars, or pass via --extra-vars.
+
+# ── System user / group (binary install only; package creates them) ────────
+- name: Ensure purser system group exists
+  ansible.builtin.group:
+    name: purser
+    system: true
+    state: present
+  when: purser_install_method == "binary"
+
+- name: Ensure purser system user exists
+  ansible.builtin.user:
+    name: purser
+    group: purser
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    state: present
+  when: purser_install_method == "binary"
+
+# ── Install via apt / yum ──────────────────────────────────────────────────
+- name: Install purser-agent via package manager
+  when: purser_install_method == "package"
+  block:
+    - name: Set up Cloudsmith apt repository (Debian / Ubuntu)
+      when: ansible_os_family == "Debian"
+      block:
+        - name: Download Cloudsmith apt setup script
+          ansible.builtin.get_url:
+            url: "{{ purser_apt_repo_url }}/setup.deb.sh"
+            dest: /tmp/purser-setup.deb.sh
+            mode: "0755"
+
+        - name: Run Cloudsmith apt setup script
+          ansible.builtin.command: bash /tmp/purser-setup.deb.sh
+          changed_when: true
+
+        - name: Install purser-agent (apt)
+          ansible.builtin.apt:
+            name: "purser-agent={{ purser_version }}"
+            state: present
+            update_cache: true
+
+    - name: Set up Cloudsmith yum repository (RHEL / Rocky / AlmaLinux)
+      when: ansible_os_family == "RedHat"
+      block:
+        - name: Download Cloudsmith yum setup script
+          ansible.builtin.get_url:
+            url: "{{ purser_apt_repo_url }}/setup.rpm.sh"
+            dest: /tmp/purser-setup.rpm.sh
+            mode: "0755"
+
+        - name: Run Cloudsmith yum setup script
+          ansible.builtin.command: bash /tmp/purser-setup.rpm.sh
+          changed_when: true
+
+        - name: Install purser-agent (yum / dnf)
+          ansible.builtin.yum:
+            name: "purser-agent-{{ purser_version }}"
+            state: present
+
+# ── Install from binary tarball ────────────────────────────────────────────
+- name: Install purser-agent from binary tarball
+  when: purser_install_method == "binary"
+  block:
+    - name: Resolve CPU architecture to Purser arch label
+      ansible.builtin.set_fact:
+        _purser_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
+
+    - name: Resolve binary tarball URL
+      ansible.builtin.set_fact:
+        _purser_binary_url: >-
+          {{ purser_binary_url
+             if purser_binary_url | length > 0
+             else 'https://github.com/andrew19881123/purser/releases/download/v'
+                  ~ purser_version ~ '/purser-agent-linux-'
+                  ~ _purser_arch ~ '-v' ~ purser_version ~ '.tar.gz' }}
+
+    - name: Download purser-agent tarball
+      ansible.builtin.get_url:
+        url: "{{ _purser_binary_url }}"
+        dest: "/tmp/purser-agent-{{ purser_version }}.tar.gz"
+        mode: "0644"
+
+    - name: Extract purser-agent tarball
+      ansible.builtin.unarchive:
+        src: "/tmp/purser-agent-{{ purser_version }}.tar.gz"
+        dest: /tmp/
+        remote_src: true
+
+    - name: Install purser-agent binary to /usr/local/bin
+      ansible.builtin.copy:
+        src: /tmp/purser-agent
+        dest: /usr/local/bin/purser-agent
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+
+    - name: Install purser-agent systemd unit file
+      ansible.builtin.copy:
+        src: purser-agent.service
+        dest: /etc/systemd/system/purser-agent.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd daemon
+
+# ── Configuration directory and env file ──────────────────────────────────
+- name: Ensure /etc/purser configuration directory exists
+  ansible.builtin.file:
+    path: /etc/purser
+    state: directory
+    owner: root
+    group: purser
+    mode: "0750"
+
+- name: Write /etc/purser/agent.env from template
+  ansible.builtin.template:
+    src: purser-agent.env.j2
+    dest: /etc/purser/agent.env
+    owner: root
+    group: purser
+    mode: "0640"
+  notify: Restart purser-agent
+
+# ── Service ────────────────────────────────────────────────────────────────
+- name: Enable and start purser-agent
+  ansible.builtin.systemd:
+    name: purser-agent
+    enabled: "{{ purser_service_enabled }}"
+    state: "{{ purser_service_state }}"
+    daemon_reload: true
+
+# ── Verify ─────────────────────────────────────────────────────────────────
+- name: Wait for AgentService gRPC port to be listening
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ purser_agent_bind.split(':')[-1] }}"
+    timeout: 30
+    state: started

@@ -106,7 +106,15 @@ pub fn build_host_launch(
         args.push(draft.to_string());
     }
 
-    apply_extra(extra, &mut args);
+    // Explicit flash-attention field takes precedence; the extra["flash_attn"]
+    // key is a backward-compat fallback for callers that have not yet migrated
+    // to this explicit field.  Pass the flag through so apply_extra avoids a
+    // double emit.
+    if params.flash_attn {
+        args.push("-fa".to_string());
+    }
+
+    apply_extra(extra, &mut args, params.flash_attn);
 
     let endpoint = format!("http://{}:{}", advertise_host(config, &host_bind), port);
 
@@ -117,19 +125,26 @@ pub fn build_host_launch(
 /// flags. Iteration is over a sorted view so the output is deterministic.
 ///
 /// Recognised keys (besides `host`/`port`/`ngl` handled by the caller):
-/// - `flash_attn` = truthy → `-fa`
+/// - `flash_attn` = truthy → `-fa` (skipped when `flash_attn_emitted` is true
+///   to avoid a duplicate from the explicit [`EngineParams::flash_attn`] field)
 /// - `threads`    = N       → `-t N`
 /// - `batch`      = N       → `-b N`
 /// - `parallel`   = N       → `--parallel N`
 /// - `raw.<flag>` = V       → `--<flag> [V]` (raw passthrough; value omitted when
 ///   empty, giving a boolean flag)
-fn apply_extra(extra: &std::collections::HashMap<String, String>, args: &mut Vec<String>) {
+fn apply_extra(
+    extra: &std::collections::HashMap<String, String>,
+    args: &mut Vec<String>,
+    flash_attn_emitted: bool,
+) {
     // Sort for deterministic argument ordering.
     let sorted: BTreeMap<&String, &String> = extra.iter().collect();
 
-    if let Some(v) = sorted.get(&"flash_attn".to_string()) {
-        if is_truthy(v) {
-            args.push("-fa".to_string());
+    if !flash_attn_emitted {
+        if let Some(v) = sorted.get(&"flash_attn".to_string()) {
+            if is_truthy(v) {
+                args.push("-fa".to_string());
+            }
         }
     }
     if let Some(v) = sorted.get(&"threads".to_string()) {
@@ -286,6 +301,73 @@ mod tests {
     fn empty_model_ref_rejected() {
         let err = build_host_launch(&cfg(), "", &[], &EngineParams::default()).unwrap_err();
         assert!(matches!(err, EngineError::InvalidArgument(_)));
+    }
+
+    // ── I5: flash_attn explicit field ────────────────────────────────────────
+
+    /// `EngineParams { flash_attn: true }` must produce `-fa` in the arg list.
+    #[test]
+    fn explicit_flash_attn_true_produces_fa_flag() {
+        let params = EngineParams {
+            flash_attn: true,
+            ..EngineParams::default()
+        };
+        let launch = build_host_launch(&cfg(), "/m.gguf", &[], &params).unwrap();
+        assert!(
+            launch.args.iter().any(|a| a == "-fa"),
+            "expected -fa in args: {:?}",
+            launch.args
+        );
+    }
+
+    /// `EngineParams { flash_attn: false }` must NOT produce `-fa`.
+    #[test]
+    fn explicit_flash_attn_false_omits_fa_flag() {
+        let params = EngineParams {
+            flash_attn: false,
+            ..EngineParams::default()
+        };
+        let launch = build_host_launch(&cfg(), "/m.gguf", &[], &params).unwrap();
+        assert!(
+            !launch.args.iter().any(|a| a == "-fa"),
+            "unexpected -fa in args: {:?}",
+            launch.args
+        );
+    }
+
+    /// When both `params.flash_attn` and `extra["flash_attn"]` are set, `-fa`
+    /// must appear exactly once (no double-emit).
+    #[test]
+    fn flash_attn_explicit_and_extra_no_double_emit() {
+        let mut extra = HashMap::new();
+        extra.insert("flash_attn".to_string(), "true".to_string());
+        let params = EngineParams {
+            flash_attn: true,
+            extra,
+            ..EngineParams::default()
+        };
+        let launch = build_host_launch(&cfg(), "/m.gguf", &[], &params).unwrap();
+        let fa_count = launch.args.iter().filter(|a| *a == "-fa").count();
+        assert_eq!(fa_count, 1, "-fa must appear exactly once; args: {:?}", launch.args);
+    }
+
+    /// Backward compat: `extra["flash_attn"]` alone (without the explicit field)
+    /// still produces `-fa`.
+    #[test]
+    fn flash_attn_via_extra_still_works() {
+        let mut extra = HashMap::new();
+        extra.insert("flash_attn".to_string(), "true".to_string());
+        let params = EngineParams {
+            flash_attn: false,
+            extra,
+            ..EngineParams::default()
+        };
+        let launch = build_host_launch(&cfg(), "/m.gguf", &[], &params).unwrap();
+        assert!(
+            launch.args.iter().any(|a| a == "-fa"),
+            "expected -fa from extra map; args: {:?}",
+            launch.args
+        );
     }
 
     #[test]

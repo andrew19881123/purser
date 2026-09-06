@@ -27,12 +27,13 @@ The `enterprise/` directory is **source-available** under the [Purser Enterprise
 
 Enterprise features:
 
-| Feature area | Capabilities |
-|---|---|
-| **High Availability** | Leader election (Raft) + replicated registry; Gateway HA behind a VIP. Required for `replicaCount > 1` on the Control Plane. |
-| **Identity & Access** | RBAC, SSO/SAML/OIDC, LDAP/AD integration. See [OIDC configuration](../configuration/oidc.md). |
-| **Compliance** | **Tamper-evident audit log** (hash-chained, offline-verifiable), strong per-tenant isolation, chargeback/usage accounting. See [Audit Log](audit-log.md). |
-| **Fleet at Scale** | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, offline license validation. |
+| Feature area | Status in v0.3 | Capabilities |
+|---|---|---|
+| **Identity & Access** | ✅ Shipped | RBAC (per-API-key roles), OIDC PKCE (EntraID / Okta / Keycloak). See [OIDC configuration](../configuration/oidc.md) and [RBAC](../configuration/rbac.md). |
+| **Compliance** | ✅ Shipped | **Tamper-evident audit log** (hash-chained, offline-verifiable), strong per-tenant isolation, chargeback/usage accounting. See [Audit Log](audit-log.md). |
+| **Policy-as-Code** | ✅ Shipped | Embedded OPA/Rego engine — version-controlled governance rules for deploy gating, model allowlists, and team-based access control. See [Policy-as-Code](policy-as-code.md). |
+| **Fleet at Scale** | ✅ Shipped | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, offline license validation. |
+| **High Availability** | Targeted v0.4 | Leader election (Raft) + replicated registry; Gateway HA behind a VIP. Required for `replicaCount > 1` on the Control Plane. |
 
 ---
 
@@ -52,7 +53,7 @@ Configure the key:
 export PURSER_LICENSE_KEY=<your-key>
 
 # Helm
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set license.key="<your-key>"
 ```
 
@@ -61,6 +62,15 @@ The Helm chart stores the key in a Kubernetes Secret and injects it into the Con
 ---
 
 ## Checking license status
+
+### Dashboard
+
+The **Settings** page of the operator dashboard shows a **License** section at the bottom. It displays:
+
+- **Community edition**: a neutral "Community" badge and a link to upgrade documentation.
+- **Enterprise edition**: the licensee name, a badge per enabled feature (`audit`, `ha`, `rbac`, …), and the expiry date. A red "Expired" badge appears when the key has passed its `expires` date.
+
+### API
 
 ```bash
 curl -s http://<control-plane>:8080/api/v1/enterprise/status | python3 -m json.tool

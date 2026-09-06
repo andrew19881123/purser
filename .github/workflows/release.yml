@@ -29,6 +29,7 @@ jobs:
   build-go:
     name: Build Go binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -51,17 +52,50 @@ jobs:
           mkdir -p ../../bin
           go build -trimpath -ldflags "-s -w" -o ../../bin/control-plane .
 
+      - name: Build control-plane (linux/arm64)
+        working-directory: go/controlplane
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+          GOWORK: "off"
+        run: |
+          mkdir -p ../../bin-arm64
+          go build -trimpath -ldflags "-s -w" -o ../../bin-arm64/control-plane .
+
+      - name: Build control-plane (darwin/arm64)
+        working-directory: go/controlplane
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+          GOWORK: "off"
+        run: |
+          mkdir -p ../../bin-darwin-arm64
+          go build -trimpath -ldflags "-s -w" -o ../../bin-darwin-arm64/control-plane .
+
       # go/planner is a library — no runnable binary to produce.
 
       - uses: actions/upload-artifact@v4
         with:
-          name: go-binaries
+          name: go-binaries-amd64
           path: bin/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries-arm64
+          path: bin-arm64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries-darwin-arm64
+          path: bin-darwin-arm64/
 
   # ── Job 2: Rust ────────────────────────────────────────────────────────────
   build-rust:
     name: Build Rust binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -79,45 +113,113 @@ jobs:
 
       # CARGO_INCREMENTAL=0 — incremental artifacts have no value for a
       # release build and only bloat the target directory.
-      - name: Build purser-agent and purser-gateway
+      - name: Build purser-agent and purser-gateway (linux/amd64)
         working-directory: rust
         env:
           CARGO_INCREMENTAL: "0"
           CARGO_TARGET_DIR: target
         run: cargo build --release -p purser-agent -p purser-gateway
 
+      - name: Build purser-agent (linux/arm64)
+        working-directory: rust
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_TARGET_DIR: target
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+          cargo build --release -p purser-agent \
+            --target aarch64-unknown-linux-gnu
+
+      # darwin/arm64: cross-compiling Rust on Linux for macOS requires osxcross.
+      # Flagged best-effort — the release succeeds even if this step fails.
+      - name: Build purser-agent (darwin/arm64)
+        id: build-rust-darwin-arm64
+        continue-on-error: true
+        working-directory: rust
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_TARGET_DIR: target
+        run: |
+          rustup target add aarch64-apple-darwin
+          cargo build --release -p purser-agent \
+            --target aarch64-apple-darwin
+
       - uses: actions/upload-artifact@v4
         with:
-          name: rust-binaries
+          name: rust-binaries-amd64
           path: |
             rust/target/release/purser-agent
             rust/target/release/purser-gateway
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-binaries-arm64
+          path: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
+
+      - uses: actions/upload-artifact@v4
+        if: steps.build-rust-darwin-arm64.outcome == 'success'
+        with:
+          name: rust-binaries-darwin-arm64
+          path: rust/target/aarch64-apple-darwin/release/purser-agent
 
   # ── Job 3: Package (.deb, .rpm, tarballs) ──────────────────────────────────
   package:
     name: Package (deb, rpm, tarballs)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [build-go, build-rust]
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          name: go-binaries
+          name: go-binaries-amd64
           path: bin/
 
       # Place Rust binaries at the path the nfpm config expects:
-      #   packaging/nfpm/purser-agent.yaml → src: rust/target/release/purser-agent
+      #   packaging/nfpm/purser-agent.yaml     → src: rust/target/release/purser-agent
+      #   packaging/nfpm/purser-agent-arm64.yaml → src: rust/target/aarch64-unknown-linux-gnu/release/purser-agent
       - uses: actions/download-artifact@v4
         with:
-          name: rust-binaries
+          name: rust-binaries-amd64
           path: rust/target/release/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-binaries-arm64
+          path: rust/target/aarch64-unknown-linux-gnu/release/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-binaries-arm64
+          path: bin-arm64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-binaries-darwin-arm64
+          path: bin-darwin-arm64/
+
+      # darwin Rust binary is best-effort; download may fail if cross-compile failed.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: rust-binaries-darwin-arm64
+          path: rust/target/aarch64-apple-darwin/release/
 
       - name: Fix binary permissions
         run: |
           chmod +x bin/control-plane
           chmod +x rust/target/release/purser-agent
           chmod +x rust/target/release/purser-gateway
+          chmod +x rust/target/aarch64-unknown-linux-gnu/release/purser-agent
+          chmod +x bin-arm64/control-plane
+          chmod +x bin-darwin-arm64/control-plane
+          # darwin Rust binary is best-effort; ignore if absent
+          chmod +x rust/target/aarch64-apple-darwin/release/purser-agent 2>/dev/null || true
 
       - uses: actions/setup-go@v5
         with:
@@ -140,6 +242,14 @@ jobs:
           nfpm pkg --config packaging/nfpm/purser-agent.yaml --packager deb --target dist/
           nfpm pkg --config packaging/nfpm/purser-agent.yaml --packager rpm --target dist/
 
+      - name: Build .deb and .rpm packages (arm64)
+        env:
+          VERSION: ${{ env.TAG != '' && env.TAG || inputs.tag }}
+        run: |
+          export VERSION=${VERSION#v}
+          nfpm pkg --config packaging/nfpm/purser-agent-arm64.yaml --packager deb --target dist/
+          nfpm pkg --config packaging/nfpm/purser-agent-arm64.yaml --packager rpm --target dist/
+
       # One tarball per binary, named with the full version tag.
       - name: Create binary tarballs
         run: |
@@ -152,20 +262,57 @@ jobs:
           tar -czf dist/control-plane-linux-amd64-${TAG}.tar.gz \
             -C bin control-plane
 
+      - name: Create ARM64 and darwin binary tarballs
+        run: |
+          TAG=${{ env.TAG }}
+          # linux/arm64
+          tar -czf dist/purser-agent-linux-arm64-${TAG}.tar.gz \
+            -C rust/target/aarch64-unknown-linux-gnu/release purser-agent
+          tar -czf dist/control-plane-linux-arm64-${TAG}.tar.gz \
+            -C bin-arm64 control-plane
+          # darwin/arm64 (best-effort: only package if binaries exist)
+          if [ -f rust/target/aarch64-apple-darwin/release/purser-agent ]; then
+            tar -czf dist/purser-agent-darwin-arm64-${TAG}.tar.gz \
+              -C rust/target/aarch64-apple-darwin/release purser-agent
+          fi
+          if [ -f bin-darwin-arm64/control-plane ]; then
+            tar -czf dist/control-plane-darwin-arm64-${TAG}.tar.gz \
+              -C bin-darwin-arm64 control-plane
+          fi
+
       - name: Generate SHA256SUMS
         run: |
           cd dist
           sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS
+
+      - name: Compute artifact hashes
+        id: hash
+        run: |
+          cd dist
+          echo "hashes=$(sha256sum * | base64 -w0)" >> $GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-packages
           path: dist/
 
-  # ── Job 4: Docker (GHCR) ───────────────────────────────────────────────────
+  # ── Job 4: SLSA L2 Provenance ──────────────────────────────────────────────
+  provenance:
+    name: SLSA L2 Provenance
+    needs: [package]
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: "${{ needs.package.outputs.hashes }}"
+
+  # ── Job 5: Docker (GHCR) ───────────────────────────────────────────────────
   docker:
     name: Docker images (GHCR)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: [build-go, build-rust]
     steps:
       - uses: actions/checkout@v4
@@ -261,10 +408,11 @@ jobs:
           name: docker-digests
           path: dist/digests/
 
-  # ── Job 5: GitHub Release + Helm OCI ───────────────────────────────────────
+  # ── Job 6: GitHub Release + Helm OCI ───────────────────────────────────────
   release:
     name: GitHub Release + Helm OCI push
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [package, docker]
     steps:
       - uses: actions/checkout@v4
@@ -283,6 +431,15 @@ jobs:
       # Uses the GitHub Actions OIDC token — no secrets or long-lived keys.
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+
+      # Login to GHCR so cosign can push attestation signatures and the Helm
+      # chart signature to the registry without a separate keyring step.
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Generate SPDX SBOMs — runs here (after docker job) so images exist.
       - name: Generate SBOM — control-plane
@@ -306,12 +463,28 @@ jobs:
           artifact-name: sbom-ui.spdx.json
           output-file: dist/sbom-ui.spdx.json
 
+      # Attach each SBOM as a cosign in-toto attestation on the image digest.
+      # Uses OIDC keyless signing — no key management required.
+      # Digests are read from the files produced by the docker job.
+      - name: Attach SBOM attestations to images
+        run: |
+          cosign attest --yes --predicate dist/sbom-control-plane.spdx.json \
+            --type spdxjson \
+            ghcr.io/${{ github.repository_owner }}/purser-control-plane@$(cat dist/digests/control-plane)
+          cosign attest --yes --predicate dist/sbom-gateway.spdx.json \
+            --type spdxjson \
+            ghcr.io/${{ github.repository_owner }}/purser-gateway@$(cat dist/digests/gateway)
+          cosign attest --yes --predicate dist/sbom-ui.spdx.json \
+            --type spdxjson \
+            ghcr.io/${{ github.repository_owner }}/purser-ui@$(cat dist/digests/ui)
+
       # Sign each binary tarball; the cosign bundle (*.bundle) embeds the
       # certificate and signature and is uploaded as a release asset alongside
       # the tarball so users can verify offline with cosign verify-blob.
       - name: Sign tarballs with cosign
         run: |
           TAG=${{ env.TAG }}
+          # linux/amd64
           cosign sign-blob --yes \
             --bundle dist/purser-agent-linux-amd64-${TAG}.tar.gz.bundle \
             dist/purser-agent-linux-amd64-${TAG}.tar.gz
@@ -321,6 +494,39 @@ jobs:
           cosign sign-blob --yes \
             --bundle dist/control-plane-linux-amd64-${TAG}.tar.gz.bundle \
             dist/control-plane-linux-amd64-${TAG}.tar.gz
+          # linux/arm64
+          cosign sign-blob --yes \
+            --bundle dist/purser-agent-linux-arm64-${TAG}.tar.gz.bundle \
+            dist/purser-agent-linux-arm64-${TAG}.tar.gz
+          cosign sign-blob --yes \
+            --bundle dist/control-plane-linux-arm64-${TAG}.tar.gz.bundle \
+            dist/control-plane-linux-arm64-${TAG}.tar.gz
+          # darwin/arm64 (best-effort — only sign if the tarballs exist)
+          for f in \
+            dist/purser-agent-darwin-arm64-${TAG}.tar.gz \
+            dist/control-plane-darwin-arm64-${TAG}.tar.gz; do
+            if [ -f "$f" ]; then
+              cosign sign-blob --yes --bundle "${f}.bundle" "$f"
+            fi
+          done
+
+      # Push packages to the Cloudsmith hosted apt/yum repository.
+      # || true on every push so the release does not fail when
+      # CLOUDSMITH_API_KEY has not been added yet — add the secret at:
+      # https://github.com/andrew19881123/purser/settings/secrets/actions
+      - name: Push to Cloudsmith apt/yum repository
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          pip install cloudsmith-cli
+          # Push .deb to apt repo
+          for deb in dist/*.deb; do
+            cloudsmith push deb andrew19881123/purser/any-distro/any-version "$deb" || true
+          done
+          # Push .rpm to yum repo
+          for rpm in dist/*.rpm; do
+            cloudsmith push rpm andrew19881123/purser/any-distro/any-version "$rpm" || true
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -349,3 +555,11 @@ jobs:
             helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package deploy/helm/purser --version "${VERSION}" --destination dist/
           helm push dist/purser-${VERSION}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+
+      # Sign the Helm chart OCI artefact with cosign keyless signing so
+      # operators can verify it with `cosign verify` before installing.
+      - name: Sign Helm chart
+        run: |
+          TAG=${{ env.TAG }}
+          VERSION=${TAG#v}
+          cosign sign --yes oci://ghcr.io/${{ github.repository_owner }}/charts/purser:${VERSION}

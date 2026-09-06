@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestPlan_SingleNode(t *testing.T) {
 	}
 	model := smallModel()
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestPlan_TooLarge(t *testing.T) {
 		},
 	}
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if dp != nil {
 		t.Fatalf("expected no plan, got %+v", dp)
 	}
@@ -127,7 +128,7 @@ func TestPlan_QuantizationSelection(t *testing.T) {
 		},
 	}
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestPlan_ForceQuant(t *testing.T) {
 	model := smallModel()
 	forced := "q4"
 
-	dp, err := Plan(nodes, nil, model, Constraints{ForceQuant: &forced})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{ForceQuant: &forced})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestPlan_ForceQuant(t *testing.T) {
 // include/exclude filtering removes nodes before planning.
 func TestPlan_ExcludeAllNodes(t *testing.T) {
 	nodes := []Node{{ID: "only", RAMAvailableGB: 48, UnifiedMemory: true, MemBandwidthGBs: 400}}
-	_, err := Plan(nodes, nil, smallModel(), Constraints{ExcludeNodes: []string{"only"}})
+	_, err := Plan(context.Background(), nodes, nil, smallModel(), Constraints{ExcludeNodes: []string{"only"}})
 	var pe *PlanError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *PlanError, got %T: %v", err, err)
@@ -173,7 +174,7 @@ func TestPlan_ForceNodeCountSingleInfeasible(t *testing.T) {
 	model, _ := dpTestModel(8, 40)
 
 	one := 1
-	dp, err := Plan(nodes, links, model, Constraints{ForceNodeCount: &one})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{ForceNodeCount: &one})
 	if dp != nil {
 		t.Fatalf("expected no plan (single node too small), got headroom %.2f: %+v", dp.Estimated.HeadroomGB, dp)
 	}
@@ -195,7 +196,7 @@ func TestPlan_ForceNodeCountValid(t *testing.T) {
 	model, _ := dpTestModel(8, 40)
 
 	two := 2
-	dp, err := Plan(nodes, links, model, Constraints{ForceNodeCount: &two})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{ForceNodeCount: &two})
 	if err != nil {
 		t.Fatalf("expected a valid two-node plan, got error: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestEstimatePerformance_NonZeroPlausible(t *testing.T) {
 		Quantizations: []Quantization{{Name: "q4_k_m", SizeGB: 10, Quality: 0.8}},
 	}
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan, got error: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestEstimatePerformance_NonZeroPlausible(t *testing.T) {
 
 	// Unknown bandwidth must still yield a finite, non-zero rate (fallback).
 	noBW := []Node{{ID: "mystery", RAMAvailableGB: 15, UnifiedMemory: true}}
-	dp2, err := Plan(noBW, nil, model, Constraints{})
+	dp2, err := Plan(context.Background(), noBW, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan for the unknown-bandwidth node, got: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestEstimatePerformance_NonZeroPlausible(t *testing.T) {
 	// A speculative draft must raise the decode rate (expectedAcceptedTokens).
 	withDraft := model
 	withDraft.Draft = DraftInfo{Available: true, Type: "mtp", TailLayers: 2}
-	dp3, err := Plan(nodes, nil, withDraft, Constraints{})
+	dp3, err := Plan(context.Background(), nodes, nil, withDraft, Constraints{})
 	if err != nil {
 		t.Fatalf("expected a plan for the draft model, got: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestDeploymentPlan_ProtoRoundTrip(t *testing.T) {
 	model := smallModel()
 	model.Draft = DraftInfo{Available: true, Type: "mtp", TailLayers: 2}
 
-	dp, err := Plan(nodes, nil, model, Constraints{})
+	dp, err := Plan(context.Background(), nodes, nil, model, Constraints{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -338,6 +339,119 @@ func TestModelSpec_ProtoRoundTrip(t *testing.T) {
 	}
 	if len(got.Quantizations) != len(m.Quantizations) {
 		t.Errorf("quant count mismatch: %d vs %d", len(got.Quantizations), len(m.Quantizations))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M2 — context propagation
+// ---------------------------------------------------------------------------
+
+// TestPlan_ContextCancelled verifies that a pre-cancelled context causes Plan
+// to return context.Canceled immediately without producing a plan.
+func TestPlan_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before calling Plan
+
+	nodes := []Node{
+		{ID: "node-a", RAMAvailableGB: 48, UnifiedMemory: true, MemBandwidthGBs: 400},
+	}
+	model := smallModel()
+
+	dp, err := Plan(ctx, nodes, nil, model, Constraints{})
+	if dp != nil {
+		t.Fatalf("expected nil plan with cancelled context, got %+v", dp)
+	}
+	if err == nil {
+		t.Fatal("expected an error with cancelled context, got nil")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M3 — KV SSD offload in fit check
+// ---------------------------------------------------------------------------
+
+// TestPlan_KVSSDOffloadEnablesFit verifies that a node with insufficient bare
+// VRAM but KVSSDOffload=true and ample DiskFreeGB yields a valid single-node
+// plan (M3). Without the fix the aggregate / stageFits check would reject it;
+// with the fix usefulMemoryForFit includes the SSD contribution.
+//
+// Setup: VRAMGB=8, DiskFreeGB=20 → SSD contrib = min(20×0.5, 8×2−8) = 8 GB
+// → usefulMemoryForFit = 16 GB. Model requires ~13 GB → fits (16 >= 13×0.9).
+func TestPlan_KVSSDOffloadEnablesFit(t *testing.T) {
+	n := Node{
+		ID:              "gpu-ssd",
+		VRAMGB:          8,
+		RAMAvailableGB:  32, // RAM is ample; fit is bounded by VRAM (without SSD)
+		MemBandwidthGBs: 200,
+		KVSSDOffload:    true,
+		DiskFreeGB:      20,
+	}
+	model := ModelSpec{
+		ID:            "test/ssd-model",
+		Layers:        8,
+		HiddenSize:    4096,
+		NKVHeads:      8,
+		HeadDim:       128,
+		AttentionType: AttentionGQA,
+		ContextMax:    2048,
+		Quantizations: []Quantization{
+			{Name: "q4", SizeGB: 10, Quality: 0.90},
+		},
+	}
+	// Verify the node alone is infeasible WITHOUT SSD (8 GB < ~13 GB needed).
+	if usefulMemoryForFit(n) <= usefulMemory(n) {
+		t.Fatalf("expected usefulMemoryForFit > usefulMemory for SSD node, got %.2f vs %.2f",
+			usefulMemoryForFit(n), usefulMemory(n))
+	}
+
+	dp, err := Plan(context.Background(), []Node{n}, nil, model, Constraints{})
+	if err != nil {
+		t.Fatalf("expected a valid plan with KV SSD offload, got error: %v", err)
+	}
+	if dp == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	if len(dp.Assignments) == 0 {
+		t.Fatal("expected at least one assignment")
+	}
+	if dp.Assignments[0].NodeID != "gpu-ssd" {
+		t.Errorf("expected assignment on gpu-ssd, got %q", dp.Assignments[0].NodeID)
+	}
+}
+
+// TestPlan_KVSSDOffloadInfeasibleWithoutSSD is the companion "no fix" baseline:
+// the same node WITHOUT KVSSDOffload should fail because 8 GB VRAM < needed.
+func TestPlan_KVSSDOffloadInfeasibleWithoutSSD(t *testing.T) {
+	n := Node{
+		ID:              "gpu-nossd",
+		VRAMGB:          8,
+		RAMAvailableGB:  32,
+		MemBandwidthGBs: 200,
+		KVSSDOffload:    false, // SSD offload disabled
+		DiskFreeGB:      20,
+	}
+	model := ModelSpec{
+		ID:            "test/ssd-model",
+		Layers:        8,
+		HiddenSize:    4096,
+		NKVHeads:      8,
+		HeadDim:       128,
+		AttentionType: AttentionGQA,
+		ContextMax:    2048,
+		Quantizations: []Quantization{
+			{Name: "q4", SizeGB: 10, Quality: 0.90},
+		},
+	}
+	_, err := Plan(context.Background(), []Node{n}, nil, model, Constraints{})
+	if err == nil {
+		t.Fatal("expected a PlanError when KVSSDOffload=false, got nil error")
+	}
+	var pe *PlanError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PlanError, got %T: %v", err, err)
 	}
 }
 

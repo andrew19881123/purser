@@ -10,6 +10,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -18,18 +20,24 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/time/rate"
 
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/planning"
+	"github.com/purser/purser/go/controlplane/policy"
+	"github.com/purser/purser/go/controlplane/reconciler"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/registry/importer"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
@@ -83,6 +91,13 @@ type FleetManager interface {
 	Decommission(ctx context.Context, nodeID string) error
 }
 
+// ReconcilerStatusProvider is the surface the GET /api/v1/reconciler/status
+// endpoint needs. It is satisfied by *reconciler.Reconciler but declared as
+// an interface so test doubles can stub it without starting a live control loop.
+type ReconcilerStatusProvider interface {
+	Status() reconciler.ReconcilerStatus
+}
+
 // contextKey is a private key type for values stored in request contexts.
 // Using a package-local type avoids collisions with keys from other packages.
 type contextKey int
@@ -92,6 +107,15 @@ const (
 	ctxKeyOIDCSub contextKey = iota
 	// ctxKeyOIDCEmail is the context key for the OIDC email claim.
 	ctxKeyOIDCEmail
+	// ctxKeyOIDCRole is the context key for the role resolved from OIDC group/role
+	// claim mappings. Set by oidcMiddleware when GroupMappings is configured and a
+	// matching group or role claim is found in the token; used by rbacMiddleware to
+	// enforce the mapped role without requiring an API key.
+	ctxKeyOIDCRole
+	// ctxKeyOIDCTenant is the context key for the tenant extracted from the OIDC
+	// "tid" (EntraID) or "tenant_id" claim. Used by list handlers to scope results
+	// for viewer-role tokens.
+	ctxKeyOIDCTenant
 )
 
 // OIDCConfig configures the optional OIDC authentication layer for the admin
@@ -105,6 +129,45 @@ type OIDCConfig struct {
 	Issuer string
 	// ClientID is the expected audience claim in tokens issued by the provider.
 	ClientID string
+	// ClientSecret is the OAuth2 client secret for confidential clients.
+	// Optional — leave empty for public clients or pure PKCE flows.
+	ClientSecret string
+	// RedirectURI is the full callback URL for the Authorization Code Flow,
+	// e.g. http://localhost:8080/auth/callback. When set, GET /auth/login and
+	// GET /auth/callback are activated as browser SSO endpoints.
+	RedirectURI string
+	// TokenEndpoint is the IdP's token exchange URL (populated from OIDC
+	// discovery in main.go). Required for the callback code exchange.
+	TokenEndpoint string
+	// GroupMappings maps OIDC group or role claim values to Purser roles
+	// ("admin", "viewer", or "inference"). Example:
+	//   {"purser-admins":"admin","purser-viewers":"viewer"}
+	// When the token's "groups" or "roles" claim contains a key in this map, the
+	// highest-privilege mapped role is injected into the request context so
+	// rbacMiddleware can enforce it without an API key. If not set here, it is
+	// read from PURSER_OIDC_GROUP_MAPPINGS at startup.
+	GroupMappings map[string]string
+}
+
+// TokenClaims is the full set of claims extracted from a verified OIDC token.
+// It is a superset of what VerifyToken returns and adds group, role, and tenant
+// claims for RBAC mapping and tenant-scoped list filtering.
+type TokenClaims struct {
+	Sub    string   // "sub" subject claim
+	Email  string   // "email" claim
+	Groups []string // "groups" claim (array) — EntraID groups, Keycloak groups
+	Roles  []string // "roles" claim (array) — EntraID app roles
+	Tenant string   // "tid" (EntraID) or "tenant_id" claim
+}
+
+// GroupClaimsVerifier is an optional extension to TokenVerifier that also
+// extracts group, role, and tenant claims. When a verifier implements this
+// interface, oidcMiddleware calls VerifyClaims instead of VerifyToken so that
+// OIDC group-based RBAC and tenant scoping are available. Implementations that
+// only need sub+email may omit this interface — the middleware falls back to
+// VerifyToken gracefully.
+type GroupClaimsVerifier interface {
+	VerifyClaims(ctx context.Context, rawToken string) (*TokenClaims, error)
 }
 
 // TokenVerifier is the single interface oidcMiddleware uses to verify raw ID
@@ -143,12 +206,51 @@ func (a *OIDCVerifierAdapter) VerifyToken(ctx context.Context, rawToken string) 
 	return claims.Sub, claims.Email, nil
 }
 
+// VerifyClaims verifies rawToken and extracts the full set of claims needed for
+// group-based RBAC and tenant scoping: sub, email, groups (array), roles
+// (array), and tenant ("tid" for EntraID or "tenant_id").
+// This implements GroupClaimsVerifier so oidcMiddleware can extract group/role
+// mappings and the tenant in a single token verification round-trip.
+func (a *OIDCVerifierAdapter) VerifyClaims(ctx context.Context, rawToken string) (*TokenClaims, error) {
+	tok, err := a.v.Verify(ctx, rawToken)
+	if err != nil {
+		return nil, err
+	}
+	var c struct {
+		Sub      string   `json:"sub"`
+		Email    string   `json:"email"`
+		Groups   []string `json:"groups"`
+		Roles    []string `json:"roles"`
+		TID      string   `json:"tid"`
+		TenantID string   `json:"tenant_id"`
+	}
+	if err := tok.Claims(&c); err != nil {
+		return nil, err
+	}
+	tenant := c.TID
+	if tenant == "" {
+		tenant = c.TenantID
+	}
+	return &TokenClaims{
+		Sub:    c.Sub,
+		Email:  c.Email,
+		Groups: c.Groups,
+		Roles:  c.Roles,
+		Tenant: tenant,
+	}, nil
+}
+
 // Config configures the HTTP server.
 type Config struct {
 	// Addr is the listen address, e.g. ":8080".
 	Addr string
 	// Logger is used for request/error logging; a default is used if nil.
 	Logger *slog.Logger
+	// RaftNode, if set, enables the Raft-cluster status endpoint
+	// (GET /api/v1/cluster/status) and causes the handler to report Raft
+	// consensus state. When nil the endpoint returns a standalone-mode
+	// response (is_leader: true) so load-balancers work in both modes.
+	RaftNode RaftNode
 	// Deployer, if set, backs the deploy/teardown endpoints.
 	Deployer Deployer
 	// Metrics, if set, backs the live SSE metrics endpoint; otherwise a
@@ -209,32 +311,102 @@ type Config struct {
 	// constructing a client from environment variables at request time.
 	// Primarily useful for testing with a pre-configured mock client.
 	VertexAI *importer.VertexAIClient
+
+	// TLSCert is the path to a PEM-encoded TLS certificate file. When both
+	// TLSCert and TLSKey are non-empty, ListenAndServe serves HTTPS.
+	TLSCert string
+	// TLSKey is the path to a PEM-encoded TLS private key file. Required
+	// when TLSCert is set.
+	TLSKey string
+	// TLSCertPEM / TLSKeyPEM hold the raw PEM bytes for the server certificate
+	// and key.  When non-nil they take precedence over TLSCert/TLSKey file
+	// paths.  The auto-TLS path in main.go issues a cert from the internal PKI
+	// CA and passes the PEM bytes here instead of writing temporary disk files.
+	TLSCertPEM []byte
+	TLSKeyPEM  []byte
+
+	// RateLimitRPS is the per-source-IP rate limit in requests per second.
+	// 0 (the zero-value) maps to the default of 100 RPS.
+	// Set to -1 to disable per-IP rate limiting entirely.
+	RateLimitRPS float64
+	// RateLimitKeyRPS is the per-API-key rate limit in requests per second.
+	// 0 (the zero-value) maps to the default of 50 RPS.
+	// Set to -1 to disable per-key rate limiting entirely.
+	RateLimitKeyRPS float64
+
+	// Reconciler, if set, backs the GET /api/v1/reconciler/status endpoint.
+	// When nil the endpoint returns 501 Not Implemented.
+	Reconciler ReconcilerStatusProvider
+
+	// SessionSecret is the 32-byte HMAC-SHA256 key used to sign session cookies
+	// issued by the Authorization Code Flow callback. When nil and OIDC is
+	// configured, an ephemeral random key is auto-generated at startup (sessions
+	// expire when the process restarts). Set PURSER_SESSION_SECRET to a fixed
+	// 32-byte hex key for persistence across restarts.
+	SessionSecret []byte
+}
+
+// rateLimiterEntry tracks per-key sliding-window rate-limit state.
+// The struct is stored in the ipLimiters / keyLimiters maps; unused entries
+// are evicted by cleanupLimiters after ipLimiterIdleTimeout.
+type rateLimiterEntry struct {
+	count  int
+	window time.Time
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
 type Server struct {
-	reg           registry.Registry
-	log           *slog.Logger
-	mux           *http.ServeMux
-	server        *http.Server
-	deployer      Deployer
-	metrics       MetricsSource
-	nodeMetrics   NodeMetricsGetter
-	metricTO      time.Duration
-	planner       *planning.Planner
-	fleet         FleetManager
-	clusterID     string
-	publicAddr    string
-	license       *license.License
-	oidcVerifier  TokenVerifier // nil = OIDC disabled
-	internalToken string        // gateway exemption secret
-	hfToken       string
-	hfBaseURL     string
-	vertexai      *importer.VertexAIClient
+	reg               registry.Registry
+	log               *slog.Logger
+	mux               *http.ServeMux
+	server            *http.Server
+	deployer          Deployer
+	metrics           MetricsSource
+	nodeMetrics       NodeMetricsGetter
+	metricTO          time.Duration
+	planner           *planning.Planner
+	fleet             FleetManager
+	clusterID         string
+	publicAddr        string
+	license           *license.License
+	oidcVerifier      TokenVerifier // nil = OIDC disabled
+	oidcConfig        *OIDCConfig   // nil when OIDC not configured
+	sessionSecret     []byte        // HMAC-SHA256 key for session cookie signing
+	pkceStore         *pkceStateStore
+	oidcGroupMappings map[string]string // group/role claim → Purser role; nil = no mapping
+	internalToken     string            // gateway exemption secret
+	hfToken           string
+	hfBaseURL         string
+	vertexai          *importer.VertexAIClient
+	reconcilerStatus  ReconcilerStatusProvider // nil = endpoint disabled
+	raftNode          RaftNode                 // nil = standalone mode
 
-	// handler is the mux wrapped with OTEL (outer), OIDC (middle), and RBAC
-	// (inner) middleware. Returned by Handler() and used as http.Server.Handler
-	// so all test paths go through the same middleware chain.
+	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
+	tlsCert    string
+	tlsKey     string
+	tlsEnabled bool // true when TLS is active via either mode
+
+	// Rate limiting state.
+	rateLimitRPS    float64 // per-IP; 0 = disabled
+	rateLimitKeyRPS float64 // per-key; 0 = disabled
+
+	// Per-IP and per-API-key rate limiter maps. Each entry is keyed by the
+	// client IP or API key ID; the *Access maps record the last-used timestamp
+	// so cleanupLimiters can evict stale entries and prevent unbounded growth.
+	ipLimitersMu      sync.Mutex
+	ipLimiters        map[string]*rate.Limiter
+	ipLimitersAccess  map[string]time.Time
+	keyLimitersMu     sync.Mutex
+	keyLimiters       map[string]*rate.Limiter
+	keyLimitersAccess map[string]time.Time
+
+	// policyMu guards policyEngine; use RLock for reads and Lock for swaps.
+	policyMu     sync.RWMutex
+	policyEngine *policy.Engine // nil when feature is off or no policies are loaded
+
+	// handler is the mux wrapped with OTEL (outer), OIDC (middle), rate-limit,
+	// and RBAC (inner) middleware. Returned by Handler() and used as
+	// http.Server.Handler so all test paths go through the same middleware chain.
 	handler http.Handler
 
 	// OTEL infrastructure gauge instruments. All three are no-ops unless a real
@@ -242,6 +414,15 @@ type Server struct {
 	gaugeDeploymentsActive metric.Int64Gauge
 	gaugeNodesReady        metric.Int64Gauge
 	gaugeNodesTotal        metric.Int64Gauge
+
+	// OTEL per-node hardware gauge instruments (Float64 for utilisation %/tok/s,
+	// Int64 for the binary inference-port-alive indicator). No-ops unless a real
+	// MeterProvider was installed by telemetry.Init before New() is called.
+	gaugeNodeCPU            metric.Float64Gauge
+	gaugeNodeGPU            metric.Float64Gauge
+	gaugeNodeMemBandwidth   metric.Float64Gauge
+	gaugeNodeTokPerSec      metric.Float64Gauge
+	gaugeNodeInferenceAlive metric.Int64Gauge
 }
 
 // New builds a Server backed by reg.
@@ -266,23 +447,58 @@ func New(reg registry.Registry, cfg Config) *Server {
 	if lic == nil {
 		lic = license.Community()
 	}
+	// Resolve rate limit RPS values: 0 (zero-value) → defaults.
+	rlRPS := cfg.RateLimitRPS
+	if rlRPS == 0 {
+		rlRPS = 100
+	}
+	rlKeyRPS := cfg.RateLimitKeyRPS
+	if rlKeyRPS == 0 {
+		rlKeyRPS = 50
+	}
+
+	// Resolve OIDC group mappings: Config.OIDC.GroupMappings takes priority; fall
+	// back to the PURSER_OIDC_GROUP_MAPPINGS env var (JSON) when not set.
+	var oidcGroupMappings map[string]string
+	if cfg.OIDC != nil && len(cfg.OIDC.GroupMappings) > 0 {
+		oidcGroupMappings = cfg.OIDC.GroupMappings
+	} else if raw := os.Getenv("PURSER_OIDC_GROUP_MAPPINGS"); raw != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			oidcGroupMappings = m
+		} else {
+			logger.Warn("PURSER_OIDC_GROUP_MAPPINGS: invalid JSON, group mapping disabled", "err", err)
+		}
+	}
+
 	s := &Server{
-		reg:           reg,
-		log:           logger,
-		mux:           http.NewServeMux(),
-		deployer:      cfg.Deployer,
-		metrics:       cfg.Metrics,
-		nodeMetrics:   cfg.NodeMetrics,
-		metricTO:      interval,
-		planner:       cfg.Planner,
-		fleet:         cfg.Fleet,
-		clusterID:     clusterID,
-		publicAddr:    publicAddr,
-		license:       lic,
-		internalToken: cfg.InternalToken,
-		hfToken:       cfg.HFToken,
-		hfBaseURL:     cfg.HFBaseURL,
-		vertexai:      cfg.VertexAI,
+		reg:               reg,
+		log:               logger,
+		mux:               http.NewServeMux(),
+		deployer:          cfg.Deployer,
+		metrics:           cfg.Metrics,
+		nodeMetrics:       cfg.NodeMetrics,
+		metricTO:          interval,
+		planner:           cfg.Planner,
+		fleet:             cfg.Fleet,
+		clusterID:         clusterID,
+		publicAddr:        publicAddr,
+		license:           lic,
+		oidcGroupMappings: oidcGroupMappings,
+		internalToken:     cfg.InternalToken,
+		hfToken:           cfg.HFToken,
+		hfBaseURL:         cfg.HFBaseURL,
+		vertexai:          cfg.VertexAI,
+		reconcilerStatus:  cfg.Reconciler,
+		raftNode:          cfg.RaftNode,
+		tlsCert:           cfg.TLSCert,
+		tlsKey:            cfg.TLSKey,
+		rateLimitRPS:      rlRPS,
+		rateLimitKeyRPS:   rlKeyRPS,
+		ipLimiters:        make(map[string]*rate.Limiter),
+		ipLimitersAccess:  make(map[string]time.Time),
+		keyLimiters:       make(map[string]*rate.Limiter),
+		keyLimitersAccess: make(map[string]time.Time),
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -304,7 +520,34 @@ func New(reg registry.Registry, cfg Config) *Server {
 		logger.Info("OIDC authentication enabled", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID)
 	}
 
+	// Store the OIDC config for the Authorization Code Flow handlers.
+	if cfg.OIDC != nil {
+		s.oidcConfig = cfg.OIDC
+	}
+
+	// Session secret for session cookie signing. Used by both signSession and
+	// verifySession. When not provided and OIDC is configured, auto-generate an
+	// ephemeral key (sessions expire on process restart).
+	if len(cfg.SessionSecret) > 0 {
+		s.sessionSecret = cfg.SessionSecret
+	} else if s.oidcVerifier != nil {
+		s.sessionSecret = make([]byte, 32)
+		if _, err := rand.Read(s.sessionSecret); err != nil {
+			panic("purser: generate ephemeral session secret: " + err.Error())
+		}
+		logger.Warn("PURSER_SESSION_SECRET not set; using ephemeral key (sessions expire on restart)")
+	}
+
+	// PKCE state store: always initialised so the auth endpoints are ready.
+	s.pkceStore = newPKCEStateStore()
+
 	s.routes()
+
+	// Eagerly load stored policies (if any) into the OPA engine so the first
+	// deploy request after startup is evaluated against the correct policy set.
+	if reg != nil {
+		s.reloadPolicies(context.Background())
+	}
 
 	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
 	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
@@ -320,16 +563,53 @@ func New(reg registry.Registry, cfg Config) *Server {
 		metric.WithDescription("Total number of registered nodes"),
 		metric.WithUnit("{node}"))
 
+	// Per-node hardware metrics (labelled by node_id). Values are populated
+	// from the LiveMetrics heartbeat cache on every collectInfraMetrics tick.
+	s.gaugeNodeCPU, _ = m.Float64Gauge("purser.node.cpu_utilization",
+		metric.WithDescription("CPU utilisation percentage reported by the node agent (0–100)"),
+		metric.WithUnit("%"))
+	s.gaugeNodeGPU, _ = m.Float64Gauge("purser.node.gpu_utilization",
+		metric.WithDescription("GPU utilisation percentage reported by the node agent (0–100, 0 when no GPU)"),
+		metric.WithUnit("%"))
+	s.gaugeNodeMemBandwidth, _ = m.Float64Gauge("purser.node.mem_bandwidth_utilization",
+		metric.WithDescription("Memory-bandwidth utilisation percentage reported by the node agent (0–100)"),
+		metric.WithUnit("%"))
+	s.gaugeNodeTokPerSec, _ = m.Float64Gauge("purser.node.tokens_per_second",
+		metric.WithDescription("Tokens per second currently being processed by the node (0 if not serving)"),
+		metric.WithUnit("{token}/s"))
+	s.gaugeNodeInferenceAlive, _ = m.Int64Gauge("purser.node.inference_port_alive",
+		metric.WithDescription("1 if the node's inference HTTP port is responding, 0 otherwise"),
+		metric.WithUnit("{bool}"))
+
 	// Wrap the mux: OTEL (outermost, for distributed tracing) →
-	// OIDC (human-user authentication) → RBAC (API key role enforcement) →
-	// mux. When no TracerProvider/OIDCVerifier is configured those layers are
-	// no-ops.
-	s.handler = otelMiddleware(s.oidcMiddleware(s.rbacMiddleware(s.mux)))
-	s.server = &http.Server{
+	// OIDC (human-user authentication) → rate-limit → RBAC (API key role
+	// enforcement) → mux. When no TracerProvider/OIDCVerifier is configured
+	// those layers are transparent no-ops.
+	s.handler = otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux))))
+
+	// Build the underlying http.Server. For in-memory TLS (auto mode) the PEM
+	// bytes are pre-parsed into a tls.Certificate and attached via TLSConfig so
+	// ListenAndServeTLS("", "") can use them without writing to disk.
+	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if len(cfg.TLSCertPEM) > 0 && len(cfg.TLSKeyPEM) > 0 {
+		cert, err := tls.X509KeyPair(cfg.TLSCertPEM, cfg.TLSKeyPEM)
+		if err != nil {
+			// Misconfiguration is fatal at construction time, not at serve time.
+			panic("purser: TLS auto-cert is invalid: " + err.Error())
+		}
+		httpSrv.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		s.tlsEnabled = true
+	} else if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		s.tlsEnabled = true
+	}
+	s.server = httpSrv
 	return s
 }
 
@@ -338,24 +618,82 @@ func New(reg registry.Registry, cfg Config) *Server {
 // middleware. All three are transparent no-ops when not configured.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// ListenAndServe starts serving and blocks until the server stops.
-func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
+// ListenAndServe starts background maintenance goroutines and then serves
+// HTTP until the server stops. When TLS is configured (via TLSCert/TLSKey
+// file paths or pre-loaded PEM in TLSCertPEM/TLSKeyPEM) it calls the
+// underlying ListenAndServeTLS so the management API is served over HTTPS.
+func (s *Server) ListenAndServe() error {
+	go s.cleanupLimiters()
+	if s.tlsEnabled {
+		s.log.Info("management API serving HTTPS", "addr", s.server.Addr)
+		// For file-path mode pass the paths; for in-memory mode the TLSConfig
+		// already has the certificate so "" is correct for both arguments.
+		return s.server.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+	}
+	s.log.Info("management API serving HTTP (no TLS)", "addr", s.server.Addr)
+	return s.server.ListenAndServe()
+}
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
+
+// validateInternalToken returns true when provided matches s.internalToken
+// using a constant-time comparison (prevents timing-based token enumeration).
+// Returns false whenever s.internalToken is empty so that unconfigured
+// deployments do not accidentally grant access.
+func (s *Server) validateInternalToken(provided string) bool {
+	if s.internalToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.internalToken)) == 1
+}
+
+// cleanupLimiters sweeps the IP and API-key rate-limiter maps every 5 minutes,
+// removing entries that have not been accessed for more than 10 minutes. This
+// prevents the maps from growing without bound under a long-lived server.
+func (s *Server) cleanupLimiters() {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("panic in cleanupLimiters goroutine", "recovered", r)
+		}
+	}()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-10 * time.Minute)
+		s.ipLimitersMu.Lock()
+		for k, t := range s.ipLimitersAccess {
+			if t.Before(cutoff) {
+				delete(s.ipLimiters, k)
+				delete(s.ipLimitersAccess, k)
+			}
+		}
+		s.ipLimitersMu.Unlock()
+		s.keyLimitersMu.Lock()
+		for k, t := range s.keyLimitersAccess {
+			if t.Before(cutoff) {
+				delete(s.keyLimiters, k)
+				delete(s.keyLimitersAccess, k)
+			}
+		}
+		s.keyLimitersMu.Unlock()
+	}
+}
 
 // oidcMiddleware returns an http.Handler that enforces OIDC authentication
 // before delegating to next. It is a pass-through when s.oidcVerifier is nil
 // (OIDC not configured). When active:
 //
-//  1. Requests carrying the correct X-Purser-Internal-Token header are
+//  1. /auth/login and /auth/callback are always exempted — they ARE the login
+//     flow and are unauthenticated by definition.
+//  2. Requests carrying the correct X-Purser-Internal-Token header are
 //     exempted so the gateway can perform route-sync without a human token.
-//  2. All other requests must include a valid Bearer token in the Authorization
-//     header; absent, malformed, or invalid tokens yield 401 Unauthorized with
-//     a JSON body {"error":"unauthorized","message":"valid OIDC token required"}.
-//  3. On a valid token the verified sub and email claims are injected into the
-//     request context (keyed by ctxKeyOIDCSub / ctxKeyOIDCEmail) so handlers
-//     can log the authenticated actor.
+//  3. A valid "Authorization: Bearer <ID-token>" is accepted (existing path).
+//  4. A valid "Cookie: purser_session=<signed-token>" is accepted as an
+//     alternative to Bearer (browser SSO path).
+//  5. Browser requests (Accept: text/html) with neither credential are
+//     redirected to /auth/login when the Authorization Code Flow is configured.
+//  6. API requests with neither credential receive 401 JSON.
 func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. OIDC disabled — pass through unconditionally.
@@ -363,37 +701,89 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 2. Gateway internal-token exemption: the gateway sends route-sync
-		// requests with X-Purser-Internal-Token; those must not require a
-		// human OIDC token.
-		if s.internalToken != "" && r.Header.Get("X-Purser-Internal-Token") == s.internalToken {
+		// 2. Auth endpoints are exempt: they ARE the login flow.
+		if r.URL.Path == "/auth/login" || r.URL.Path == "/auth/callback" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 3. Extract Bearer token from the Authorization header.
-		rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || strings.TrimSpace(rawToken) == "" {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error":   "unauthorized",
-				"message": "valid OIDC token required",
-			})
+		// 3. Gateway internal-token exemption: the gateway sends route-sync
+		// requests with X-Purser-Internal-Token; those must not require a
+		// human OIDC token. Use constant-time comparison to prevent timing attacks.
+		if s.validateInternalToken(r.Header.Get("X-Purser-Internal-Token")) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		// 4. Verify the token via the configured IdP.
-		sub, email, err := s.oidcVerifier.VerifyToken(r.Context(), rawToken)
-		if err != nil {
-			s.log.Debug("OIDC token verification failed", "err", err)
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error":   "unauthorized",
-				"message": "valid OIDC token required",
-			})
+		// 4. Try Bearer token (ID token from the IdP, existing flow).
+		if rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && strings.TrimSpace(rawToken) != "" {
+			// When the verifier also implements GroupClaimsVerifier use VerifyClaims
+			// (single round-trip) for the full claim set; fall back to VerifyToken for
+			// backward compatibility with stubs that only implement the basic interface.
+			var sub, email, oidcRole, oidcTenant string
+			if gcv, ok := s.oidcVerifier.(GroupClaimsVerifier); ok {
+				claims, err := gcv.VerifyClaims(r.Context(), rawToken)
+				if err != nil {
+					s.log.Debug("OIDC token verification failed", "err", err)
+					s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+						"error":   "unauthorized",
+						"message": "valid OIDC token required",
+					})
+					return
+				}
+				sub = claims.Sub
+				email = claims.Email
+				oidcTenant = claims.Tenant
+				// Map groups + roles claims to the highest-privilege Purser role.
+				if len(s.oidcGroupMappings) > 0 {
+					oidcRole = s.resolveGroupRole(append(claims.Groups, claims.Roles...))
+				}
+			} else {
+				var err error
+				sub, email, err = s.oidcVerifier.VerifyToken(r.Context(), rawToken)
+				if err != nil {
+					s.log.Debug("OIDC token verification failed", "err", err)
+					s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+						"error":   "unauthorized",
+						"message": "valid OIDC token required",
+					})
+					return
+				}
+			}
+			// Inject verified claims into the request context for downstream handlers.
+			ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+			ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+			if oidcRole != "" {
+				ctx = context.WithValue(ctx, ctxKeyOIDCRole, oidcRole)
+			}
+			if oidcTenant != "" {
+				ctx = context.WithValue(ctx, ctxKeyOIDCTenant, oidcTenant)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		// 5. Inject verified claims into the request context for downstream
-		// handlers to log as the authenticated actor.
-		ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
-		ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		// 5. Try session cookie (browser SSO path).
+		if len(s.sessionSecret) > 0 {
+			if cookie, err := r.Cookie(sessionCookieName); err == nil {
+				if sub, email, err := s.verifySession(cookie.Value); err == nil {
+					ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+					ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				} else {
+					s.log.Debug("OIDC session cookie invalid", "err", err)
+				}
+			}
+		}
+		// 6. No valid credential. Redirect browser requests to /auth/login when
+		// the Authorization Code Flow is configured; return 401 JSON otherwise.
+		if strings.Contains(r.Header.Get("Accept"), "text/html") &&
+			s.oidcConfig != nil && s.oidcConfig.RedirectURI != "" {
+			http.Redirect(w, r, "/auth/login", http.StatusFound)
+			return
+		}
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"error":   "unauthorized",
+			"message": "valid OIDC token required",
+		})
 	})
 }
 
@@ -401,6 +791,7 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 // presented. These are always accessible (e.g. health check, API schema).
 var rbacPublicPaths = map[string]bool{
 	"/api/v1/cluster/health": true,
+	"/api/v1/cluster/status": true,
 	"/api/v1/openapi.json":   true,
 }
 
@@ -430,8 +821,49 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 		token := bearerToken(r)
 
 		// 2a. Internal token passes through unconditionally.
-		if s.internalToken != "" && token == s.internalToken {
+		// Constant-time comparison prevents timing-based enumeration.
+		if s.validateInternalToken(token) {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2b. OIDC-resolved role: if oidcMiddleware already resolved a role from
+		// group/role claim mappings, enforce it directly — no API key lookup needed.
+		// This path is taken when the token carries a matching group claim and
+		// PURSER_OIDC_GROUP_MAPPINGS (or OIDCConfig.GroupMappings) is configured.
+		if oidcRole, ok := r.Context().Value(ctxKeyOIDCRole).(string); ok && oidcRole != "" {
+			switch oidcRole {
+			case "admin":
+				next.ServeHTTP(w, r)
+			case "viewer":
+				if r.Method != http.MethodGet {
+					s.writeJSON(w, http.StatusForbidden, map[string]any{
+						"error":   "forbidden",
+						"message": "OIDC-assigned viewer role allows read-only access",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+			case "inference":
+				if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+					s.writeJSON(w, http.StatusForbidden, map[string]any{
+						"error":   "forbidden",
+						"message": "OIDC-assigned inference role cannot manage the cluster",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+			default:
+				// Unknown OIDC-mapped role: conservative viewer behavior.
+				if r.Method != http.MethodGet {
+					s.writeJSON(w, http.StatusForbidden, map[string]any{
+						"error":   "forbidden",
+						"message": "OIDC-assigned viewer role allows read-only access",
+					})
+					return
+				}
+				next.ServeHTTP(w, r)
+			}
 			return
 		}
 
@@ -441,26 +873,16 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 4. Look up the key by hash; pass through on any registry error or miss.
+		// 4. Look up the key by hash via an indexed single-row query (O(1)).
 		if s.reg == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		keys, err := s.reg.ListAPIKeys(r.Context())
-		if err != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
 		sum := sha256.Sum256([]byte(token))
 		hashHex := hex.EncodeToString(sum[:])
-		var matched *registry.APIKey
-		for _, k := range keys {
-			if k.KeyHash == hashHex {
-				matched = k
-				break
-			}
-		}
-		if matched == nil {
+		matched, err := s.reg.GetAPIKeyByHash(r.Context(), hashHex)
+		if err != nil {
+			// ErrNotFound or any registry error — pass through, handler enforces.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -501,6 +923,24 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// resolveGroupRole returns the highest-privilege Purser role found by looking
+// up each entry in groups through s.oidcGroupMappings. The privilege order is
+// admin > inference > viewer. Returns "" if no mapping is found.
+func (s *Server) resolveGroupRole(groups []string) string {
+	rolePriority := map[string]int{"admin": 3, "inference": 2, "viewer": 1}
+	best := ""
+	bestPri := 0
+	for _, g := range groups {
+		if role, ok := s.oidcGroupMappings[g]; ok {
+			if pri := rolePriority[role]; pri > bestPri {
+				best = role
+				bestPri = pri
+			}
+		}
+	}
+	return best
+}
+
 // bearerToken extracts the token from an "Authorization: Bearer <token>" header.
 // Returns an empty string if the header is absent or malformed.
 func bearerToken(r *http.Request) string {
@@ -511,7 +951,106 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimPrefix(auth, "Bearer ")
 }
 
+// rateLimitExempt reports whether the request is exempt from rate limiting.
+// GET /api/v1/cluster/health and GET /api/v1/openapi.json are always allowed
+// through so that monitoring systems and tooling do not get throttled.
+func rateLimitExempt(r *http.Request) bool {
+	return r.Method == http.MethodGet && rbacPublicPaths[r.URL.Path]
+}
+
+// rateLimitMiddleware enforces two independent token-bucket limits:
+//
+//  1. Per source-IP: controlled by s.rateLimitRPS. Prevents accidental CI/CD
+//     hammering from a single machine. Negative value disables it.
+//  2. Per API-key bearer token: controlled by s.rateLimitKeyRPS. Applies
+//     whenever the request carries a Bearer token that is not the internal
+//     gateway token. Negative value disables it.
+//
+// On limit exceeded the middleware writes 429 Too Many Requests with a
+// "Retry-After: 1" header and does NOT call the next handler.
+//
+// GET /api/v1/cluster/health and GET /api/v1/openapi.json are always exempt
+// (monitoring / health-check endpoints must not be throttled).
+func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rateLimitExempt(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// --- Per-IP limit ---
+		if s.rateLimitRPS > 0 {
+			ip, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				// Fallback: use RemoteAddr verbatim (handles bare IPs in tests).
+				ip = r.RemoteAddr
+			}
+			limiter := s.getOrCreateLimiter(&s.ipLimitersMu, s.ipLimiters, s.ipLimitersAccess, ip, s.rateLimitRPS)
+			if !limiter.Allow() {
+				w.Header().Set("Retry-After", "1")
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"error":   "rate_limit_exceeded",
+					"message": "too many requests; slow down and retry",
+				})
+				return
+			}
+		}
+
+		// --- Per-API-key limit ---
+		if s.rateLimitKeyRPS > 0 {
+			tok := bearerToken(r)
+			// Only apply when there is a bearer token AND it is not the internal
+			// gateway token (those are machine-to-machine, high-frequency by design).
+			if tok != "" && (s.internalToken == "" || tok != s.internalToken) {
+				sum := sha256.Sum256([]byte(tok))
+				keyHash := hex.EncodeToString(sum[:])
+				limiter := s.getOrCreateLimiter(&s.keyLimitersMu, s.keyLimiters, s.keyLimitersAccess, keyHash, s.rateLimitKeyRPS)
+				if !limiter.Allow() {
+					w.Header().Set("Retry-After", "1")
+					s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+						"error":   "rate_limit_exceeded",
+						"message": "API key rate limit exceeded; slow down and retry",
+					})
+					return
+				}
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// getOrCreateLimiter returns the existing *rate.Limiter for key in m (guarded
+// by mu), or lazily creates and stores one using rps as both the steady-state
+// rate and the initial burst (burst = max(1, int(rps))). The last-access
+// timestamp is updated in access so cleanupLimiters can evict stale entries.
+func (s *Server) getOrCreateLimiter(
+	mu *sync.Mutex,
+	m map[string]*rate.Limiter,
+	access map[string]time.Time,
+	key string, rps float64,
+) *rate.Limiter {
+	burst := int(rps)
+	if burst < 1 {
+		burst = 1
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	l, ok := m[key]
+	if !ok {
+		l = rate.NewLimiter(rate.Limit(rps), burst)
+		m[key] = l
+	}
+	access[key] = time.Now()
+	return l
+}
+
 func (s *Server) routes() {
+	// Authorization Code Flow + PKCE endpoints (browser SSO).
+	// These are exempt from oidcMiddleware — they ARE the login flow.
+	s.mux.HandleFunc("GET /auth/login", s.handleAuthLogin)
+	s.mux.HandleFunc("GET /auth/callback", s.handleAuthCallback)
+
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)
 	s.mux.HandleFunc("POST /api/v1/nodes/{id}/drain", s.handleDrainNode)
@@ -520,16 +1059,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
 	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
+	s.mux.HandleFunc("GET /api/v1/models/{id}", s.handleGetModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
 	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
-	s.mux.HandleFunc("POST /api/v1/models/{id}/deploy", s.handleDeployModel)
+	s.mux.Handle("POST /api/v1/models/{id}/deploy",
+		s.policyMiddleware("deploy")(http.HandlerFunc(s.handleDeployModel)))
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
 	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
 	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
 	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
 	s.mux.HandleFunc("GET /api/v1/cluster/health", s.handleClusterHealth)
+	s.mux.HandleFunc("GET /api/v1/cluster/status", s.handleClusterStatus)
 	s.mux.HandleFunc("POST /api/v1/apikeys", s.handleCreateAPIKey)
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
@@ -545,11 +1087,122 @@ func (s *Server) routes() {
 	// valid, offline-verified license key (see enterprise/license).
 	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
 	s.mux.HandleFunc("GET /api/v1/enterprise/audit-log", s.handleEnterpriseAuditLog)
+
+	// Observability: reconciler config + tracker state.
+	s.mux.HandleFunc("GET /api/v1/reconciler/status", s.handleReconcilerStatus)
+
+	// Fleet capacity headroom — viewer-accessible.
+	s.mux.HandleFunc("GET /api/v1/fleet/capacity", s.handleFleetCapacity)
+
+	// Config-as-code: apply/diff/export purser.yaml desired state.
+	s.mux.HandleFunc("POST /api/v1/config/apply", s.handleConfigApply)
+	s.mux.HandleFunc("POST /api/v1/config/diff", s.handleConfigDiff)
+	s.mux.HandleFunc("GET /api/v1/config/export", s.handleConfigExport)
+	// Inference audit log (AI Act Art. 12).
+	// GET is enterprise-gated ("inference_audit" feature) and viewer-accessible.
+	// POST is internal-only (gateway→CP) and never enterprise-gated.
+	s.mux.HandleFunc("GET /api/v1/inference-audit", s.handleListInferenceAudit)
+	s.mux.HandleFunc("POST /api/v1/inference-events", s.handleRecordInferenceEvent)
+
+	// Policy-as-code (OPA/Rego) — enterprise-gated ("policy_engine" feature).
+	s.mux.HandleFunc("GET /api/v1/policies", s.handleListPolicies)
+	s.mux.HandleFunc("PUT /api/v1/policies/{name}", s.handleUpsertPolicy)
+	s.mux.HandleFunc("DELETE /api/v1/policies/{name}", s.handleDeletePolicy)
+	s.mux.HandleFunc("POST /api/v1/policies/eval", s.handleEvalPolicy)
+
+	// Deployment approval gates (AI Act Art.14 human oversight).
+	// Enterprise-gated ("deployment_approvals" feature). GET is viewer-accessible;
+	// POST approve/reject is admin-only (enforced inside the handler).
+	s.mux.HandleFunc("GET /api/v1/approvals", s.handleListApprovals)
+	s.mux.HandleFunc("GET /api/v1/approvals/{deploymentId}", s.handleGetApproval)
+	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/approve", s.handleApproveDeployment)
+	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/reject", s.handleRejectDeployment)
+
+	// Billing / chargeback — GET /billing/report is enterprise-gated ("billing"
+	// feature); GET /billing/summary is open for all viewer/admin roles.
+	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
+	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
 // (see LICENSING.md, "Compliance").
 const featureAudit = "audit"
+
+// featurePolicyEngine is the enterprise entitlement for OPA/Rego policy
+// evaluation. When absent, policyMiddleware is a no-op.
+const featurePolicyEngine = "policy_engine"
+
+// reloadPolicies fetches all enabled policies from the registry, compiles them
+// into a fresh OPA engine, and atomically swaps it in. Callers: New() and
+// every PUT/DELETE policy handler.
+func (s *Server) reloadPolicies(ctx context.Context) {
+	if s.reg == nil {
+		return
+	}
+	rows, err := s.reg.ListPolicies(ctx)
+	if err != nil {
+		s.log.Warn("policy: could not list policies from registry", "err", err)
+		return
+	}
+	var sources []policy.PolicySource
+	for _, p := range rows {
+		if p.Enabled {
+			sources = append(sources, policy.PolicySource{Name: p.Name, Rego: p.Rego})
+		}
+	}
+	eng, err := policy.LoadPolicies(ctx, sources)
+	if err != nil {
+		s.log.Warn("policy: failed to compile policies", "err", err)
+		return
+	}
+	s.policyMu.Lock()
+	s.policyEngine = eng
+	s.policyMu.Unlock()
+	s.log.Info("policy engine reloaded", "count", len(sources))
+}
+
+// policyMiddleware gates requests with action through the active OPA engine.
+// It is a no-op when:
+//   - the enterprise "policy_engine" feature is not licensed, or
+//   - no policies are loaded (open-by-default semantics).
+func (s *Server) policyMiddleware(action string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.licenseAllows(featurePolicyEngine) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			s.policyMu.RLock()
+			eng := s.policyEngine
+			s.policyMu.RUnlock()
+			if eng == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			req := policy.EvalRequest{
+				Action:  action,
+				ModelID: r.PathValue("id"),
+			}
+			if tok := bearerToken(r); tok != "" {
+				sum := sha256.Sum256([]byte(tok))
+				req.KeyHash = hex.EncodeToString(sum[:])
+			}
+			result, err := eng.Allow(r.Context(), req)
+			if err != nil {
+				s.writeError(w, http.StatusInternalServerError, "policy_eval_failed", err.Error())
+				return
+			}
+			if !result.Allowed {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":   "policy_denied",
+					"message": result.Reason,
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // handleOpenAPISpec serves the embedded OpenAPI 3.0 specification as JSON.
 // The spec is embedded at compile time from openapi.json (generated from
@@ -682,6 +1335,28 @@ func (s *Server) handleEnterpriseAuditLog(w http.ResponseWriter, r *http.Request
 		"entries":  entries,
 		"chain":    chain,
 	})
+}
+
+// handleReconcilerStatus returns the reconciler's current configuration and
+// per-event-type tracker snapshot. Viewer-accessible (GET). Returns 501 when
+// no reconciler is wired up (e.g. in test servers that omit it from Config).
+//
+// Response shape:
+//
+//	{
+//	  "config": { "interval_s": 10, "node_timeout_s": 45,
+//	              "hysteresis_s": 30, "action_cooldown_s": 60 },
+//	  "tracker": {
+//	    "node_down":          { "tracked": 0, "oldest_age_s": 0 },
+//	    "orphan_deployment":  { "tracked": 1, "oldest_age_s": 120 }
+//	  }
+//	}
+func (s *Server) handleReconcilerStatus(w http.ResponseWriter, r *http.Request) {
+	if s.reconcilerStatus == nil {
+		s.writeError(w, http.StatusNotImplemented, "no_reconciler", "reconciler not configured")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.reconcilerStatus.Status())
 }
 
 // handleListNodes returns all nodes known to the registry.
@@ -1244,6 +1919,28 @@ func (s *Server) handleImportObjectStorage(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// tenantedDetail is a minimal JSON decode of the deployment Detail blob that
+// extracts only the tenant field. It overlaps structurally with
+// orchestrator.DeploymentDetail (which also carries FailoverPlanID, Engines,
+// etc.) but is defined here to avoid importing the orchestrator package just for
+// this field. Both structs are valid JSON shapes for the same blob.
+type tenantedDetail struct {
+	Tenant string `json:"tenant"`
+}
+
+// deploymentTenant extracts the tenant field from a deployment's Detail blob.
+// Returns "" when the field is absent, blank, or the blob cannot be decoded.
+func deploymentTenant(d *registry.Deployment) string {
+	if len(d.Detail) == 0 {
+		return ""
+	}
+	var td tenantedDetail
+	if err := json.Unmarshal(d.Detail, &td); err != nil {
+		return ""
+	}
+	return td.Tenant
+}
+
 // deploymentTerminal reports whether a deployment in the given state has
 // released its placement. Only STOPPED and FAILED are terminal; every other
 // state — PLANNED, PROVISIONING, ACTIVE, REBALANCING, STOPPING — is live and
@@ -1297,6 +1994,20 @@ func deploymentOccupiesNode(d *registry.Deployment, nodeID string) bool {
 		}
 	}
 	return false
+}
+
+// handleGetModel returns a single model by ID.
+func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
+	m, err := s.reg.GetModel(r.Context(), r.PathValue("id"))
+	if errors.Is(err, registry.ErrNotFound) {
+		s.writeError(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "get_model_failed", err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, m)
 }
 
 // handleDeleteModel removes a model from the catalog. It is a guarded delete,
@@ -1514,6 +2225,34 @@ func (s *Server) handleDeployModel(w http.ResponseWriter, r *http.Request) {
 		plan.ModelId = modelID
 	}
 
+	// Deployment approval gate (AI Act Art.14). When the enterprise feature
+	// "deployment_approvals" is active, queue an approval record and return
+	// a pending_approval status — the actual rollout runs only after an admin
+	// calls POST /api/v1/approvals/{id}/approve.
+	if s.licenseAllows(featureDeploymentApprovals) {
+		pendingDepID := randHex(8)
+		requester := apiKeyHashFromRequest(r)
+		approval := &registry.DeploymentApproval{
+			DeploymentID: pendingDepID,
+			ModelID:      plan.ModelId,
+			Requester:    requester,
+		}
+		if err := s.reg.RequestDeploymentApproval(r.Context(), approval); err != nil {
+			s.writeError(w, http.StatusInternalServerError, "approval_queue_failed", err.Error())
+			return
+		}
+		_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+			Actor: requester, Action: "deployment.approval.requested", Target: pendingDepID,
+		})
+		s.writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":        "pending_approval",
+			"deployment_id": pendingDepID,
+			"model_id":      plan.ModelId,
+			"message":       "deployment queued for admin approval (AI Act Art.14); call POST /api/v1/approvals/" + pendingDepID + "/approve to proceed",
+		})
+		return
+	}
+
 	depID, err := s.deployer.Apply(r.Context(), plan)
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -1662,7 +2401,9 @@ func (s *Server) handlePreviewPlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListDeployments returns all deployments.
+// handleListDeployments returns all deployments. Tenant-scoped OIDC viewer
+// tokens restrict the response to deployments whose Detail.tenant matches the
+// token's tenant claim (foundational multi-tenant isolation layer).
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	deps, err := s.reg.ListDeployments(r.Context())
 	if err != nil {
@@ -1672,6 +2413,25 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	if deps == nil {
 		deps = []*registry.Deployment{}
 	}
+
+	// Tenant scoping: a viewer with an OIDC tenant claim only sees deployments
+	// whose Detail JSON contains a matching "tenant" field. Admin tokens and
+	// API-key-based viewers see all deployments (no tenant claim → no filter).
+	if oidcRole, _ := r.Context().Value(ctxKeyOIDCRole).(string); oidcRole == "viewer" {
+		if oidcTenant, _ := r.Context().Value(ctxKeyOIDCTenant).(string); oidcTenant != "" {
+			var filtered []*registry.Deployment
+			for _, d := range deps {
+				if deploymentTenant(d) == oidcTenant {
+					filtered = append(filtered, d)
+				}
+			}
+			if filtered == nil {
+				filtered = []*registry.Deployment{}
+			}
+			deps = filtered
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]any{"deployments": deps})
 }
 
@@ -2091,9 +2851,11 @@ type usageRequest struct {
 // handleRecordUsage is the internal gateway callback for usage accounting.
 // When InternalToken is set, the caller must present the same value in
 // X-Purser-Internal-Token; if not set, the endpoint is open (dev/single-node).
+// The comparison uses constant-time equality to prevent timing side-channels.
 func (s *Server) handleRecordUsage(w http.ResponseWriter, r *http.Request) {
 	if s.internalToken != "" {
-		if tok := r.Header.Get("X-Purser-Internal-Token"); tok != s.internalToken {
+		tok := r.Header.Get("X-Purser-Internal-Token")
+		if !s.validateInternalToken(tok) {
 			s.writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing internal token")
 			return
 		}
@@ -2539,9 +3301,16 @@ func otelMiddleware(next http.Handler) http.Handler {
 // StartInfraMetrics runs a background goroutine that samples infrastructure
 // gauges (deployments.active, nodes.ready, nodes.total) every 30 seconds and
 // pushes them to the configured MeterProvider (no-op when OTEL is not
-// configured). The goroutine exits when ctx is cancelled.
+// configured). The goroutine exits when ctx is cancelled. A deferred recover
+// catches any unexpected panics and logs them so a single bad sample does not
+// bring down the whole server.
 func (s *Server) StartInfraMetrics(ctx context.Context) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.log.Error("panic in background goroutine", "recovered", r)
+			}
+		}()
 		s.collectInfraMetrics(ctx) // initial sample immediately
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -2554,6 +3323,166 @@ func (s *Server) StartInfraMetrics(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// FleetCapacity is the response body of GET /api/v1/fleet/capacity.
+type FleetCapacity struct {
+	VRAMTotalGB             float64  `json:"vram_total_gb"`
+	VRAMUsedGB              float64  `json:"vram_used_gb"`
+	VRAMHeadroomGB          float64  `json:"vram_headroom_gb"`
+	RAMTotalGB              float64  `json:"ram_total_gb"`
+	RAMHeadroomGB           float64  `json:"ram_headroom_gb"`
+	MemBandwidthTotalGBs    float64  `json:"mem_bandwidth_total_gbs"`
+	MemBandwidthHeadroomGBs float64  `json:"mem_bandwidth_headroom_gbs"`
+	ReadyNodes              int      `json:"ready_nodes"`
+	Bottleneck              string   `json:"bottleneck"`
+	CanFitModels            []string `json:"can_fit_models"`
+}
+
+// handleFleetCapacity aggregates resource totals and headroom across all READY
+// nodes and reports which catalog models can be deployed right now.
+//
+//   - vram/ram/bandwidth totals are summed from the hardware profiles of all READY nodes.
+//   - "used" is computed by finding which nodes host active deployments and
+//     treating their full VRAM contribution as consumed.
+//   - bottleneck is the resource with the lowest headroom-to-total ratio.
+//   - can_fit_models calls the Planner's FitAll (if configured).
+//
+// RBAC: viewer-accessible (GET only; no mutation).
+func (s *Server) handleFleetCapacity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_nodes_failed", err.Error())
+		return
+	}
+	deps, err := s.reg.ListDeployments(ctx)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
+		return
+	}
+
+	// Build a map of node resources for quick lookup.
+	type nodeResources struct {
+		vramGB float64
+		ramGB  float64
+		bwGBs  float64
+	}
+	nodeByID := make(map[string]*nodeResources, len(nodes))
+	var cap FleetCapacity
+
+	for _, n := range nodes {
+		if n.State != "NODE_STATE_READY" && n.State != "NODE_STATE_RUNNING" {
+			continue
+		}
+		cap.ReadyNodes++
+
+		res := &nodeResources{
+			vramGB: n.VRAMGB,
+			ramGB:  n.RAMGB,
+		}
+		// Decode hardware profile for bandwidth and more accurate RAM figures.
+		if len(n.HardwareProfile) > 0 && string(n.HardwareProfile) != "{}" {
+			hw := &purserv1.HardwareProfile{}
+			if err := protojson.Unmarshal(n.HardwareProfile, hw); err == nil {
+				res.bwGBs = hw.GetMemBandwidthGbs()
+				if hw.GetRamTotalGb() > 0 {
+					res.ramGB = hw.GetRamTotalGb()
+				}
+			}
+		}
+		nodeByID[n.ID] = res
+		cap.VRAMTotalGB += res.vramGB
+		cap.RAMTotalGB += res.ramGB
+		cap.MemBandwidthTotalGBs += res.bwGBs
+	}
+
+	// Compute "used" from nodes occupied by ACTIVE deployments.
+	activeState := purserv1.DeploymentState_DEPLOYMENT_STATE_ACTIVE.String()
+	usedNodes := make(map[string]bool)
+	for _, d := range deps {
+		if d.State != activeState {
+			continue
+		}
+		if len(d.Detail) == 0 {
+			continue
+		}
+		var refs deploymentNodeRefs
+		if err := json.Unmarshal(d.Detail, &refs); err != nil {
+			continue
+		}
+		if refs.HostNodeID != "" {
+			usedNodes[refs.HostNodeID] = true
+		}
+		for _, e := range refs.Engines {
+			if e.NodeID != "" {
+				usedNodes[e.NodeID] = true
+			}
+		}
+	}
+
+	var vramUsed, ramUsed, bwUsed float64
+	for nodeID := range usedNodes {
+		if res, ok := nodeByID[nodeID]; ok {
+			vramUsed += res.vramGB
+			ramUsed += res.ramGB
+			bwUsed += res.bwGBs
+		}
+	}
+	cap.VRAMUsedGB = vramUsed
+	cap.VRAMHeadroomGB = cap.VRAMTotalGB - vramUsed
+	cap.RAMHeadroomGB = cap.RAMTotalGB - ramUsed
+	cap.MemBandwidthHeadroomGBs = cap.MemBandwidthTotalGBs - bwUsed
+
+	// Determine bottleneck: the resource with the lowest headroom/total ratio.
+	cap.Bottleneck = fleetBottleneck(
+		cap.VRAMTotalGB, cap.VRAMHeadroomGB,
+		cap.RAMTotalGB, cap.RAMHeadroomGB,
+		cap.MemBandwidthTotalGBs, cap.MemBandwidthHeadroomGBs,
+	)
+
+	// Which models can be placed on the current fleet?
+	cap.CanFitModels = []string{}
+	if s.planner != nil {
+		if fits, err := s.planner.FitAll(ctx); err == nil {
+			for _, f := range fits {
+				if f.Deployable {
+					cap.CanFitModels = append(cap.CanFitModels, f.ModelID)
+				}
+			}
+		} else {
+			s.log.Warn("fleet capacity: FitAll failed", "err", err)
+		}
+	}
+
+	s.writeJSON(w, http.StatusOK, cap)
+}
+
+// fleetBottleneck returns the label of the most constrained resource based on
+// the headroom-to-total ratio. When all totals are zero it returns "none".
+func fleetBottleneck(vramTotal, vramHeadroom, ramTotal, ramHeadroom, bwTotal, bwHeadroom float64) string {
+	ratio := func(headroom, total float64) float64 {
+		if total <= 0 {
+			return 1 // unavailable resource: treat as unconstrained
+		}
+		return headroom / total
+	}
+	vramR := ratio(vramHeadroom, vramTotal)
+	ramR := ratio(ramHeadroom, ramTotal)
+	bwR := ratio(bwHeadroom, bwTotal)
+
+	if vramTotal <= 0 && ramTotal <= 0 && bwTotal <= 0 {
+		return "none"
+	}
+	switch {
+	case vramR <= ramR && vramR <= bwR:
+		return "vram"
+	case ramR <= bwR:
+		return "ram"
+	default:
+		return "mem_bandwidth"
+	}
 }
 
 // collectInfraMetrics queries the registry for deployment and node counts and
@@ -2586,4 +3515,27 @@ func (s *Server) collectInfraMetrics(ctx context.Context) {
 	}
 	s.gaugeNodesReady.Record(ctx, ready)
 	s.gaugeNodesTotal.Record(ctx, int64(len(nodes)))
+
+	// Per-node hardware metrics: only emitted when a NodeMetricsGetter is
+	// wired (i.e. the fleet registration server is live). Nodes that have
+	// not yet sent a heartbeat are skipped — zero-filling every node would
+	// produce misleading data for clusters with many cold nodes.
+	if s.nodeMetrics != nil {
+		for _, n := range nodes {
+			m, ok := s.nodeMetrics.Get(n.ID)
+			if !ok {
+				continue
+			}
+			attrs := metric.WithAttributes(attribute.String("node_id", n.ID))
+			s.gaugeNodeCPU.Record(ctx, m.CpuUtilizationPct, attrs)
+			s.gaugeNodeGPU.Record(ctx, m.GpuUtilizationPct, attrs)
+			s.gaugeNodeMemBandwidth.Record(ctx, m.MemBandwidthUtilPct, attrs)
+			s.gaugeNodeTokPerSec.Record(ctx, m.TokensPerSecond, attrs)
+			alive := int64(0)
+			if m.InferencePortAlive {
+				alive = 1
+			}
+			s.gaugeNodeInferenceAlive.Record(ctx, alive, attrs)
+		}
+	}
 }

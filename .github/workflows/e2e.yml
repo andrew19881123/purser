@@ -18,13 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # e2e_full.sh hardcodes ROOT=/home/andrea/ideas/purser.  Create a
-      # symlink so the script resolves all binary paths without modification.
-      - name: Create ROOT symlink for e2e scripts
-        run: |
-          sudo mkdir -p /home/andrea/ideas
-          sudo ln -s "$GITHUB_WORKSPACE" /home/andrea/ideas/purser
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

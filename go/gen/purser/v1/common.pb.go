@@ -522,8 +522,19 @@ type HardwareProfile struct {
 	EngineVersions  map[string]string      `protobuf:"bytes,11,rep,name=engine_versions,json=engineVersions,proto3" json:"engine_versions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	LastSeen        *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
 	State           NodeState              `protobuf:"varint,13,opt,name=state,proto3,enum=purser.v1.NodeState" json:"state,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Fraction of inference tokens expected to hit the KV cache (0–1). When
+	// non-zero, the planner scales prefill throughput by 1/(1−factor) to reflect
+	// that cache-hit tokens require no attention recompute. Reported by agents
+	// that know their engine supports prefix caching (e.g. vLLM PagedAttention).
+	// Configurable via PURSER_AGENT_PREFIX_CACHING_FACTOR.
+	PrefixCachingFactor float32 `protobuf:"fixed32,14,opt,name=prefix_caching_factor,json=prefixCachingFactor,proto3" json:"prefix_caching_factor,omitempty"`
+	// Whether the engine supports KV-cache SSD offload (Tutti-style): cold KV
+	// blocks can spill to SSD, expanding the effective KV-cache pool beyond VRAM.
+	// When true, the planner adds kvSsdOffloadFactor × disk_free_gb to the
+	// effective headroom estimate (capped at kvSsdOffloadMaxMultiplier × VRAM).
+	KvSsdOffload  bool `protobuf:"varint,15,opt,name=kv_ssd_offload,json=kvSsdOffload,proto3" json:"kv_ssd_offload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HardwareProfile) Reset() {
@@ -645,6 +656,20 @@ func (x *HardwareProfile) GetState() NodeState {
 		return x.State
 	}
 	return NodeState_NODE_STATE_UNSPECIFIED
+}
+
+func (x *HardwareProfile) GetPrefixCachingFactor() float32 {
+	if x != nil {
+		return x.PrefixCachingFactor
+	}
+	return 0
+}
+
+func (x *HardwareProfile) GetKvSsdOffload() bool {
+	if x != nil {
+		return x.KvSsdOffload
+	}
+	return false
 }
 
 // Measured network characteristics of the link between two nodes.
@@ -1370,7 +1395,7 @@ const file_purser_v1_common_proto_rawDesc = "" +
 	"\aunified\x18\x03 \x01(\bR\aunified\x12\x1d\n" +
 	"\n" +
 	"fp4_native\x18\x04 \x01(\bR\tfp4Native\x12\x14\n" +
-	"\x05count\x18\x05 \x01(\rR\x05count\"\xfd\x04\n" +
+	"\x05count\x18\x05 \x01(\rR\x05count\"\xd7\x05\n" +
 	"\x0fHardwareProfile\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x1d\n" +
@@ -1387,7 +1412,9 @@ const file_purser_v1_common_proto_rawDesc = "" +
 	"diskFreeGb\x12W\n" +
 	"\x0fengine_versions\x18\v \x03(\v2..purser.v1.HardwareProfile.EngineVersionsEntryR\x0eengineVersions\x127\n" +
 	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\x12*\n" +
-	"\x05state\x18\r \x01(\x0e2\x14.purser.v1.NodeStateR\x05state\x1aA\n" +
+	"\x05state\x18\r \x01(\x0e2\x14.purser.v1.NodeStateR\x05state\x122\n" +
+	"\x15prefix_caching_factor\x18\x0e \x01(\x02R\x13prefixCachingFactor\x12$\n" +
+	"\x0ekv_ssd_offload\x18\x0f \x01(\bR\fkvSsdOffload\x1aA\n" +
 	"\x13EngineVersionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x01\n" +
