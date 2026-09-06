@@ -397,7 +397,7 @@ structure with only `cluster.id` and quota values differing).
 
 ## Applying configuration
 
-### Via startup flag (GitOps-friendly)
+### Via startup flag and continuous reconciliation (GitOps)
 
 Pass `--config` (or set `PURSER_CONFIG`) to apply a purser.yaml on every
 control-plane start. The desired state is reconciled against the live registry
@@ -408,6 +408,78 @@ purser-control-plane --config purser.yaml
 # or
 PURSER_CONFIG=purser.yaml purser-control-plane
 ```
+
+In addition to the one-time startup apply, Purser watches the file every **30 seconds**
+(configurable via `PURSER_CONFIG_INTERVAL`) and automatically re-applies it whenever
+the content changes. This enables a fully pull-based GitOps workflow:
+
+1. Commit changes to `purser.yaml` in your Git repo.
+2. Your CD pipeline writes the updated file to the control-plane host
+   (or mounts it as a ConfigMap in Kubernetes).
+3. Purser detects the change (within one polling interval) and converges
+   automatically — no manual `purser apply` needed.
+
+The watcher uses **SHA-256 content hashing** so polling is cheap and spurious
+re-applies (same file, no change) are skipped. Temporary errors (file missing,
+invalid YAML) are non-fatal and retried on the next tick — this lets you use
+Kubernetes ConfigMap late-mount without a crash loop.
+
+#### Tuning the polling interval
+
+```bash
+# Default: 30 s
+PURSER_CONFIG_INTERVAL=60 purser-control-plane --config purser.yaml
+```
+
+`PURSER_CONFIG_INTERVAL` is interpreted as an integer number of seconds.
+
+#### Kubernetes ConfigMap example
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: purser-config
+  namespace: purser
+data:
+  purser.yaml: |
+    apiVersion: purser/v1
+    kind: ClusterConfig
+    metadata:
+      name: prod-cluster
+    models:
+      - id: qwen3-8b
+        source:
+          type: huggingface
+          repo: Qwen/Qwen3-8B
+        quantizations: [Q4_K_M]
+    deployments:
+      - model: qwen3-8b
+        quantization: Q4_K_M
+```
+
+Mount it at `--config /etc/purser/purser.yaml` in the control-plane Pod:
+
+```yaml
+# Deployment snippet
+containers:
+  - name: control-plane
+    args: ["--config", "/etc/purser/purser.yaml"]
+    env:
+      - name: PURSER_CONFIG_INTERVAL
+        value: "30"
+    volumeMounts:
+      - name: purser-config
+        mountPath: /etc/purser
+volumes:
+  - name: purser-config
+    configMap:
+      name: purser-config
+```
+
+When the ConfigMap is updated (e.g. via `kubectl apply -f purser.yaml`), Kubernetes
+projects the new content to the mounted file within seconds. Purser picks it up on
+the next polling tick and applies the diff automatically.
 
 ### Via REST API
 
