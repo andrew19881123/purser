@@ -67,6 +67,10 @@ type Registry interface {
 	ListAPIKeys(ctx context.Context) ([]*APIKey, error)
 	UpdateAPIKey(ctx context.Context, k *APIKey) error
 	DeleteAPIKey(ctx context.Context, id string) error
+	// HasAnyAPIKey returns true when at least one enabled API key exists in the
+	// store. Used by rbacMiddleware to detect a bootstrapped (non-dev) deployment
+	// and enforce fail-closed authentication when no Bearer token is presented.
+	HasAnyAPIKey(ctx context.Context) (bool, error)
 
 	// --- Certs (internal PKI) ----------------------------------------------
 	CreateCert(ctx context.Context, c *Cert) error

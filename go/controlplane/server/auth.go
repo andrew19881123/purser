@@ -376,14 +376,18 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Mint and set the session cookie.
+	// Secure is true when the connection is TLS (r.TLS != nil) or when the
+	// request arrived via a TLS-terminating proxy (X-Forwarded-Proto: https).
+	// SameSite=Strict prevents the cookie from being sent in cross-site requests,
+	// mitigating CSRF for the browser SSO flow.
 	sessionToken := s.signSession(sub, email)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 

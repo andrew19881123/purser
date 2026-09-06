@@ -113,8 +113,8 @@ func TestGetApprovals_NoLicense(t *testing.T) {
 // TestGetApprovals_Licensed_Empty confirms that GET /api/v1/approvals with a
 // valid enterprise license returns {"approvals":[]} (never null) when empty.
 func TestGetApprovals_Licensed_Empty(t *testing.T) {
-	srv, _, _ := newApprovalServer(t)
-	rec := get(t, srv, "/api/v1/approvals")
+	srv, _, adminToken := newApprovalServer(t)
+	rec := authGet(t, srv, "/api/v1/approvals", adminToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -226,8 +226,8 @@ func TestApproveDeployment_AlreadyApproved(t *testing.T) {
 // TestGetApproval_NotFound confirms that GET /api/v1/approvals/{id} returns
 // 404 for an unknown deployment ID.
 func TestGetApproval_NotFound(t *testing.T) {
-	srv, _, _ := newApprovalServer(t)
-	rec := get(t, srv, "/api/v1/approvals/nonexistent-id")
+	srv, _, adminToken := newApprovalServer(t)
+	rec := authGet(t, srv, "/api/v1/approvals/nonexistent-id", adminToken)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
@@ -236,7 +236,7 @@ func TestGetApproval_NotFound(t *testing.T) {
 // TestGetApprovals_FilterByStatus confirms that ?status=pending only returns
 // pending approvals.
 func TestGetApprovals_FilterByStatus(t *testing.T) {
-	srv, reg, _ := newApprovalServer(t)
+	srv, reg, adminToken := newApprovalServer(t)
 
 	// Seed two pending and one approved.
 	for _, id := range []string{"dep-p1", "dep-p2"} {
@@ -255,7 +255,7 @@ func TestGetApprovals_FilterByStatus(t *testing.T) {
 		t.Fatalf("approve: %v", err)
 	}
 
-	rec := get(t, srv, "/api/v1/approvals?status=pending")
+	rec := authGet(t, srv, "/api/v1/approvals?status=pending", adminToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}

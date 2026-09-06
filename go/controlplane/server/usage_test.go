@@ -84,26 +84,34 @@ func TestHandleRecordUsageWrongToken(t *testing.T) {
 	}
 }
 
-func TestHandleRecordUsageNoTokenRequired(t *testing.T) {
-	// When InternalToken is empty, the endpoint is open.
+func TestHandleRecordUsageFailsClosedWhenKeysExist(t *testing.T) {
+	// GAP-02: once API keys exist and no InternalToken is configured, the
+	// management API must reject unauthenticated requests (fail-closed). The old
+	// "open endpoint when InternalToken is empty" behaviour only applies in
+	// pure dev/bootstrap mode (no API keys in the registry at all).
 	srv, reg := newTestServer(t)
-	seedKey(t, reg, "k1", "acme")
+	seedKey(t, reg, "k1", "acme") // bootstrapped → fail-closed kicks in
 
 	rec := postUsage(t, srv.Handler(), "", "k1", "llama-3-8b", 100, 50)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 (fail-closed) when API keys exist and no token provided, got %d; body=%s",
+			rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandleGetKeyUsage(t *testing.T) {
-	srv, reg := newTestServer(t)
+	// Use an InternalToken so usage POSTs pass through the new fail-closed RBAC,
+	// and an admin Bearer token for management GETs.
+	srv, reg := newTestServerWithToken(t, "test-tok")
+	adminToken := seedKeyWithRole(t, reg, "admin-k", "admin-key", "admin")
 	seedKey(t, reg, "k1", "acme")
 
-	// Record two requests via the endpoint.
-	postUsage(t, srv.Handler(), "", "k1", "m1", 100, 40)
-	postUsage(t, srv.Handler(), "", "k1", "m1", 200, 60)
+	// Record two requests via the internal gateway token.
+	postUsage(t, srv.Handler(), "test-tok", "k1", "m1", 100, 40)
+	postUsage(t, srv.Handler(), "test-tok", "k1", "m1", 200, 60)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/apikeys/k1/usage", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -140,15 +148,18 @@ func TestHandleGetKeyUsageNotFound(t *testing.T) {
 }
 
 func TestHandleUsageSummary(t *testing.T) {
-	srv, reg := newTestServer(t)
+	// Use InternalToken for usage POSTs and admin Bearer for the summary GET.
+	srv, reg := newTestServerWithToken(t, "test-tok")
+	adminToken := seedKeyWithRole(t, reg, "admin-k", "admin-key", "admin")
 	seedKey(t, reg, "k1", "acme")
 	seedKey(t, reg, "k2", "beta")
 
-	postUsage(t, srv.Handler(), "", "k1", "m1", 100, 40)
-	postUsage(t, srv.Handler(), "", "k1", "m1", 200, 60)
-	postUsage(t, srv.Handler(), "", "k2", "m2", 300, 100)
+	postUsage(t, srv.Handler(), "test-tok", "k1", "m1", 100, 40)
+	postUsage(t, srv.Handler(), "test-tok", "k1", "m1", 200, 60)
+	postUsage(t, srv.Handler(), "test-tok", "k2", "m2", 300, 100)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 

@@ -61,7 +61,8 @@ func TestListAPIKeys_AfterCreate(t *testing.T) {
 	reg := newReg(t)
 	srv := server.New(reg, server.Config{})
 
-	// Create a key via the POST endpoint.
+	// Create a key via the POST endpoint (dev mode — no keys exist yet so
+	// unauthenticated access is allowed for bootstrapping).
 	createRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(createRec,
 		httptest.NewRequest(http.MethodPost, "/api/v1/apikeys",
@@ -75,10 +76,15 @@ func TestListAPIKeys_AfterCreate(t *testing.T) {
 	if createdID == "" {
 		t.Fatalf("create response missing id; body=%s", createRec.Body.String())
 	}
+	// Extract the plaintext key so subsequent requests can authenticate.
+	// After the first key is created the server enforces fail-closed auth.
+	createdKey, _ := createResp["key"].(string)
 
-	// List and confirm presence + metadata.
+	// List using the newly-minted key — fail-closed is now active.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil)
+	listReq.Header.Set("Authorization", "Bearer "+createdKey)
 	listRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil))
+	srv.Handler().ServeHTTP(listRec, listReq)
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list: status = %d, body=%s", listRec.Code, listRec.Body.String())
 	}
@@ -120,12 +126,17 @@ func TestListAPIKeys_AfterCreate(t *testing.T) {
 // and the key is no longer present in subsequent list responses.
 func TestDeleteAPIKey_Existing(t *testing.T) {
 	reg := newReg(t)
+	// Use seedKeyWithRole so we have a valid Bearer token for authenticated calls.
+	// seedAPIKey produces an unreachable fake hash — unusable for Bearer auth.
+	adminToken := seedKeyWithRole(t, reg, "key-admin", "admin-key", "admin")
 	seedAPIKey(t, reg, "key-del", "to-revoke", "tenant-x")
 	srv := server.New(reg, server.Config{})
 
-	// Delete the key.
+	// Delete the key using the admin Bearer token.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/apikeys/key-del", nil)
+	delReq.Header.Set("Authorization", "Bearer "+adminToken)
 	delRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, "/api/v1/apikeys/key-del", nil))
+	srv.Handler().ServeHTTP(delRec, delReq)
 	if delRec.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204; body=%s", delRec.Code, delRec.Body.String())
 	}
@@ -134,8 +145,10 @@ func TestDeleteAPIKey_Existing(t *testing.T) {
 	}
 
 	// Key must be absent from subsequent list.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil)
+	listReq.Header.Set("Authorization", "Bearer "+adminToken)
 	listRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil))
+	srv.Handler().ServeHTTP(listRec, listReq)
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("post-delete list status = %d", listRec.Code)
 	}
@@ -176,20 +189,38 @@ func TestDeleteAPIKey_SecretNotInList(t *testing.T) {
 	reg := newReg(t)
 	srv := server.New(reg, server.Config{})
 
-	// Create two keys.
-	for _, name := range []string{"alpha", "beta"} {
+	// Create the first key unauthenticated (dev mode — no keys exist yet).
+	var adminKey string
+	{
 		rec := httptest.NewRecorder()
-		body := `{"name":"` + name + `","tenant":"t1"}`
 		srv.Handler().ServeHTTP(rec,
-			httptest.NewRequest(http.MethodPost, "/api/v1/apikeys", strings.NewReader(body)))
+			httptest.NewRequest(http.MethodPost, "/api/v1/apikeys",
+				strings.NewReader(`{"name":"alpha","tenant":"t1"}`)))
 		if rec.Code != http.StatusCreated {
-			t.Fatalf("create %s: status = %d", name, rec.Code)
+			t.Fatalf("create alpha: status = %d; body=%s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		adminKey, _ = resp["key"].(string)
+	}
+
+	// Create the second key using the first as Bearer (fail-closed now active).
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/apikeys",
+			strings.NewReader(`{"name":"beta","tenant":"t1"}`))
+		req.Header.Set("Authorization", "Bearer "+adminKey)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create beta: status = %d; body=%s", rec.Code, rec.Body.String())
 		}
 	}
 
-	// List — confirm no "psk_" or "key_hash" / "keyHash" leaks.
+	// List with the admin key — confirm no "psk_" or "key_hash" / "keyHash" leaks.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil)
+	listReq.Header.Set("Authorization", "Bearer "+adminKey)
 	listRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil))
+	srv.Handler().ServeHTTP(listRec, listReq)
 	rawList := listRec.Body.String()
 	for _, forbidden := range []string{"psk_", "key_hash", "keyHash", "KeyHash"} {
 		if strings.Contains(rawList, forbidden) {

@@ -122,14 +122,48 @@ func TestAuditLogChainVerifiedAndTamperDetected(t *testing.T) {
 
 	// Emit several events through a normal API path: each POST mints an API key
 	// and appends an "apikey.created" event through the hash chain.
-	for i := 0; i < 3; i++ {
-		if rec := post(t, srv, "/api/v1/apikeys"); rec.Code != http.StatusCreated {
+	//
+	// The first POST runs in dev/bootstrap mode (no keys exist yet); subsequent
+	// POSTs use the token from the first key so fail-closed auth is satisfied.
+	makeKey := func(tok string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/apikeys", nil)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	authAudit := func(tok string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/enterprise/audit-log", nil)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// First key: no token (bootstrap). Extract the plaintext key for subsequent calls.
+	rec0 := makeKey("")
+	if rec0.Code != http.StatusCreated {
+		t.Fatalf("create apikey 0 = %d; body=%s", rec0.Code, rec0.Body.String())
+	}
+	var resp0 map[string]any
+	_ = json.Unmarshal(rec0.Body.Bytes(), &resp0)
+	adminTok, _ := resp0["key"].(string)
+
+	// Remaining 2 keys use the admin token.
+	for i := 1; i < 3; i++ {
+		if rec := makeKey(adminTok); rec.Code != http.StatusCreated {
 			t.Fatalf("create apikey %d = %d; body=%s", i, rec.Code, rec.Body.String())
 		}
 	}
 
 	// Untampered: 200, entries present in ascending seq, chain verified.
-	rec := get(t, srv, "/api/v1/enterprise/audit-log")
+	rec := authAudit(adminTok)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("audit-log = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -164,7 +198,7 @@ func TestAuditLogChainVerifiedAndTamperDetected(t *testing.T) {
 		t.Fatalf("tamper: %v", err)
 	}
 
-	rec = get(t, srv, "/api/v1/enterprise/audit-log")
+	rec = authAudit(adminTok)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("audit-log (post-tamper) = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
