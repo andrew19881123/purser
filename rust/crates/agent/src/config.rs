@@ -120,6 +120,16 @@ pub struct AgentConfig {
     /// [`FileMirrorFetcher`](crate::modelcache::FileMirrorFetcher) (local/mounted
     /// mirror). Overridable via `PURSER_MODEL_MIRROR_URL`.
     pub model_mirror_url: Option<String>,
+
+    /// Fraction of inference tokens that hit the KV cache (0–1).
+    ///
+    /// Forwarded to the control plane via `HardwareProfile` for Planner
+    /// calibration. A value of `0.0` (the default) tells the Planner that no
+    /// prefix reuse is expected; `1.0` means every prompt token is a cache hit.
+    ///
+    /// Override: `PURSER_AGENT_PREFIX_CACHING_FACTOR` (default `0.0`).
+    /// Values outside [0, 1] are clamped silently.
+    pub prefix_caching_factor: f32,
 }
 
 impl Default for AgentConfig {
@@ -140,6 +150,7 @@ impl Default for AgentConfig {
             secret_store_dir: default_secret_store_dir(),
             model_fetch_max_retries: 3,
             model_mirror_url: None,
+            prefix_caching_factor: 0.0,
         }
     }
 }
@@ -164,9 +175,10 @@ impl AgentConfig {
     /// - `PURSER_SECRET_STORE_DIR`          — directory for encrypted secret files
     /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
     ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
-    /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
-    /// - `PURSER_MODEL_MIRROR_URL`          — base URL for HTTP model downloads;
+    /// - `PURSER_MODEL_FETCH_MAX_RETRIES`         — e.g. `5` (default: 3)
+    /// - `PURSER_MODEL_MIRROR_URL`                — base URL for HTTP model downloads;
     ///   when set, `HttpFetcher` is used; when absent, `FileMirrorFetcher`
+    /// - `PURSER_AGENT_PREFIX_CACHING_FACTOR`     — e.g. `0.8` (default: 0.0, clamped to [0, 1])
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -220,6 +232,12 @@ impl AgentConfig {
                 .with_context(|| format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}"))?;
         }
         cfg.model_mirror_url = non_empty(std::env::var("PURSER_MODEL_MIRROR_URL").ok());
+        if let Ok(pcf) = std::env::var("PURSER_AGENT_PREFIX_CACHING_FACTOR") {
+            let v: f32 = pcf.parse().with_context(|| {
+                format!("invalid PURSER_AGENT_PREFIX_CACHING_FACTOR: {pcf:?}")
+            })?;
+            cfg.prefix_caching_factor = v.clamp(0.0, 1.0);
+        }
 
         Ok(cfg)
     }
@@ -499,5 +517,75 @@ mod tests {
             Some("http://cp.test:9443")
         );
         assert_eq!(cfg.join_token.as_deref(), Some("tok-abc123"));
+    }
+
+    // ------------------------------------------------------------------
+    // prefix_caching_factor (C1)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn prefix_caching_factor_default_is_zero() {
+        let cfg = AgentConfig::default();
+        assert_eq!(cfg.prefix_caching_factor, 0.0);
+    }
+
+    #[test]
+    fn prefix_caching_factor_env_roundtrip() {
+        const VAR: &str = "PURSER_AGENT_PREFIX_CACHING_FACTOR";
+        let prev = std::env::var(VAR).ok();
+
+        std::env::set_var(VAR, "0.75");
+        let cfg = AgentConfig::from_env().unwrap();
+
+        match prev {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+
+        assert!(
+            (cfg.prefix_caching_factor - 0.75).abs() < 1e-6,
+            "expected 0.75, got {}",
+            cfg.prefix_caching_factor
+        );
+    }
+
+    #[test]
+    fn prefix_caching_factor_clamped_above_one() {
+        const VAR: &str = "PURSER_AGENT_PREFIX_CACHING_FACTOR";
+        let prev = std::env::var(VAR).ok();
+
+        std::env::set_var(VAR, "1.5");
+        let cfg = AgentConfig::from_env().unwrap();
+
+        match prev {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+
+        assert!(
+            (cfg.prefix_caching_factor - 1.0).abs() < 1e-6,
+            "value > 1.0 must be clamped to 1.0, got {}",
+            cfg.prefix_caching_factor
+        );
+    }
+
+    #[test]
+    fn prefix_caching_factor_clamped_below_zero() {
+        const VAR: &str = "PURSER_AGENT_PREFIX_CACHING_FACTOR";
+        let prev = std::env::var(VAR).ok();
+
+        std::env::set_var(VAR, "-0.5");
+        let cfg = AgentConfig::from_env().unwrap();
+
+        match prev {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+
+        assert!(
+            cfg.prefix_caching_factor >= 0.0,
+            "value < 0.0 must be clamped to 0.0, got {}",
+            cfg.prefix_caching_factor
+        );
     }
 }
