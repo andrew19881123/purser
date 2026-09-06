@@ -131,6 +131,18 @@ type Registry interface {
 	// UpdateDeploymentApprovalStatus transitions the approval for deploymentID
 	// to the given status, recording the reviewer and optional notes.
 	UpdateDeploymentApprovalStatus(ctx context.Context, deploymentID, status, reviewer, notes string) error
+	// RecordApprovalVote records a single reviewer's vote on an approval.
+	// Returns an error when:
+	//   - the reviewer is the same as the approval's requester (self-approval),
+	//   - the reviewer has already voted on this approval (duplicate vote), or
+	//   - the approval is no longer pending.
+	RecordApprovalVote(ctx context.Context, deploymentID, reviewer, vote, notes, ipAddress string) error
+	// GetApprovalVotes returns all votes cast for the approval identified by
+	// approvalID, ordered by voted_at ascending.
+	GetApprovalVotes(ctx context.Context, approvalID int64) ([]ApprovalVote, error)
+	// CheckApprovalQuorum reports whether the quorum for deploymentID has been
+	// reached: (reached, approvedCount, requiredCount, error).
+	CheckApprovalQuorum(ctx context.Context, deploymentID string) (bool, int, int, error)
 
 	// --- Usage log ---------------------------------------------------------
 	// RecordUsage records one inference request's token usage.

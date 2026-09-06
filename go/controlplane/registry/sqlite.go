@@ -88,7 +88,6 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		// any key created before this column existed.
 		{"api_keys", "role", "TEXT NOT NULL DEFAULT 'admin'"},
 		// Tamper-evident hash-chain columns for the inference audit log.
-		// Nullable so rows written before the chain existed remain valid.
 		{"inference_audit_log", "seq", "INTEGER"},
 		{"inference_audit_log", "prev_hash", "TEXT"},
 		{"inference_audit_log", "hash", "TEXT"},
@@ -104,6 +103,12 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"inference_audit_log", "model_quantization", "TEXT NOT NULL DEFAULT ''"},
 		{"inference_audit_log", "node_id", "TEXT NOT NULL DEFAULT ''"},
 		{"inference_audit_log", "inference_engine", "TEXT NOT NULL DEFAULT ''"},
+		// Dual-control (AI Act Art.14): number of distinct approvals required
+		// before the deployment is released (default 1 preserves existing
+		// single-approver behaviour on existing rows).
+		{"deployment_approvals", "required_approvals", "INTEGER NOT NULL DEFAULT 1"},
+		// Expiry timestamp for the approval request (NULL = no expiry).
+		{"deployment_approvals", "expires_at", "TEXT"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -141,6 +146,27 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 			return fmt.Errorf("registry: database integrity check failed: %s (consider restoring from backup)", result)
 		}
 		slog.Info("database integrity check passed")
+	}
+	// Dual-control vote table (AI Act Art.14). Each reviewer casts exactly one
+	// vote per approval (unique index on (approval_id, reviewer)). Created here
+	// rather than in schema.sql so it can be added to existing databases.
+	if _, err := r.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS deployment_approval_votes (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			approval_id INTEGER NOT NULL REFERENCES deployment_approvals(id),
+			reviewer    TEXT    NOT NULL,
+			voted_at    TEXT    NOT NULL,
+			vote        TEXT    NOT NULL CHECK (vote IN ('approved', 'rejected')),
+			notes       TEXT    NOT NULL DEFAULT '',
+			ip_address  TEXT    NOT NULL DEFAULT ''
+		)`); err != nil {
+		return fmt.Errorf("registry: migrate: deployment_approval_votes: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_dav_approval_id ON deployment_approval_votes(approval_id)`); err != nil {
+		return fmt.Errorf("registry: migrate: idx_dav_approval_id: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_dav_reviewer_approval ON deployment_approval_votes(approval_id, reviewer)`); err != nil {
+		return fmt.Errorf("registry: migrate: idx_dav_reviewer_approval: %w", err)
 	}
 	return nil
 }

@@ -157,6 +157,116 @@ confirm dialog that accepts optional notes.
     The Approvals page renders a filterable table with status tabs (Pending / Approved / Rejected),
     approve/reject buttons with a confirm dialog for optional notes, and color-coded status badges.
 
+## Dual control (AI Act Art.14)
+
+EU AI Act Article 14 requires that high-risk AI systems be designed to allow
+**effective human oversight** — including the ability for natural persons to
+intervene, interrupt, or override the AI system. A single admin approving
+unilaterally may not be sufficient for systems classified as high-risk.
+
+Purser's dual-control mode requires **two distinct admins** to each cast an
+independent "approved" vote before the deployment is released, preventing any
+single person from authorising a rollout alone.
+
+### Configuring required approvals
+
+Set `required_approvals` when you call
+`POST /api/v1/models/{id}/deploy` (or inject it into the approval record
+directly if your workflow creates the record separately):
+
+```json
+{
+  "required_approvals": 2
+}
+```
+
+The default is `1` (single-approver mode — backward-compatible with existing
+deployments). Set `2` or higher to enforce dual or multi-person control.
+
+### Dual-control workflow
+
+```
+Operator                Control Plane              Admin-1        Admin-2
+   |                         |                       |               |
+   |-- POST /deploy -------> |                       |               |
+   |                         |-- creates pending ---> [queue r=2]    |
+   |<-- 202 pending_approval -|                       |               |
+   |                         |                       |               |
+   |                         |<-- POST /approve ----- |               |
+   |                         | vote recorded (1/2)    |               |
+   |                         | quorum not reached     |               |
+   |                         |                        |               |
+   |                         |<-- POST /approve --------------------------------|
+   |                         | vote recorded (2/2)                    |
+   |                         | quorum reached → starts deploy         |
+   |<-- deployment active ---|                                        |
+```
+
+1. **First vote** (`required_approvals=2`): the response carries
+   `"quorum_reached": false` and the deployment stays `pending`.
+2. **Second vote** (a different admin): the response carries
+   `"quorum_reached": true` and the record transitions to `approved`.
+
+### Anti self-approval
+
+The requester of a deployment **cannot** approve it — even if the requester
+has admin role. Attempting to do so returns `409 Conflict` with:
+
+```json
+{ "error": "self_approval_denied",
+  "message": "the requester cannot approve their own deployment" }
+```
+
+This ensures that at least one human independent of the deployment initiator
+reviews it before the rollout starts.
+
+### Approval expiry
+
+When creating an approval you may set an `expires_at` timestamp. Any approve
+or reject attempt after that timestamp returns `410 Gone`:
+
+```json
+{ "error": "approval_expired",
+  "message": "this approval request has expired" }
+```
+
+Expired approvals must be re-created (via a new deploy request) to be re-
+evaluated.
+
+### Vote response
+
+Every call to `POST /api/v1/approvals/{id}/approve` now returns a vote-result
+object rather than the raw approval record:
+
+```json
+{
+  "voted": true,
+  "quorum_reached": false,
+  "approvals_so_far": 1,
+  "approvals_needed": 2,
+  "message": "Vote recorded. Waiting for 1 more approval(s)."
+}
+```
+
+When `quorum_reached` is `true` the deployment has been released:
+
+```json
+{
+  "voted": true,
+  "quorum_reached": true,
+  "approvals_so_far": 2,
+  "approvals_needed": 2,
+  "message": "Deployment approved and starting."
+}
+```
+
+### Single-veto reject
+
+A single reject is sufficient to block the deployment, regardless of
+`required_approvals`. One veto outweighs any number of approvals. The reject
+endpoint records the vote and immediately transitions the approval to
+`rejected`.
+
 ## AI Act Art.14 compliance note
 
 EU AI Act Article 14 requires that high-risk AI systems be designed to allow
@@ -168,10 +278,16 @@ The deployment approval gate satisfies this by:
 - **Intercepting** every production rollout before execution.
 - **Requiring explicit human sign-off** from a named admin (recorded by
   `api_key_hash` in the `reviewer` field).
+- **Dual-control option** (`required_approvals: 2`) prevents a single person
+  from unilaterally authorising a high-risk model deployment.
+- **Anti self-approval** enforcement ensures independence between the
+  requestor and the reviewer.
 - **Creating an immutable audit trail** via the tamper-evident audit log
   (`deployment.approval.approved` / `deployment.approval.rejected` entries).
 - **Storing structured metadata** (model ID, requester, reviewer, notes,
   timestamps) for compliance reporting.
+- **Per-vote records** in `deployment_approval_votes` provide a full audit
+  trail of every individual reviewer decision.
 
 Combine with the [enterprise audit log](./audit-log.md) to produce a complete
 traceability record for regulatory audits.
