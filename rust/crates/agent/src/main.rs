@@ -32,11 +32,71 @@ async fn main() -> anyhow::Result<()> {
     let config = AgentConfig::from_env().context("loading agent configuration")?;
     let config = Arc::new(config);
 
-    // When http-fetch is enabled: construct an HTTP model fetcher from config.
-    // TODO(phase2): pass to ModelCache::open() when the weight-loading path is
-    // wired in place of FileMirrorFetcher.
-    #[cfg(feature = "http-fetch")]
-    let _http_fetcher = purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
+    // ── Model cache ──────────────────────────────────────────────────────────
+    // The cache resolves logical model refs (e.g. "llama-3.1-8b:Q4_K_M") to
+    // local GGUF file paths before StartEngine reaches the engine adapter.
+    //
+    // Cache directory: PURSER_MODEL_CACHE_DIR (default: ~/.purser/model-cache).
+    // Cache budget:    PURSER_MODEL_CACHE_MAX_BYTES (default: 50 GiB).
+    //
+    // When http-fetch is enabled the HttpFetcher is used; otherwise the
+    // FileMirrorFetcher copies from a rack-local NFS/mounted mirror
+    // (PURSER_MODEL_MIRROR_DIR, default: same as cache dir, effectively a
+    // no-op until a mirror is configured).
+    let model_cache: Option<Arc<purser_agent::modelcache::ModelCache>> = {
+        let cache_dir: std::path::PathBuf = std::env::var("PURSER_MODEL_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var_os("HOME")
+                    .map(|h| {
+                        std::path::PathBuf::from(h)
+                            .join(".purser")
+                            .join("model-cache")
+                    })
+                    .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/purser/model-cache"))
+            });
+
+        let max_bytes: u64 = std::env::var("PURSER_MODEL_CACHE_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50 * 1024 * 1024 * 1024); // 50 GiB
+
+        #[cfg(not(feature = "http-fetch"))]
+        let fetcher: Box<dyn purser_agent::modelcache::Fetcher> = {
+            let mirror_root = std::env::var("PURSER_MODEL_MIRROR_DIR")
+                .map(std::path::PathBuf::from)
+                .ok();
+            Box::new(purser_agent::modelcache::FileMirrorFetcher {
+                mirror_root,
+            })
+        };
+
+        #[cfg(feature = "http-fetch")]
+        let fetcher: Box<dyn purser_agent::modelcache::Fetcher> = {
+            Box::new(purser_agent::modelcache::HttpFetcher::new(
+                config.model_fetch_max_retries,
+            ))
+        };
+
+        match purser_agent::modelcache::ModelCache::open(&cache_dir, max_bytes, fetcher).await {
+            Ok(cache) => {
+                tracing::info!(
+                    dir = %cache_dir.display(),
+                    max_bytes,
+                    "model cache opened"
+                );
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %cache_dir.display(),
+                    "failed to open model cache; StartEngine will skip path resolution"
+                );
+                None
+            }
+        }
+    };
 
     // Security: warn if bound on all interfaces rather than a trusted subnet.
     if config.bind_addr.ip().is_unspecified() {
@@ -90,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&config),
         Arc::clone(&supervisor),
         Arc::clone(&machine),
+        model_cache,
     );
 
     tracing::info!(
