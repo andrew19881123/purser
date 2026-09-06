@@ -548,9 +548,6 @@ func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec,
 	// memory-bound decode; a rough multiple as a placeholder point estimate.
 	prefill := decode * prefillComputeMultiple
 
-	// TODO: add prefix_caching_factor to NodeCapabilities proto (fase2 follow-up);
-	// currently populated only when callers set Node.PrefixCachingFactor directly.
-	//
 	// Apply prefix-caching speedup: cache hits skip KV recompute, so only the
 	// fraction (1-factor) of tokens require full attention at prefill. The
 	// effective prefill throughput scales by 1/(1-factor). Guard: factor must be
@@ -559,10 +556,6 @@ func estimatePerformance(bottleneckSecPerTok, headroom float64, model ModelSpec,
 		prefill /= (1 - n.PrefixCachingFactor)
 	}
 
-	// TODO: add kv_ssd_offload to NodeCapabilities proto (fase2 follow-up);
-	// currently populated only when callers set Node.KVSSDOffload directly.
-	// Node.DiskFreeGB is already populated from HardwareProfile.disk_free_gb.
-	//
 	// Apply KV SSD offload: free disk space usable as overflow KV storage
 	// expands the effective memory pool, raising reported headroom. The
 	// contribution is capped at kvSsdOffloadMaxMultiplier × (V)RAM so that a

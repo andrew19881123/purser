@@ -109,6 +109,22 @@ message HardwareProfile {
   map<string, string> engine_versions = 11;
   google.protobuf.Timestamp last_seen = 12;
   NodeState state = 13;
+
+  // Engine-capability fields reported by the agent when the inference engine
+  // supports them. Zero values are safe defaults (no capability assumed).
+
+  // Fraction of inference tokens expected to hit the KV cache (0–1). When
+  // non-zero, the planner scales prefill throughput by 1/(1−factor) to reflect
+  // that cache-hit tokens require no attention recompute. Reported by agents
+  // that know their engine supports prefix caching (e.g. vLLM PagedAttention).
+  // Configurable via PURSER_AGENT_PREFIX_CACHING_FACTOR.
+  float prefix_caching_factor = 14;
+
+  // Whether the engine supports KV-cache SSD offload (Tutti-style): cold KV
+  // blocks can spill to SSD, expanding the effective KV-cache pool beyond VRAM.
+  // When true, the planner adds kvSsdOffloadFactor × disk_free_gb to the
+  // effective headroom estimate (capped at kvSsdOffloadMaxMultiplier × VRAM).
+  bool kv_ssd_offload = 15;
 }
 
 // Measured network characteristics of the link between two nodes.

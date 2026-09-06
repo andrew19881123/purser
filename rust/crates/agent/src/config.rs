@@ -110,6 +110,18 @@ pub struct AgentConfig {
     ///
     /// Overridable via `PURSER_MODEL_FETCH_MAX_RETRIES`. Defaults to 3.
     pub model_fetch_max_retries: u32,
+
+    /// Expected fraction of inference tokens that hit the KV cache (0.0–1.0).
+    ///
+    /// When non-zero the planner scales prefill throughput by 1/(1−factor) to
+    /// reflect that cache-hit tokens require no attention recompute. Set this
+    /// when the engine backend supports prefix caching (e.g. vLLM
+    /// PagedAttention, llama.cpp slot reuse) and you want the control plane to
+    /// factor that into placement decisions.
+    ///
+    /// Forwarded into `HardwareProfile.prefix_caching_factor` on every probe.
+    /// Overridable via `PURSER_AGENT_PREFIX_CACHING_FACTOR`.  Default: 0.0.
+    pub prefix_caching_factor: f32,
 }
 
 impl Default for AgentConfig {
@@ -129,6 +141,7 @@ impl Default for AgentConfig {
             swim_seed_addrs: Vec::new(),
             secret_store_dir: default_secret_store_dir(),
             model_fetch_max_retries: 3,
+            prefix_caching_factor: 0.0,
         }
     }
 }
@@ -154,6 +167,7 @@ impl AgentConfig {
     /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
     ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
     /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
+    /// - `PURSER_AGENT_PREFIX_CACHING_FACTOR` — e.g. `0.7` (default: 0.0, disabled)
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -205,6 +219,12 @@ impl AgentConfig {
             cfg.model_fetch_max_retries = retries
                 .parse()
                 .with_context(|| format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}"))?;
+        }
+        if let Ok(factor) = std::env::var("PURSER_AGENT_PREFIX_CACHING_FACTOR") {
+            let v: f32 = factor
+                .parse()
+                .with_context(|| format!("invalid PURSER_AGENT_PREFIX_CACHING_FACTOR: {factor:?}"))?;
+            cfg.prefix_caching_factor = v.clamp(0.0, 1.0);
         }
 
         Ok(cfg)
