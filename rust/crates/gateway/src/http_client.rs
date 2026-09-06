@@ -84,6 +84,9 @@ mod tests {
         let mut cfg = default_config();
         cfg.http_proxy = Some("http://proxy.internal:3128".to_string());
         let result = build_http_client(&cfg, Duration::from_millis(2000));
-        assert!(result.is_ok(), "valid HTTP proxy URL must produce a valid client");
+        assert!(
+            result.is_ok(),
+            "valid HTTP proxy URL must produce a valid client"
+        );
     }
 }

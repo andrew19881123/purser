@@ -789,13 +789,9 @@ mod tests {
     #[tokio::test]
     async fn model_cache_opens_with_http_fetcher() {
         let cache_dir = tempdir().unwrap();
-        let cache = ModelCache::open(
-            cache_dir.path(),
-            1_000_000,
-            Box::new(HttpFetcher::new(0)),
-        )
-        .await
-        .unwrap();
+        let cache = ModelCache::open(cache_dir.path(), 1_000_000, Box::new(HttpFetcher::new(0)))
+            .await
+            .unwrap();
         // Cache opened successfully with HttpFetcher (no downloads yet).
         assert_eq!(cache.total_bytes(), 0);
         assert!(cache.cached_refs().is_empty());

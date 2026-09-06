@@ -203,9 +203,7 @@ fn get_mem_bandwidth_gbs() -> f32 {
 
     // 1. Check whether a (re-)measurement is needed — brief lock.
     let needs_measure = {
-        let cache = CACHED_MEM_BW_GBS
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let cache = CACHED_MEM_BW_GBS.lock().unwrap_or_else(|p| p.into_inner());
         match &*cache {
             None => true,
             Some((_, t)) => t.elapsed() >= interval,
@@ -217,9 +215,7 @@ fn get_mem_bandwidth_gbs() -> f32 {
         //    callers are not serialized.
         let new_val = measure_mem_bandwidth_gbs();
         // 3. Store the fresh result — brief lock.
-        let mut cache = CACHED_MEM_BW_GBS
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut cache = CACHED_MEM_BW_GBS.lock().unwrap_or_else(|p| p.into_inner());
         *cache = Some((new_val, Instant::now()));
         return new_val;
     }

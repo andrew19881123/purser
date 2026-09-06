@@ -33,7 +33,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use purser_proto::v1::registration_service_client::RegistrationServiceClient;
-use purser_proto::v1::{EngineMetrics, HardwareProfile, Heartbeat, JoinRequest, NodeMetrics, NodeState};
+use purser_proto::v1::{
+    EngineMetrics, HardwareProfile, Heartbeat, JoinRequest, NodeMetrics, NodeState,
+};
 use tokio_stream::Stream;
 
 /// DNS-SD service type advertised & browsed by Purser agents.

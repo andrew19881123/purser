@@ -66,9 +66,7 @@ async fn main() -> anyhow::Result<()> {
             let mirror_root = std::env::var("PURSER_MODEL_MIRROR_DIR")
                 .map(std::path::PathBuf::from)
                 .ok();
-            Box::new(purser_agent::modelcache::FileMirrorFetcher {
-                mirror_root,
-            })
+            Box::new(purser_agent::modelcache::FileMirrorFetcher { mirror_root })
         };
 
         #[cfg(feature = "http-fetch")]
@@ -357,8 +355,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = secret_store.put("client_cert", &enrollment.client_cert);
                     let _ = secret_store.put("ca_cert", &enrollment.ca_cert);
                     {
-                        let mut sm =
-                            machine_for_task.lock().unwrap_or_else(|p| p.into_inner());
+                        let mut sm = machine_for_task.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = sm.enrolled();
                         let _ = sm.ready();
                     }

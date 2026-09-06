@@ -348,7 +348,11 @@ mod tests {
         };
         let launch = build_host_launch(&cfg(), "/m.gguf", &[], &params).unwrap();
         let fa_count = launch.args.iter().filter(|a| *a == "-fa").count();
-        assert_eq!(fa_count, 1, "-fa must appear exactly once; args: {:?}", launch.args);
+        assert_eq!(
+            fa_count, 1,
+            "-fa must appear exactly once; args: {:?}",
+            launch.args
+        );
     }
 
     /// Backward compat: `extra["flash_attn"]` alone (without the explicit field)
