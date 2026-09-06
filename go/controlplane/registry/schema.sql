@@ -77,15 +77,28 @@ CREATE INDEX IF NOT EXISTS idx_deployments_model ON deployments (model_id);
 
 -- api_keys: gateway credentials, quotas and associated tenant. Only a hash of
 -- the key material is stored.
+-- role is backfilled via ensureColumn in Migrate for databases created before
+-- it was introduced; included here so fresh installs get it in one step.
+-- expires_at, last_used_at, predecessor_id, rotated_at, scopes: enterprise
+-- lifecycle fields (Wave B). Also backfilled via ensureColumn on upgrade.
 CREATE TABLE IF NOT EXISTS api_keys (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL DEFAULT '',
-    key_hash   TEXT NOT NULL,
-    tenant     TEXT NOT NULL DEFAULT '',
-    quota      INTEGER NOT NULL DEFAULT 0,
-    enabled    INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id             TEXT    PRIMARY KEY,
+    name           TEXT    NOT NULL DEFAULT '',
+    key_hash       TEXT    NOT NULL,
+    tenant         TEXT    NOT NULL DEFAULT '',
+    quota          INTEGER NOT NULL DEFAULT 0,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    -- RBAC role (admin|viewer|inference). Default "admin" preserves access
+    -- for keys created before RBAC was introduced.
+    role           TEXT    NOT NULL DEFAULT 'admin',
+    -- enterprise lifecycle (NULL = no constraint / not applicable)
+    expires_at     TEXT,                       -- NULL = never expires; RFC3339 UTC
+    last_used_at   TEXT,                       -- NULL = never used; throttled writes
+    predecessor_id TEXT    NOT NULL DEFAULT '', -- rotation chain; '' if no predecessor
+    rotated_at     TEXT,                       -- when replaced by a successor; NULL if active
+    scopes         TEXT    NOT NULL DEFAULT '[]' -- JSON array of permission strings
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant);
 
@@ -139,6 +152,9 @@ CREATE INDEX IF NOT EXISTS idx_usage_log_request_at ON usage_log (request_at);
 -- Art.12 compliance. Prompt content is NEVER stored (GDPR Article 5 data
 -- minimisation). request_id has a UNIQUE constraint so duplicate submissions
 -- (gateway retries, at-least-once delivery) are silently ignored.
+-- model_revision, model_quantization, node_id, inference_engine: AI Act Art.12
+-- model version tracking (backfilled via ensureColumn on upgrade).
+-- seq, prev_hash, hash: tamper-evident hash chain (same pattern as audit_log).
 CREATE TABLE IF NOT EXISTS inference_audit_log (
     id                INTEGER  PRIMARY KEY AUTOINCREMENT,
     request_id        TEXT     NOT NULL UNIQUE,
@@ -151,7 +167,16 @@ CREATE TABLE IF NOT EXISTS inference_audit_log (
     endpoint          TEXT     NOT NULL DEFAULT 'openai',
     client_ip_prefix  TEXT     NOT NULL DEFAULT '',
     latency_ms        REAL     NOT NULL DEFAULT 0,
-    finish_reason     TEXT     NOT NULL DEFAULT 'stop'
+    finish_reason     TEXT     NOT NULL DEFAULT 'stop',
+    -- AI Act Art.12 model version tracking
+    model_revision      TEXT    NOT NULL DEFAULT '',
+    model_quantization  TEXT    NOT NULL DEFAULT '',
+    node_id             TEXT    NOT NULL DEFAULT '',
+    inference_engine    TEXT    NOT NULL DEFAULT '',
+    -- tamper-evident hash chain (nullable so rows pre-chain remain valid)
+    seq       INTEGER,
+    prev_hash TEXT,
+    hash      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);
@@ -186,3 +211,125 @@ CREATE TABLE IF NOT EXISTS deployment_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON deployment_approvals(status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_approvals_model  ON deployment_approvals(model_id);
+
+-- =============================================================================
+-- Enterprise Wave B tables
+-- =============================================================================
+
+-- oidc_sessions: persisted browser sessions created via OIDC/LDAP login.
+-- Stored in the DB for HA support so any control-plane node can validate a
+-- session cookie. token_hash is SHA-256 hex of the cookie value (never the
+-- raw token). refresh_token_enc is AES-256-GCM encrypted; NULL if unavailable.
+CREATE TABLE IF NOT EXISTS oidc_sessions (
+    token_hash          TEXT    PRIMARY KEY,
+    sub                 TEXT    NOT NULL,
+    email               TEXT    NOT NULL DEFAULT '',
+    idp_issuer          TEXT    NOT NULL DEFAULT '',
+    auth_method         TEXT    NOT NULL DEFAULT 'oidc',  -- 'oidc' | 'ldap' | 'service_account'
+    created_at          TEXT    NOT NULL,
+    expires_at          TEXT    NOT NULL,
+    revoked             INTEGER NOT NULL DEFAULT 0,
+    revoked_at          TEXT,
+    refresh_token_enc   TEXT,   -- AES-256-GCM encrypted; NULL if not available
+    access_token_expiry TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_oidc_sessions_sub     ON oidc_sessions(sub);
+CREATE INDEX IF NOT EXISTS idx_oidc_sessions_expires ON oidc_sessions(expires_at);
+
+-- pkce_state: consume-once PKCE code verifiers stored during the OIDC auth
+-- flow. state_hash is SHA-256 of the OAuth2 state parameter. Rows are deleted
+-- after successful consumption or TTL expiry.
+CREATE TABLE IF NOT EXISTS pkce_state (
+    state_hash  TEXT    PRIMARY KEY,   -- SHA-256 of the state parameter
+    verifier    TEXT    NOT NULL,      -- code_verifier (consume-once)
+    expires_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pkce_state_expires ON pkce_state(expires_at);
+
+-- api_key_access_log: per-request access log for API key audit and anomaly
+-- detection. ip_prefix stores the /24 CIDR prefix only (GDPR data minimisation).
+CREATE TABLE IF NOT EXISTS api_key_access_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id   TEXT    NOT NULL,
+    key_hash     TEXT    NOT NULL,
+    method       TEXT    NOT NULL DEFAULT '',
+    path         TEXT    NOT NULL DEFAULT '',
+    ip_prefix    TEXT    NOT NULL DEFAULT '',  -- /24 CIDR, GDPR data minimisation
+    user_agent   TEXT    NOT NULL DEFAULT '',
+    status_code  INTEGER NOT NULL DEFAULT 0,
+    request_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_akacl_key_id     ON api_key_access_log(api_key_id, request_at);
+CREATE INDEX IF NOT EXISTS idx_akacl_request_at ON api_key_access_log(request_at);
+
+-- model_pricing: cost schedule per model. The most-recent row per model_id
+-- (highest effective_from) is the active price. tiers is a JSON array:
+-- [{"threshold_tokens": N, "multiplier": M}, ...] for volume discounts.
+CREATE TABLE IF NOT EXISTS model_pricing (
+    model_id              TEXT NOT NULL,
+    effective_from        TEXT NOT NULL,  -- RFC3339; most recent row per model wins
+    input_price_per_1k    REAL NOT NULL DEFAULT 0,   -- USD per 1000 input tokens
+    output_price_per_1k   REAL NOT NULL DEFAULT 0,   -- USD per 1000 output tokens
+    tiers                 TEXT NOT NULL DEFAULT '[]', -- JSON pricing tier array
+    PRIMARY KEY (model_id, effective_from)
+);
+CREATE INDEX IF NOT EXISTS idx_pricing_model_date ON model_pricing(model_id, effective_from DESC);
+
+-- tenant_quotas: multi-dimensional usage limits per tenant. 0 = unlimited for
+-- any counter. inherit_from_parent propagates quotas from a parent tenant.
+CREATE TABLE IF NOT EXISTS tenant_quotas (
+    tenant_id              TEXT    PRIMARY KEY,
+    monthly_requests       INTEGER NOT NULL DEFAULT 0,     -- 0 = unlimited
+    max_concurrent         INTEGER NOT NULL DEFAULT 0,
+    requests_per_sec       REAL    NOT NULL DEFAULT 0,
+    input_tpm              INTEGER NOT NULL DEFAULT 0,     -- input tokens/min
+    output_tpm             INTEGER NOT NULL DEFAULT 0,     -- output tokens/min
+    monthly_input_tokens   INTEGER NOT NULL DEFAULT 0,
+    monthly_output_tokens  INTEGER NOT NULL DEFAULT 0,
+    monthly_cost_budget    REAL    NOT NULL DEFAULT 0,     -- USD; 0 = unlimited
+    alert_at_percent       INTEGER NOT NULL DEFAULT 80,
+    inherit_from_parent    INTEGER NOT NULL DEFAULT 0,
+    updated_at             TEXT    NOT NULL
+);
+
+-- tenant_quota_usage: rolling monthly usage accumulator per tenant.
+-- period_start is the first second of the billing month (UTC, RFC3339).
+CREATE TABLE IF NOT EXISTS tenant_quota_usage (
+    tenant_id           TEXT    NOT NULL,
+    period_start        TEXT    NOT NULL,  -- first second of billing month (UTC)
+    requests_used       INTEGER NOT NULL DEFAULT 0,
+    input_tokens_used   INTEGER NOT NULL DEFAULT 0,
+    output_tokens_used  INTEGER NOT NULL DEFAULT 0,
+    cost_used_usd       REAL    NOT NULL DEFAULT 0,
+    last_updated        TEXT    NOT NULL,
+    PRIMARY KEY (tenant_id, period_start)
+);
+CREATE INDEX IF NOT EXISTS idx_tqu_tenant_period ON tenant_quota_usage(tenant_id, period_start);
+
+-- policy_versions: full history of every Rego policy's source code.
+-- A new row is appended on every PUT; the highest version per policy_name is
+-- the currently active version.
+CREATE TABLE IF NOT EXISTS policy_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_name TEXT    NOT NULL,
+    version     INTEGER NOT NULL,
+    rego        TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL,
+    created_by  TEXT    NOT NULL DEFAULT '',
+    UNIQUE (policy_name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_policy_versions_name ON policy_versions(policy_name, version DESC);
+
+-- gdpr_erasure_log: append-only record of GDPR Art.17 right-to-erasure
+-- operations. subject_hash is SHA-256 of the subject identifier so the log
+-- itself holds no PII. erasure_type indicates which table was scrubbed
+-- (e.g. "inference_audit").
+CREATE TABLE IF NOT EXISTS gdpr_erasure_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_hash      TEXT    NOT NULL,
+    erased_at         TEXT    NOT NULL,
+    erased_by         TEXT    NOT NULL,
+    reason            TEXT    NOT NULL DEFAULT '',
+    events_erased     INTEGER NOT NULL DEFAULT 0,
+    erasure_type      TEXT    NOT NULL DEFAULT 'inference_audit'
+);
