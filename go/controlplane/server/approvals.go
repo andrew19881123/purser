@@ -18,8 +18,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/purser/purser/go/controlplane/registry"
 )
@@ -87,16 +90,21 @@ type approvalActionRequest struct {
 }
 
 // handleApproveDeployment serves POST /api/v1/approvals/{deploymentId}/approve.
-// Admin-only. Transitions the approval from "pending" to "approved" and, if a
-// deployer is wired up, kicks off the actual rollout.
+// Admin-only. Records this reviewer's "approved" vote. When the quorum defined
+// by required_approvals is reached, the approval is transitioned to "approved"
+// and the deployment rollout is released.
+//
+// Dual-control (AI Act Art.14) semantics:
+//   - Self-approval denied (requester == reviewer) → 409 self_approval_denied
+//   - Duplicate vote denied → 409 already_voted
+//   - Expired approval → 410 Gone
+//   - Quorum not yet reached → 200 with quorum_reached:false
+//   - Quorum reached → 200 with quorum_reached:true and deployment started
 func (s *Server) handleApproveDeployment(w http.ResponseWriter, r *http.Request) {
 	if !s.licenseAllows(featureDeploymentApprovals) {
 		s.writeLicenseRequired(w, featureDeploymentApprovals)
 		return
 	}
-	// Enforce admin role: extract the API key hash from the bearer token so we
-	// can store it as the reviewer. rbacMiddleware has already enforced the role
-	// for non-GET routes, but we also need the hash for auditing.
 	reviewer := apiKeyHashFromRequest(r)
 	if !s.requestIsAdmin(r) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{
@@ -135,28 +143,68 @@ func (s *Server) handleApproveDeployment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.reg.UpdateDeploymentApprovalStatus(r.Context(), depID, "approved", reviewer, body.Notes); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "update_approval_failed", err.Error())
+	// Expiry check.
+	if approval.ExpiresAt != nil && time.Now().After(*approval.ExpiresAt) {
+		s.writeError(w, http.StatusGone, "approval_expired",
+			"this approval request has expired")
 		return
 	}
 
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor: reviewer, Action: "deployment.approval.approved", Target: depID,
-	})
+	// Record the vote. RecordApprovalVote validates self-approval and duplicates.
+	if err := s.reg.RecordApprovalVote(r.Context(), depID, reviewer, "approved",
+		body.Notes, extractIPPrefix(r.RemoteAddr)); err != nil {
+		if strings.Contains(err.Error(), "self_approval_denied") {
+			s.writeError(w, http.StatusConflict, "self_approval_denied",
+				"the requester cannot approve their own deployment")
+			return
+		}
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			s.writeError(w, http.StatusConflict, "already_voted",
+				"you have already voted on this approval")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "vote_failed", err.Error())
+		return
+	}
 
-	// Re-fetch the updated record to return current state.
-	updated, err := s.reg.GetDeploymentApproval(r.Context(), depID)
+	// Check whether quorum has been reached.
+	reached, approved, required, err := s.reg.CheckApprovalQuorum(r.Context(), depID)
 	if err != nil {
-		// Non-fatal: the approval was updated; just echo what we know.
-		approval.Status = "approved"
-		s.writeJSON(w, http.StatusOK, approval)
+		s.writeError(w, http.StatusInternalServerError, "quorum_check_failed", err.Error())
 		return
 	}
-	s.writeJSON(w, http.StatusOK, updated)
+
+	if reached {
+		notes := fmt.Sprintf("quorum reached (%d/%d)", approved, required)
+		if err := s.reg.UpdateDeploymentApprovalStatus(r.Context(), depID, "approved", reviewer, notes); err != nil {
+			s.writeError(w, http.StatusInternalServerError, "update_approval_failed", err.Error())
+			return
+		}
+		_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
+			Actor: reviewer, Action: "deployment.approval.approved", Target: depID,
+		})
+	}
+
+	msg := fmt.Sprintf("Vote recorded. Waiting for %d more approval(s).", required-approved)
+	if reached {
+		msg = "Deployment approved and starting."
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"voted":            true,
+		"quorum_reached":   reached,
+		"approvals_so_far": approved,
+		"approvals_needed": required,
+		"message":          msg,
+	})
 }
 
 // handleRejectDeployment serves POST /api/v1/approvals/{deploymentId}/reject.
-// Admin-only. Transitions the approval from "pending" to "rejected".
+// Admin-only. A single reject is sufficient to block the deployment immediately,
+// regardless of required_approvals — one veto outweighs any number of approvals.
+//
+// Dual-control (AI Act Art.14) semantics:
+//   - Self-rejection denied (requester == reviewer) → 409 self_approval_denied
+//   - Expired approval → 410 Gone
 func (s *Server) handleRejectDeployment(w http.ResponseWriter, r *http.Request) {
 	if !s.licenseAllows(featureDeploymentApprovals) {
 		s.writeLicenseRequired(w, featureDeploymentApprovals)
@@ -199,6 +247,24 @@ func (s *Server) handleRejectDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Expiry check.
+	if approval.ExpiresAt != nil && time.Now().After(*approval.ExpiresAt) {
+		s.writeError(w, http.StatusGone, "approval_expired",
+			"this approval request has expired")
+		return
+	}
+
+	// Self-rejection guard (mirrors approve).
+	if approval.Requester == reviewer {
+		s.writeError(w, http.StatusConflict, "self_approval_denied",
+			"the requester cannot reject their own deployment")
+		return
+	}
+
+	// Record the reject vote before transitioning (best-effort; non-fatal).
+	_ = s.reg.RecordApprovalVote(r.Context(), depID, reviewer, "rejected",
+		body.Notes, extractIPPrefix(r.RemoteAddr))
+
 	if err := s.reg.UpdateDeploymentApprovalStatus(r.Context(), depID, "rejected", reviewer, body.Notes); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "update_approval_failed", err.Error())
 		return
@@ -227,6 +293,23 @@ func apiKeyHashFromRequest(r *http.Request) string {
 	}
 	sum := sha256.Sum256([]byte(tok))
 	return hex.EncodeToString(sum[:])
+}
+
+// extractIPPrefix returns the /24 CIDR prefix of a "host:port" RemoteAddr
+// string (GDPR data minimisation — the full IP is never stored).
+// For IPv6 addresses the host portion is returned verbatim.
+// An unparseable RemoteAddr returns an empty string.
+func extractIPPrefix(remoteAddr string) string {
+	host := remoteAddr
+	if h, _, found := strings.Cut(remoteAddr, ":"); found {
+		host = h
+	}
+	// For an IPv4 address return the /24 prefix (first three octets).
+	parts := strings.Split(host, ".")
+	if len(parts) == 4 {
+		return strings.Join(parts[:3], ".") + ".0"
+	}
+	return host
 }
 
 // requestIsAdmin reports whether the request's bearer token has admin role.

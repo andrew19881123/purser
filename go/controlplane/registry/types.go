@@ -179,20 +179,42 @@ type TenantUsage struct {
 	OutputTokens  int64  `json:"output_tokens"`
 }
 
+// ApprovalVote represents a single reviewer's vote on a deployment approval
+// (AI Act Art.14 dual-control). Each reviewer casts exactly one vote per
+// approval; a unique index on (approval_id, reviewer) prevents duplicates.
+type ApprovalVote struct {
+	ID         int64     `json:"id"`
+	ApprovalID int64     `json:"approval_id"`
+	Reviewer   string    `json:"reviewer"`
+	VotedAt    time.Time `json:"voted_at"`
+	Vote       string    `json:"vote"` // "approved" | "rejected"
+	Notes      string    `json:"notes,omitempty"`
+	IPAddress  string    `json:"ip_address,omitempty"`
+}
+
 // DeploymentApproval is one row of the human-oversight approval queue
 // (AI Act Art.14). When the "deployment_approvals" enterprise feature is
 // enabled, every deploy request creates a pending record here; the real
 // rollout is held until an admin approves via the REST API.
+//
+// RequiredApprovals controls how many distinct admins must vote "approved"
+// before the deployment is released (default 1; set 2 for dual control).
+// ExpiresAt, if non-nil, is the UTC deadline after which the approval
+// request is no longer actionable (handlers return 410 Gone).
+// Votes carries the individual votes when loaded by GetApprovalVotes.
 type DeploymentApproval struct {
-	ID           int64      `json:"id"`
-	DeploymentID string     `json:"deployment_id"`
-	ModelID      string     `json:"model_id"`
-	Requester    string     `json:"requester"` // api_key_hash
-	RequestedAt  time.Time  `json:"requested_at"`
-	Status       string     `json:"status"` // "pending" | "approved" | "rejected"
-	Reviewer     string     `json:"reviewer,omitempty"`
-	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
-	Notes        string     `json:"notes,omitempty"`
+	ID                int64          `json:"id"`
+	DeploymentID      string         `json:"deployment_id"`
+	ModelID           string         `json:"model_id"`
+	Requester         string         `json:"requester"` // api_key_hash
+	RequestedAt       time.Time      `json:"requested_at"`
+	Status            string         `json:"status"` // "pending" | "approved" | "rejected"
+	Reviewer          string         `json:"reviewer,omitempty"`
+	ReviewedAt        *time.Time     `json:"reviewed_at,omitempty"`
+	Notes             string         `json:"notes,omitempty"`
+	RequiredApprovals int            `json:"required_approvals"`
+	ExpiresAt         *time.Time     `json:"expires_at,omitempty"`
+	Votes             []ApprovalVote `json:"votes,omitempty"`
 }
 
 // BillingTenantUsage aggregates inference activity for a single tenant+model

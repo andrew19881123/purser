@@ -167,12 +167,14 @@ func TestApproveDeployment_ViewerForbidden(t *testing.T) {
 	}
 }
 
-// TestApproveDeployment_AdminOK confirms that an admin can approve a pending
-// deployment and the status is updated to "approved".
+// TestApproveDeployment_AdminOK verifies that a single admin can approve a
+// pending deployment when required_approvals defaults to 1. The response
+// carries the vote-result object with quorum_reached:true.
 func TestApproveDeployment_AdminOK(t *testing.T) {
 	srv, reg, adminToken := newApprovalServer(t)
 
-	// Seed a pending approval.
+	// Seed a pending approval. Requester is a different hash so the admin is
+	// not blocked by the self-approval guard.
 	if err := reg.RequestDeploymentApproval(context.Background(), &registry.DeploymentApproval{
 		DeploymentID: "dep-xyz",
 		ModelID:      "llama3",
@@ -187,15 +189,34 @@ func TestApproveDeployment_AdminOK(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 
-	var body registry.DeploymentApproval
+	// Handler now returns a vote-result object (required_approvals defaults to 1,
+	// so quorum is reached after the first vote).
+	var body struct {
+		Voted           bool   `json:"voted"`
+		QuorumReached   bool   `json:"quorum_reached"`
+		ApprovalsSoFar  int    `json:"approvals_so_far"`
+		ApprovalsNeeded int    `json:"approvals_needed"`
+		Message         string `json:"message"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body: %v; raw=%s", err, rec.Body.String())
 	}
-	if body.Status != "approved" {
-		t.Errorf("status = %q, want approved", body.Status)
+	if !body.Voted {
+		t.Errorf("voted = false, want true")
 	}
-	if body.Notes != "LGTM" {
-		t.Errorf("notes = %q, want LGTM", body.Notes)
+	if !body.QuorumReached {
+		t.Errorf("quorum_reached = false, want true (required_approvals defaults to 1)")
+	}
+	if body.ApprovalsSoFar != 1 {
+		t.Errorf("approvals_so_far = %d, want 1", body.ApprovalsSoFar)
+	}
+	// Verify the registry record was also transitioned to "approved".
+	a, err := reg.GetDeploymentApproval(context.Background(), "dep-xyz")
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	if a.Status != "approved" {
+		t.Errorf("registry status = %q, want approved", a.Status)
 	}
 }
 
