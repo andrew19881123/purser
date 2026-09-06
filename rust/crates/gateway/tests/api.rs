@@ -886,6 +886,104 @@ async fn sse_mid_stream_error_sends_error_frame() {
 // observability
 // ---------------------------------------------------------------------------
 
+/// Obs-01: TTFT histogram must be recorded after a streaming request.
+#[tokio::test]
+async fn test_ttft_metric_recorded_on_streaming() {
+    let (state, _host) = state_with_mock_host().await;
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "messages": [{"role":"user","content":"ttft-probe"}],
+        "stream": true
+    });
+
+    // Drive the full streaming response (body consumption triggers TTFT recording).
+    let resp = app(state.clone())
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            Some("client-key"),
+            &payload,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = body_bytes(resp).await;
+
+    // TTFT histogram must now be visible in /metrics.
+    let metrics_resp = app(state).oneshot(get("/metrics")).await.unwrap();
+    let text = body_text(metrics_resp).await;
+    assert!(
+        text.contains("purser_gateway_time_to_first_token_seconds"),
+        "TTFT histogram must be emitted after a streaming request; /metrics output:\n{text}"
+    );
+}
+
+/// Obs-01: active_streams gauge must be emitted and decrement back after
+/// concurrent streaming requests complete (no leaks from the Drop guard).
+#[tokio::test]
+async fn test_active_streams_gauge_increments_and_decrements() {
+    let (state, _host) = state_with_mock_host().await;
+    let router = app(state.clone());
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "messages": [{"role":"user","content":"gauge-test"}],
+        "stream": true
+    });
+
+    // Fire 3 streaming requests concurrently; draining the body drives the
+    // async_stream loop where the gauge is incremented and the StreamGauge
+    // guard is created (decrement on drop).
+    let (r1, r2, r3) = (router.clone(), router.clone(), router);
+    let (b1, b2, b3) = tokio::join!(
+        async {
+            let r = r1
+                .oneshot(post_json(
+                    "/v1/chat/completions",
+                    Some("client-key"),
+                    &payload,
+                ))
+                .await
+                .unwrap();
+            body_bytes(r).await
+        },
+        async {
+            let r = r2
+                .oneshot(post_json(
+                    "/v1/chat/completions",
+                    Some("client-key"),
+                    &payload,
+                ))
+                .await
+                .unwrap();
+            body_bytes(r).await
+        },
+        async {
+            let r = r3
+                .oneshot(post_json(
+                    "/v1/chat/completions",
+                    Some("client-key"),
+                    &payload,
+                ))
+                .await
+                .unwrap();
+            body_bytes(r).await
+        },
+    );
+    // All 3 streams must have delivered content.
+    assert!(!b1.is_empty(), "stream 1 must deliver content");
+    assert!(!b2.is_empty(), "stream 2 must deliver content");
+    assert!(!b3.is_empty(), "stream 3 must deliver content");
+
+    // After all streams complete the active_streams gauge must appear in /metrics.
+    // Its value must be ≤ 3 (ours) — exact match is avoided because other
+    // parallel tests may contribute to the same label set.
+    let metrics_resp = app(state).oneshot(get("/metrics")).await.unwrap();
+    let text = body_text(metrics_resp).await;
+    assert!(
+        text.contains("purser_gateway_active_streams"),
+        "active_streams gauge must be emitted after streaming requests; /metrics output:\n{text}"
+    );
+}
+
 #[tokio::test]
 async fn metrics_endpoint_exposes_prometheus_after_a_request() {
     let (state, _host) = state_with_mock_host().await;

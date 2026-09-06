@@ -38,6 +38,28 @@ use crate::state::{AppState, OWNED_BY};
 use crate::upstream::{count_sse_tokens, json_completion_tokens};
 
 // ---------------------------------------------------------------------------
+// RAII guard: active-streams gauge
+// ---------------------------------------------------------------------------
+
+/// Decrements `purser_gateway_active_streams` when dropped, ensuring the
+/// gauge never leaks even when a stream terminates abnormally.
+struct StreamGauge {
+    model: String,
+    tenant: String,
+}
+
+impl Drop for StreamGauge {
+    fn drop(&mut self) {
+        metrics::gauge!(
+            "purser_gateway_active_streams",
+            "model" => self.model.clone(),
+            "tenant" => self.tenant.clone(),
+        )
+        .decrement(1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Global bounded semaphore for fire-and-forget usage reports (Fix M3).
 // Caps the number of concurrent reporting tasks so a slow Control Plane cannot
 // grow an unbounded task list; exceeding the limit silently drops the report
@@ -318,11 +340,13 @@ async fn proxy_inference(
 ) -> Result<Response, ApiError> {
     let session_id = gen_id("sess");
 
-    let routed: RoutedRequest =
-        serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest {
+    let routed: RoutedRequest = serde_json::from_slice(&body).map_err(|e| {
+        crate::metrics::record_error("", &api_key.tenant, "bad_request");
+        ApiError::BadRequest {
             message: format!("Invalid JSON request body: {e}"),
             code: Some("invalid_body".to_string()),
-        })?;
+        }
+    })?;
     let model = routed.model;
     let want_stream = routed.stream;
 
@@ -331,28 +355,41 @@ async fn proxy_inference(
     tracing::Span::current().record("model.id", model.as_str());
 
     // Resolve the host (404 if unknown, 503 if draining).
-    let route = state.resolve_active(&model).await?;
+    let route = state
+        .resolve_active(&model)
+        .await
+        .inspect_err(|_| {
+            crate::metrics::record_error(&model, &api_key.tenant, "node_unavailable");
+        })?;
 
     // Per-model concurrency gate: reject immediately if the model's in-flight
     // slot limit is reached (429 Too Many Requests + Retry-After: 5).
+    // Time the acquire to emit queue-wait and queue-depth metrics.
+    let queue_start = Instant::now();
     let queue_permit = state.queue.try_acquire(&model).map_err(|pos| {
         tracing::warn!(
             model = %model,
             queue_position = pos,
             "per-model queue full; shedding request with 429"
         );
+        crate::metrics::record_error(&model, &api_key.tenant, "rate_limited");
         ApiError::RateLimited {
             message: format!("Model '{model}' request queue is full; retry after a short delay."),
             retry_after_secs: 5,
             queue_position: Some(pos),
         }
     })?;
+    crate::metrics::record_queue_wait(&model, queue_start.elapsed().as_secs_f64());
+    crate::metrics::record_queue_depth(&model, state.queue.queue_depth(&model) as f64);
 
     // Admission: quota / rate-limit / backpressure (429 on rejection).
     let prompt_tokens = approx_prompt_tokens(&body);
     let guard = state
         .limiter
-        .acquire(&api_key.id, &state.quota, prompt_tokens)?;
+        .acquire(&api_key.id, &state.quota, prompt_tokens)
+        .inspect_err(|_| {
+            crate::metrics::record_error(&model, &api_key.tenant, "quota_exceeded");
+        })?;
 
     // Estimate input tokens for usage accounting (messages content ÷ 4).
     let input_tokens_for_usage = estimate_input_tokens(&body);
@@ -377,6 +414,11 @@ async fn proxy_inference(
     let resp = match state.http.send_json(&url, body).await {
         Ok(resp) => resp,
         Err(err) => {
+            let etype = match &err {
+                ApiError::Timeout(_) => "timeout_upstream",
+                _ => "node_unavailable",
+            };
+            crate::metrics::record_error(&model, &api_key.tenant, etype);
             // guard drops here, releasing the admission slot.
             record_request(
                 &model,
@@ -471,12 +513,24 @@ fn stream_response(
         // Both held for the whole stream; dropped at the end → releases slots.
         let _guard = guard;
         let _queue_permit = queue_permit;
+
+        // Increment active-streams gauge; decrement on drop via StreamGauge.
+        metrics::gauge!(
+            "purser_gateway_active_streams",
+            "model" => model.clone(),
+            "tenant" => tenant.clone(),
+        )
+        .increment(1.0);
+        let _stream_gauge = StreamGauge { model: model.clone(), tenant: tenant.clone() };
+
         tokio::pin!(upstream);
         let mut out_tokens: u64 = 0;
+        let mut ttft_recorded = false;
 
         loop {
             match tokio::time::timeout(idle, upstream.next()).await {
                 Err(_elapsed) => {
+                    crate::metrics::record_error(&model, &tenant, "timeout_upstream");
                     tracing::warn!(
                         session_id = %session_id, model = %model,
                         "upstream idle timeout mid-stream; closing with partial output"
@@ -488,10 +542,19 @@ fn stream_response(
                 }
                 Ok(None) => break,
                 Ok(Some(Ok(chunk))) => {
+                    if !ttft_recorded && !chunk.is_empty() {
+                        crate::metrics::record_ttft(
+                            &model,
+                            &tenant,
+                            start.elapsed().as_secs_f64(),
+                        );
+                        ttft_recorded = true;
+                    }
                     out_tokens += count_sse_tokens(&chunk);
                     yield Ok(chunk);
                 }
                 Ok(Some(Err(err))) => {
+                    crate::metrics::record_error(&model, &tenant, "node_unavailable");
                     tracing::warn!(session_id = %session_id, error = %err, "upstream stream failed mid-flight");
                     // Notify the client with a structured SSE error frame so it
                     // knows the stream ended abnormally, not cleanly (Fix M2).
@@ -576,8 +639,13 @@ async fn buffered_response(
     // Held for the duration of the buffered response; released on return.
     _queue_permit: OwnedSemaphorePermit,
 ) -> Result<Response, ApiError> {
+    // TTFT for buffered responses: time from request start to when the upstream
+    // returned the response headers (≈ time-to-first-byte of body).
+    crate::metrics::record_ttft(model, &api_key.tenant, start.elapsed().as_secs_f64());
+
     let bytes = match tokio::time::timeout(state.http.idle, resp.bytes()).await {
         Err(_elapsed) => {
+            crate::metrics::record_error(model, &api_key.tenant, "timeout_upstream");
             drop(guard);
             record_request(
                 model,
@@ -592,6 +660,7 @@ async fn buffered_response(
             ));
         }
         Ok(Err(err)) => {
+            crate::metrics::record_error(model, &api_key.tenant, "node_unavailable");
             tracing::warn!(err = %err, model = %model, "upstream body read failed");
             drop(guard);
             record_request(
