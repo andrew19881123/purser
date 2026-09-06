@@ -22,6 +22,8 @@ import type {
   ApiKey,
   ApiKeyWithSecret,
   Assignment,
+  AuditEntry,
+  AuditLog,
   Backend,
   CatalogEntry,
   ClusterCapacity,
@@ -29,19 +31,24 @@ import type {
   Deployment,
   DeploymentPlan,
   DeploymentState,
+  EnterpriseStatus,
   FitVerdict,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   LinkQuality,
   MetricsSnapshot,
   MetricsStreamHandlers,
+  ModelHealth,
   ModelSpec,
   NodeLoadStatus,
   NodeView,
   PerfEstimate,
   PlanPreviewResult,
+  ReconcilerStatus,
   Role,
+  UsageSummary,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
 
@@ -138,6 +145,11 @@ function createClient(baseUrl: string) {
         if (typeof m === 'string' && m.length > 0) message = m;
       } catch {
         /* non-JSON error body — keep the status message */
+      }
+      if (res.status === 401) {
+        // Lazy import to avoid circular dependency
+        const { handleUnauthorized } = await import('./config');
+        handleUnauthorized();
       }
       throw new ApiError(res.status, message, body);
     }
@@ -380,6 +392,48 @@ function normalizeSnapshot(raw: unknown): MetricsSnapshot {
   };
 }
 
+// --- audit normalizers -------------------------------------------------------
+
+function normalizeAuditEntry(raw: unknown): AuditEntry {
+  const e = (raw ?? {}) as Record<string, unknown>;
+  // Wire format has time_unix_nano (nanoseconds); camelizeKeys gives timeUnixNano.
+  const ns = typeof e.timeUnixNano === 'number' ? e.timeUnixNano : 0;
+  const createdAt =
+    ns > 0 ? new Date(ns / 1_000_000).toISOString() : str(e.createdAt as unknown);
+  return {
+    seq: num(e.seq),
+    actor: str(e.actor),
+    action: str(e.action),
+    target: str(e.target),
+    details:
+      e.details && typeof e.details === 'object'
+        ? (e.details as Record<string, string>)
+        : undefined,
+    prevHash: str(e.prevHash),
+    hash: str(e.hash),
+    createdAt,
+  };
+}
+
+function normalizeAuditLog(raw: unknown): AuditLog {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const chain = (r.chain ?? {}) as Record<string, unknown>;
+  const chainBreak =
+    chain.break && typeof chain.break === 'object'
+      ? (chain.break as { index: number; seq: number; kind: string; msg: string })
+      : undefined;
+  return {
+    feature: str(r.feature, 'audit'),
+    licensee: str(r.licensee),
+    entries: Array.isArray(r.entries) ? r.entries.map(normalizeAuditEntry) : [],
+    chain: {
+      verified: bool(chain.verified, false),
+      length: num(chain.length),
+      break: chainBreak,
+    },
+  };
+}
+
 // --- the PurserApi HTTP implementation --------------------------------------
 
 const enc = encodeURIComponent;
@@ -420,6 +474,9 @@ export function createHttpApi(baseUrl: string): PurserApi {
       request<unknown>('/models').then((raw) =>
         Array.isArray(raw) ? raw.map(normalizeCatalogEntry) : [],
       ),
+
+    // DELETE /api/v1/models/{id} — guarded delete; 409 when active deployments reference it.
+    deleteModel: (modelId) => request<void>(`/models/${enc(modelId)}`, { method: 'DELETE' }),
 
     // Model detail is derived from the public catalog list (no private route).
     getModel: (modelId) =>
@@ -467,6 +524,10 @@ export function createHttpApi(baseUrl: string): PurserApi {
           return { feasible: true, plan: normalizePlan(merged) };
         }),
 
+    // GET /api/v1/models/{id}/health — operational health of a deployed model.
+    getModelHealth: (modelId: string) =>
+      request<unknown>(`/models/${enc(modelId)}/health`).then((raw) => raw as ModelHealth),
+
     // --- deployments ---
     // Dry-run plan (preview). Conventional path alongside POST .../deploy.
     planDeployment: (modelId, overrides: DeployOverrides) =>
@@ -498,10 +559,16 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // GET /api/v1/plans/{id} -> plan (with explanation)
     getPlan: (planId) => request<unknown>(`/plans/${enc(planId)}`).then(normalizePlan),
 
-    // --- onboarding (enrollment token; path not yet frozen in the docs) ---
-    getJoinInfo: () => request<unknown>('/join-token').then(normalizeJoinInfo),
+    // --- onboarding (enrollment token) ---
+    // The server only has POST /join-token (no GET); auto-issue a 24h token on load.
+    getJoinInfo: () =>
+      request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds: 86400 } }).then(
+        normalizeJoinInfo,
+      ),
     rotateJoinToken: () =>
-      request<unknown>('/join-token/rotate', { method: 'POST' }).then(normalizeJoinInfo),
+      request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds: 86400 } }).then(
+        normalizeJoinInfo,
+      ),
     // POST /api/v1/join-token — body {ttl_seconds} (snakeizeKeys converts automatically)
     createJoinToken: (ttlSeconds) =>
       request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds } }).then(
@@ -533,6 +600,21 @@ export function createHttpApi(baseUrl: string): PurserApi {
           },
       ),
 
+    // --- usage ---
+    getKeyUsage: (keyId: string) =>
+      request<unknown>(`/apikeys/${enc(keyId)}/usage`).then((raw) => raw as KeyUsage),
+
+    getUsageSummary: () =>
+      request<unknown>('/usage/summary').then((raw) => raw as UsageSummary),
+
+    // --- enterprise ---
+    getEnterpriseStatus: () =>
+      request<unknown>('/enterprise/status').then((raw) => raw as EnterpriseStatus),
+
+    // GET /api/v1/enterprise/audit-log -> AuditLog (402 without valid license)
+    getAuditLog: (limit = 100) =>
+      request<unknown>(`/enterprise/audit-log?limit=${limit}`).then(normalizeAuditLog),
+
     // --- live metrics (SSE) ---
     // GET /api/v1/metrics -> text/event-stream of MetricsSnapshot frames.
     streamMetrics: (handlers: MetricsStreamHandlers) => {
@@ -550,5 +632,10 @@ export function createHttpApi(baseUrl: string): PurserApi {
       handlers.signal?.addEventListener('abort', stop, { once: true });
       return stop;
     },
+
+    // --- reconciler ---
+    // GET /api/v1/reconciler/status -> ReconcilerStatus (config + pending tracker).
+    getReconcilerStatus: () =>
+      request<unknown>('/reconciler/status').then((raw) => raw as ReconcilerStatus),
   };
 }

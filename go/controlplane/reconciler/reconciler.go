@@ -19,18 +19,28 @@
 package reconciler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/registry"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -109,6 +119,13 @@ type Config struct {
 	// Levels is the automation policy per event type; missing entries fall back
 	// to DefaultLevels.
 	Levels map[EventType]AutomationLevel
+	// WebhookURL, when non-empty, is the HTTP(S) endpoint that receives a POST
+	// request whenever the reconciler raises an approval_required event. The
+	// delivery is fire-and-forget (goroutine) and does not block the control loop.
+	WebhookURL string
+	// WebhookRetries is the maximum number of POST attempts before giving up.
+	// Defaults to 3 when 0 or negative.
+	WebhookRetries int
 }
 
 // DefaultConfig returns conservative defaults suitable for the MVP.
@@ -148,6 +165,14 @@ func ConfigFromEnv() Config {
 	}
 	if d := envDuration("PURSER_RECONCILER_ACTION_COOLDOWN"); d > 0 {
 		cfg.ActionCooldown = d
+	}
+	if v := os.Getenv("PURSER_RECONCILER_WEBHOOK_URL"); v != "" {
+		cfg.WebhookURL = v
+	}
+	if v := os.Getenv("PURSER_RECONCILER_WEBHOOK_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WebhookRetries = n
+		}
 	}
 	return cfg
 }
@@ -243,7 +268,16 @@ type Reconciler struct {
 	log     *slog.Logger
 	now     func() time.Time
 
+	// mu protects tracker against concurrent reads (Status) and writes (Reconcile).
+	mu      sync.RWMutex
 	tracker map[string]*discState
+
+	// OTEL instruments. All are no-ops unless a real MeterProvider was
+	// installed by telemetry.Init before New() is called.
+	ctrEventsDetected  metric.Int64Counter
+	ctrEventsActed     metric.Int64Counter
+	gaugeEventsPending metric.Int64Gauge
+	histLoopDuration   metric.Float64Histogram
 }
 
 // New builds a Reconciler. act may be nil for NotifyOnly-only operation.
@@ -257,7 +291,7 @@ func New(reg registry.Registry, act Actuator, cfg Config) *Reconciler {
 	if cfg.NodeTimeout <= 0 {
 		cfg.NodeTimeout = DefaultConfig().NodeTimeout
 	}
-	return &Reconciler{
+	rc := &Reconciler{
 		reg:     reg,
 		act:     act,
 		cfg:     cfg,
@@ -265,6 +299,25 @@ func New(reg registry.Registry, act Actuator, cfg Config) *Reconciler {
 		now:     time.Now,
 		tracker: map[string]*discState{},
 	}
+
+	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
+	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
+	// so this is always safe even without a collector.
+	m := otel.Meter("purser.reconciler")
+	rc.ctrEventsDetected, _ = m.Int64Counter("purser.reconciler.events_detected",
+		metric.WithDescription("Reconciler events dispatched (past hysteresis threshold), counted per event type"),
+		metric.WithUnit("{event}"))
+	rc.ctrEventsActed, _ = m.Int64Counter("purser.reconciler.events_acted",
+		metric.WithDescription("Reconciler events where a corrective action was taken, counted per event type"),
+		metric.WithUnit("{event}"))
+	rc.gaugeEventsPending, _ = m.Int64Gauge("purser.reconciler.events_pending_approval",
+		metric.WithDescription("Reconciler events currently waiting for operator approval per event type"),
+		metric.WithUnit("{event}"))
+	rc.histLoopDuration, _ = m.Float64Histogram("purser.reconciler.loop_duration_ms",
+		metric.WithDescription("Wall-clock duration of each Reconcile() pass in milliseconds"),
+		metric.WithUnit("ms"))
+
+	return rc
 }
 
 // SetLogger overrides the logger.
@@ -308,6 +361,11 @@ func (rc *Reconciler) Run(ctx context.Context) error {
 // hysteresis tracker, and act on those past threshold according to the
 // automation policy. It returns a Report for observability and tests.
 func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
+	loopStart := rc.now()
+	defer func() {
+		rc.histLoopDuration.Record(ctx, float64(rc.now().Sub(loopStart).Milliseconds()))
+	}()
+
 	now := rc.now().UTC()
 
 	deps, err := rc.reg.ListDeployments(ctx)
@@ -324,6 +382,11 @@ func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
 	}
 
 	observed := rc.observe(ctx, deps, byID, now)
+
+	// Hold the write lock while reading and modifying the tracker so concurrent
+	// calls to Status() always see a consistent snapshot.
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 
 	// Update tracker: mark observed, register new, then act on eligible ones.
 	for _, st := range rc.tracker {
@@ -367,6 +430,19 @@ func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
 		if !st.seenThis {
 			delete(rc.tracker, k)
 		}
+	}
+
+	// Publish the count of events currently waiting for operator approval,
+	// labelled by event type, so operators can see approval backlogs.
+	pendingByType := map[EventType]int64{}
+	for _, ev := range report.Detected {
+		if ev.Level == AutomationApprovalRequired && !ev.Acted {
+			pendingByType[ev.Type]++
+		}
+	}
+	for typ, count := range pendingByType {
+		rc.gaugeEventsPending.Record(ctx, count,
+			metric.WithAttributes(attribute.String("type", string(typ))))
 	}
 
 	return report, nil
@@ -418,7 +494,14 @@ func (rc *Reconciler) observe(ctx context.Context, deps []*registry.Deployment, 
 
 // dispatch performs (or defers) the action for ev per its automation level.
 // Returns true if an action was actually performed.
-func (rc *Reconciler) dispatch(ctx context.Context, ev Event) bool {
+func (rc *Reconciler) dispatch(ctx context.Context, ev Event) (acted bool) {
+	typeAttr := metric.WithAttributes(attribute.String("type", string(ev.Type)))
+	defer func() {
+		rc.ctrEventsDetected.Add(ctx, 1, typeAttr)
+		if acted {
+			rc.ctrEventsActed.Add(ctx, 1, typeAttr)
+		}
+	}()
 	switch ev.Level {
 	case AutomationNotifyOnly:
 		rc.log.Info("reconciler notify", "type", ev.Type, "deployment", ev.DeploymentID, "node", ev.NodeID)
@@ -427,6 +510,11 @@ func (rc *Reconciler) dispatch(ctx context.Context, ev Event) bool {
 	case AutomationApprovalRequired:
 		rc.log.Warn("reconciler action pending approval", "type", ev.Type, "deployment", ev.DeploymentID, "node", ev.NodeID)
 		rc.audit(ctx, "reconciler.pending_approval", ev)
+		if rc.cfg.WebhookURL != "" {
+			// Fire-and-forget: use context.Background() so the delivery is not
+			// cancelled when the reconciler's request context expires.
+			go rc.sendWebhook(context.Background(), ev)
+		}
 		return false
 	case AutomationAuto:
 		if rc.act == nil {
@@ -590,6 +678,142 @@ func (rc *Reconciler) audit(ctx context.Context, action string, ev Event) {
 		Action: action,
 		Target: ev.DeploymentID,
 	})
+}
+
+// ReconcilerConfigSnapshot is the JSON-serialisable view of Config
+// returned by Status(). Durations are converted to whole seconds for
+// easy consumption by dashboards and the status endpoint.
+type ReconcilerConfigSnapshot struct {
+	IntervalS       int `json:"interval_s"`
+	NodeTimeoutS    int `json:"node_timeout_s"`
+	HysteresisS     int `json:"hysteresis_s"`
+	ActionCooldownS int `json:"action_cooldown_s"`
+}
+
+// ReconcilerEventSummary is the per-EventType tracker aggregation returned
+// by Status(). OldestAgeS is the age in seconds of the oldest discrepancy
+// still in the tracker (0 when Tracked == 0).
+type ReconcilerEventSummary struct {
+	Tracked    int     `json:"tracked"`
+	OldestAgeS float64 `json:"oldest_age_s"`
+}
+
+// ReconcilerStatus is the snapshot returned by Status().
+type ReconcilerStatus struct {
+	Config  ReconcilerConfigSnapshot          `json:"config"`
+	Tracker map[string]ReconcilerEventSummary `json:"tracker"`
+}
+
+// Status returns a point-in-time snapshot of the reconciler's configuration
+// and hysteresis tracker state. It is safe to call from an HTTP handler
+// concurrently with Reconcile — the RLock allows concurrent reads while
+// Reconcile holds a write lock during tracker updates.
+func (rc *Reconciler) Status() ReconcilerStatus {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	now := rc.now()
+
+	// Aggregate tracker entries by EventType. Each key is "type|depID|nodeID".
+	type summary struct {
+		tracked    int
+		oldestAgeS float64
+	}
+	byType := map[string]*summary{}
+	for k, st := range rc.tracker {
+		typ, _, _ := strings.Cut(k, "|")
+		s, ok := byType[typ]
+		if !ok {
+			s = &summary{}
+			byType[typ] = s
+		}
+		s.tracked++
+		age := now.Sub(st.firstSeen).Seconds()
+		if age > s.oldestAgeS {
+			s.oldestAgeS = age
+		}
+	}
+
+	tracker := make(map[string]ReconcilerEventSummary, len(byType))
+	for et, s := range byType {
+		tracker[et] = ReconcilerEventSummary{
+			Tracked:    s.tracked,
+			OldestAgeS: s.oldestAgeS,
+		}
+	}
+
+	return ReconcilerStatus{
+		Config: ReconcilerConfigSnapshot{
+			IntervalS:       int(rc.cfg.Interval.Seconds()),
+			NodeTimeoutS:    int(rc.cfg.NodeTimeout.Seconds()),
+			HysteresisS:     int(rc.cfg.Hysteresis.Seconds()),
+			ActionCooldownS: int(rc.cfg.ActionCooldown.Seconds()),
+		},
+		Tracker: tracker,
+	}
+}
+
+// webhookPayload is the JSON body sent to the configured webhook URL when the
+// reconciler raises an approval_required event.
+type webhookPayload struct {
+	Event        string `json:"event"`
+	EventType    string `json:"event_type"`
+	NodeID       string `json:"node_id"`
+	DeploymentID string `json:"deployment_id"`
+	Timestamp    string `json:"timestamp"`
+	Version      string `json:"purser_version"`
+	Message      string `json:"message"`
+}
+
+// sendWebhook delivers the approval_required payload to rc.cfg.WebhookURL with
+// exponential-backoff retries. It is always called in a goroutine
+// (fire-and-forget) and logs failures at WARN level without blocking the loop.
+func (rc *Reconciler) sendWebhook(ctx context.Context, ev Event) {
+	maxTries := rc.cfg.WebhookRetries
+	if maxTries <= 0 {
+		maxTries = 3
+	}
+	payload := webhookPayload{
+		Event:        "approval_required",
+		EventType:    string(ev.Type),
+		NodeID:       ev.NodeID,
+		DeploymentID: ev.DeploymentID,
+		Timestamp:    rc.now().UTC().Format(time.RFC3339),
+		Version:      "0.3.0",
+		Message: fmt.Sprintf(
+			"Node %s went down; deployment %s requires manual approval to failover",
+			ev.NodeID, ev.DeploymentID,
+		),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		rc.log.Warn("webhook: marshal payload failed", "err", err)
+		return
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	for attempt := 0; attempt < maxTries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 500ms, 1s, 2s, …
+			sleep := time.Duration(math.Pow(2, float64(attempt-1))*500) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(sleep):
+			}
+		}
+		resp, postErr := client.Post(rc.cfg.WebhookURL, "application/json", bytes.NewReader(body))
+		if postErr != nil {
+			rc.log.Warn("webhook: delivery failed", "attempt", attempt+1, "url", rc.cfg.WebhookURL, "err", postErr)
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			rc.log.Info("webhook: delivered", "url", rc.cfg.WebhookURL, "status", resp.StatusCode)
+			return
+		}
+		rc.log.Warn("webhook: non-2xx response", "attempt", attempt+1, "status", resp.StatusCode, "url", rc.cfg.WebhookURL)
+	}
+	rc.log.Warn("webhook: all attempts exhausted", "url", rc.cfg.WebhookURL, "max_tries", maxTries)
 }
 
 // Node state string constants (mirror the NodeState proto enum values used

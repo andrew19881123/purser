@@ -12,11 +12,11 @@ import {
   type Tone,
 } from '../components/ui';
 import { IconArrowRight, IconLayers } from '../components/icons';
-import { useDeployments, useNodes, useUndeploy } from '../hooks/queries';
+import { useDeployments, useModelHealth, useNodes, useUndeploy } from '../hooks/queries';
 import { useT } from '../i18n';
 import { useMemo } from 'react';
 import { errorMessage } from '../lib/errors';
-import type { Deployment, DeploymentState } from '../api/types';
+import type { Deployment, DeploymentState, ModelHealthStatus } from '../api/types';
 
 const DEP_TONE: Record<DeploymentState, Tone> = {
   planned: 'info',
@@ -27,6 +27,30 @@ const DEP_TONE: Record<DeploymentState, Tone> = {
   stopped: 'neutral',
   failed: 'danger',
 };
+
+const HEALTH_TONE: Record<ModelHealthStatus, Tone> = {
+  healthy: 'success',
+  degraded: 'warning',
+  unavailable: 'danger',
+};
+
+const HEALTH_LABEL: Record<ModelHealthStatus, string> = {
+  healthy: 'Healthy',
+  degraded: 'Degraded',
+  unavailable: 'Unavailable',
+};
+
+/** Fetches and renders a health badge for a single model. Uses its own hook
+ *  so each card can call useModelHealth without violating the rules of hooks. */
+export function DeploymentHealthBadge({ modelId }: { modelId: string }) {
+  const { data, isLoading } = useModelHealth(modelId);
+
+  if (isLoading || !data) {
+    return <Badge tone="neutral">—</Badge>;
+  }
+
+  return <Badge tone={HEALTH_TONE[data.status]}>{HEALTH_LABEL[data.status]}</Badge>;
+}
 
 function DeploymentCard({
   dep,
@@ -56,7 +80,10 @@ function DeploymentCard({
             {t('fleet.capacity.nodes').toLowerCase()}
           </p>
         </div>
-        <Badge tone={DEP_TONE[dep.state]}>{heading(dep.state)}</Badge>
+        <div className="dep-card__badges">
+          <Badge tone={DEP_TONE[dep.state]}>{heading(dep.state)}</Badge>
+          <DeploymentHealthBadge modelId={dep.plan.modelId} />
+        </div>
       </div>
       <ul className="dep-card__nodes">
         {dep.nodeStatus.map((s) => (
@@ -94,7 +121,10 @@ export function DeploymentsPage() {
 
   return (
     <div className="page">
-      <PageHeader title={t('nav.deployments')} />
+      <PageHeader
+        title={t('nav.deployments')}
+        subtitle="Active and provisioning model deployments across your fleet."
+      />
       {isLoading && <LoadingBlock />}
       {isError && (
         <ErrorState message={errorMessage(error, t, 'error.deployments')} onRetry={() => refetch()} />

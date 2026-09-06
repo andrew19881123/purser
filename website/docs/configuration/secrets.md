@@ -21,7 +21,7 @@ The Helm chart generates and manages the gateway internal token automatically (s
 Provide other secrets at install time:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set gateway.apiKeys="psk_key1:team-a,psk_key2:team-b" \
   --set license.key="<enterprise-license-key>"
 ```
@@ -40,7 +40,7 @@ license:
 ```
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --values secrets.yaml
 ```
 

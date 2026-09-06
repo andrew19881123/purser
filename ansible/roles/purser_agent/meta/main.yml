@@ -1,0 +1,33 @@
+---
+galaxy_info:
+  role_name: purser_agent
+  author: andrew19881123
+  description: "Install, configure, and enroll the Purser Fleet Agent on Linux nodes"
+  company: Purser
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - bullseye
+    - name: Ubuntu
+      versions:
+        - "22.04"
+        - "24.04"
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+
+  galaxy_tags:
+    - purser
+    - llm
+    - gpu
+    - fleet
+    - agent
+    - systemd
+    - enrollment
+
+dependencies: []

@@ -1,4 +1,34 @@
-# Quickstart (Helm)
+# Quickstart
+
+## Quickstart — 2 minutes, no GPU required
+
+```bash
+# 1. Clone and start
+git clone https://github.com/andrew19881123/purser.git
+cd purser
+docker compose up -d
+
+# 2. Open the dashboard
+open http://localhost:3000
+```
+
+The demo stack uses the built-in mock engine — real inference comes when you install the Agent on GPU nodes.
+
+Try the OpenAI-compatible Gateway immediately:
+
+```bash
+curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'
+```
+
+Stop the demo at any time:
+
+```bash
+make demo-stop
+```
+
+---
+
+## Quickstart (Helm — production)
 
 Get from zero to a working OpenAI-compatible inference endpoint in about 5 minutes. This guide uses the Helm path — the primary deployment model for Purser.
 
@@ -18,7 +48,7 @@ Get from zero to a working OpenAI-compatible inference endpoint in about 5 minut
 The chart and images are published as public OCI artifacts on GHCR — no registry login needed.
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
@@ -50,14 +80,14 @@ kubectl get svc purser-control-plane
 
 ## Step 2: Install an Agent on a fleet node
 
-On the fleet node (Linux), download the package from the [v0.1.0 release](https://github.com/andrew19881123/purser/releases/tag/v0.1.0) and install it:
+On the fleet node (Linux), download the package from the [latest release](https://github.com/andrew19881123/purser/releases/latest) and install it:
 
 ```bash
-# Debian / Ubuntu
-sudo apt install ./purser-agent_0.1.0_amd64.deb
+# Debian / Ubuntu (amd64 or arm64)
+sudo apt install ./purser-agent_0.3.0_amd64.deb
 
 # RHEL / Fedora / openSUSE
-sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm
+sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm
 ```
 
 ---
@@ -217,8 +247,51 @@ for chunk in response:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
-!!! note "Mock engine"
-    The default engine is the built-in mock engine. It responds with generated tokens to demonstrate the pipeline but does not run real model inference. To use a real engine, set `PURSER_ENGINE_BACKEND=llamacpp` in the agent's environment file. Real GPU validation is still in progress as of v0.1.1.
+!!! note "Engine backends"
+    The default engine is the built-in mock engine — it responds with generated tokens to demonstrate the pipeline without a GPU. To enable real inference, set `PURSER_ENGINE_BACKEND=llamacpp` in the agent's environment file and install the agent built with `--features llamacpp` (available in the v0.3 release packages). See [Architecture: Engine backends](architecture.md#engine-backends) for details.
+
+---
+
+---
+
+## Development setup
+
+Want to hack on Purser itself? No GPU or Kubernetes needed.
+
+### GitHub Codespaces / VS Code Dev Containers
+
+Open the repo in a [GitHub Codespace](https://github.com/features/codespaces) or VS Code Dev Container — the `.devcontainer/devcontainer.json` at the repository root provisions Rust 1.98.1, Go 1.27.1, Node 22, and Docker-in-Docker automatically. After the container starts, the post-create command runs `make setup` and appends `source ./env.sh` to your shell profile, so the project-local toolchain is on `PATH` immediately.
+
+### Local development with `make dev`
+
+If you prefer to work locally, `make dev` builds the control plane and starts it with an in-memory SQLite database and the mock engine — no GPU, no real nodes, instant feedback:
+
+```bash
+make setup          # installs project-local Rust / Go / buf into .toolchain/ (once)
+source ./env.sh     # puts .toolchain/bin on PATH
+make dev            # builds control-plane and starts it on :8080
+```
+
+The control plane listens at `http://localhost:8080`. To run the dashboard alongside it:
+
+```bash
+cd ui && npm install && npm run dev   # separate terminal — serves on :5173
+```
+
+Ports forwarded by the devcontainer:
+
+| Port  | Service                        |
+|-------|-------------------------------|
+| 8080  | Control Plane REST API         |
+| 9443  | RegistrationService (gRPC)     |
+| 50151 | Agent (per-node daemon)        |
+| 8000  | MkDocs docs preview            |
+
+---
+
+## Security note — Gateway API key storage
+
+The Playground stores the Gateway API key in **`sessionStorage`**, not `localStorage`. The key is automatically cleared when you close the browser tab, so it does not persist between sessions. This is intentional: inference keys are short-lived credentials that should not outlive the browser window.
 
 ---
 
@@ -228,3 +301,4 @@ for chunk in response:
 - [Environment variables reference](../configuration/env-vars.md) — all knobs, exhaustively documented
 - [Architecture](architecture.md) — two-plane design and request flow
 - [Enterprise features](../enterprise/overview.md) — audit log, HA, RBAC/SSO
+- [Contributing guide](https://github.com/andrew19881123/purser/blob/main/CONTRIBUTING.md) — good first issues and conventions

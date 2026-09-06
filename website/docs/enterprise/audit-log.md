@@ -171,6 +171,61 @@ A failed verification is **never** a 500 error — it is a 200 with `verified: f
 
 ---
 
+## Dashboard
+
+The Purser operator dashboard exposes the audit log through a dedicated **Audit Log** page, accessible from the navigation sidebar under **Use → Audit Log**.
+
+### What you see
+
+The page shows a table of audit entries with the following columns:
+
+| Column | Description |
+|---|---|
+| **#** | Sequential entry number (`seq`). |
+| **Timestamp** | Wall-clock time the event was recorded, in your browser's local timezone. |
+| **Actor** | API client identity (currently `"api"`). |
+| **Action** | Event verb, colour-coded by category — green for `*.created`/`*.minted`, grey for `*.deleted`, orange for `fleet.*` events. |
+| **Target** | Affected resource identifier. |
+| **Details** | Optional structured context as `key=value` pairs. |
+
+### Chain verification badge
+
+A badge in the page header reports chain integrity at a glance:
+
+- **Chain verified** (green) — all hashes and links are intact; no tampering detected in the returned window.
+- **Chain integrity broken at seq N** (orange) — a hash mismatch, broken link, or sequence gap was found at entry `N`. This is a compliance alert: investigate the entry and surrounding context immediately.
+
+The badge updates on every refresh. The control plane re-runs the full chain on every request, so the badge reflects the current state of the database.
+
+### Limit selector
+
+Use the **Show** dropdown (50 / 100 / 200) to control how many recent entries are fetched and verified. Larger windows verify more history but are slower for long-lived deployments.
+
+### Enterprise license gate
+
+Without a valid Enterprise license the page displays an **"Enterprise license required"** empty state with a link to this documentation. The Audit Log nav item is always visible so operators can discover the feature and understand what license is needed.
+
+### Screenshot walkthrough
+
+```
++--------------------------------------------------+
+| Audit Log              [Chain verified ✓]  [100▾] [↺] |
++--------------------------------------------------+
+|  #  | Timestamp           | Actor | Action        | Target        | Details       |
+|  1  | 2024-09-01 12:00:00 | api   | model.created | llama-8b      | source=hf     |
+|  2  | 2024-09-01 13:00:00 | api   | apikey.created| dev-key-1     | team=eng      |
+|  3  | 2024-09-01 14:00:00 | api   | fleet.node.draining | node-02 |               |
++--------------------------------------------------+
+```
+
+Action badge colour key:
+
+- `model.created`, `apikey.created`, `join_token.minted` → **green** (success)
+- `model.deleted`, `apikey.deleted`, `fleet.node.decommissioned` → **grey** (neutral)
+- `fleet.node.draining` → **orange** (warning)
+
+---
+
 ## Enabling the audit log
 
 Set `PURSER_LICENSE_KEY` to a key with the `"audit"` feature entitlement:
@@ -180,7 +235,7 @@ Set `PURSER_LICENSE_KEY` to a key with the `"audit"` feature entitlement:
 export PURSER_LICENSE_KEY=<your-enterprise-key>
 
 # Helm
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set license.key="<your-enterprise-key>"
 ```
 

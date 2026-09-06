@@ -5,6 +5,7 @@ export const en = {
   'app.name': 'Purser',
   'app.tagline': 'Distributed LLM inference, under control.',
   'nav.onboarding': 'Get started',
+  'nav.gettingStarted': 'Get Started',
   'nav.fleet': 'Fleet',
   'nav.catalog': 'Model catalog',
   'nav.deployments': 'Deployments',
@@ -99,6 +100,16 @@ export const en = {
   'fleet.role.worker': 'Worker',
   'fleet.empty': 'No nodes enrolled yet. Add one from Get started.',
   'fleet.link.label': 'Network link',
+  'fleet.confirm.drain': 'Drain node {node}? No new work will be scheduled to it.',
+  'fleet.confirm.removeTitle': 'Remove node from fleet?',
+  'fleet.confirm.removeBody': 'Node {node} will be decommissioned. This cannot be undone.',
+  'fleet.metrics.stale': 'Live metrics unavailable — showing last known values',
+
+  // reconciler status widget
+  'fleet.reconciler.title': 'Reconciler',
+  'fleet.reconciler.config': 'Interval: {intervalS}s · Timeout: {nodeTimeoutS}s · Cooldown: {cooldownS}s',
+  'fleet.reconciler.healthy': 'Healthy',
+  'fleet.reconciler.event_detail': '{tracked} events, oldest {oldestAgeS}s ago',
 
   // node states
   'state.provisioning': 'Provisioning',
@@ -127,6 +138,14 @@ export const en = {
   'catalog.params': '{active}B active / {total}B total',
   'catalog.action.deploy': 'Deploy',
   'catalog.action.plan': 'Preview plan',
+  'catalog.action.delete': 'Delete',
+  'catalog.deleteConfirm': 'Delete model {model}? This cannot be undone.',
+  'catalog.deleteError.inUse': 'Cannot delete: model is used by an active deployment',
+  'catalog.action.previewSplit': 'Preview Split',
+  'catalog.preview.title': 'Fleet split preview',
+  'catalog.preview.pipeline': 'Pipeline order',
+  'catalog.preview.deploy': 'Deploy',
+  'catalog.preview.infeasible': 'Cannot be deployed on this fleet',
 
   // deploy
   'deploy.title': 'Deploy: {model}',
@@ -297,10 +316,12 @@ export const en = {
   'settings.created.title': 'Key created',
   'settings.created.warning': "Copy it now — the full secret is shown only once.",
   'settings.keys.empty': 'No API keys yet. Create one to let apps reach the Gateway.',
+  'settings.confirm.revokeTitle': 'Revoke API key?',
+  'settings.confirm.revokeBody': 'Key {name} will be permanently revoked. Running applications using it will stop working.',
 
   // join token / enrollment bundle
-  'join.title': 'Node enrollment',
-  'join.subtitle': 'Generate a join token or download a pre-configured agent bundle to enroll nodes.',
+  'join.title': 'Add Node',
+  'join.subtitle': 'Generate a join token or download a pre-configured enrollment bundle. Returning user? Use this page to add more nodes to your existing cluster.',
   'join.token.label': 'Join token',
   'join.bundle.title': 'Download enrollment bundle',
   'join.bundle.desc': 'Download a ready-to-use .env file. Place it at /etc/purser/agent.env on each node and restart the agent — no manual token copy required.',
@@ -323,6 +344,47 @@ export const en = {
   'settings.role.admin.hint': 'Full access to the control plane',
   'settings.role.viewer.hint': 'Read-only access to the control plane',
   'settings.role.inference.hint': 'Gateway inference only — cannot manage the cluster',
+
+  // usage summary
+  'settings.col.tokens': 'Tokens (in / out)',
+  'settings.usage.loading': 'Loading…',
+  'settings.usage.error': '—',
+  'settings.usage.summary.title': 'Usage summary',
+  'settings.usage.summary.empty': 'No usage recorded yet.',
+  'settings.usage.col.tenant': 'Tenant',
+  'settings.usage.col.requests': 'Requests',
+  'settings.usage.col.inputTokens': 'Input tokens',
+  'settings.usage.col.outputTokens': 'Output tokens',
+
+  // license
+  'settings.license.title': 'License',
+  'settings.license.edition.community': 'Community',
+  'settings.license.edition.enterprise': 'Enterprise',
+  'settings.license.licensee': 'Licensee',
+  'settings.license.features': 'Features',
+  'settings.license.expires': 'Expires',
+  'settings.license.expired': 'Expired',
+  'settings.license.community.desc': 'You are running the MIT-licensed community edition. Upgrade for HA, RBAC, OIDC, audit log, and more.',
+  'settings.license.community.link': 'See Enterprise features →',
+  'settings.license.no.features': 'None',
+
+  // enterprise audit log
+  'nav.audit': 'Audit Log',
+  'audit.title': 'Audit Log',
+  'audit.chain.verified': 'Chain verified',
+  'audit.chain.broken': 'Chain integrity broken at seq {seq}',
+  'audit.empty': 'No audit entries yet',
+  'audit.enterprise.required': 'Enterprise license required to view audit log',
+  'audit.refresh': 'Refresh',
+  'audit.limit': 'Show',
+  'audit.col.seq': '#',
+  'audit.col.timestamp': 'Timestamp',
+  'audit.col.actor': 'Actor',
+  'audit.col.action': 'Action',
+  'audit.col.target': 'Target',
+  'audit.col.details': 'Details',
+  'audit.docs.link': 'Learn about enterprise audit log',
+  'error.audit': 'Could not load the audit log.',
 } as const;
 
 export type StringKey = keyof typeof en;

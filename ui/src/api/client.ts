@@ -18,18 +18,24 @@
 import type {
   ApiKey,
   ApiKeyWithSecret,
+  AuditLog,
   CatalogEntry,
   ClusterCapacity,
   DeployOverrides,
   Deployment,
   DeploymentPlan,
+  EnterpriseStatus,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   MetricsStreamHandlers,
+  ModelHealth,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
+  UsageSummary,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -59,6 +65,10 @@ export interface PurserApi {
   importModel(source: ImportSource): Promise<ModelSpec>;
   /** POST /api/v1/models/{id}/plan — dry-run plan; returns feasibility + split diagram. */
   previewModelPlan(modelId: string): Promise<PlanPreviewResult>;
+  /** GET /api/v1/models/{id}/health — operational health of a deployed model. */
+  getModelHealth(modelId: string): Promise<ModelHealth>;
+  /** DELETE /api/v1/models/{id} — remove a model from the catalog. 409 if it has active deployments. */
+  deleteModel(modelId: string): Promise<void>;
 
   // --- deployments ---
   planDeployment(modelId: string, overrides: DeployOverrides): Promise<DeploymentPlan>;
@@ -79,9 +89,27 @@ export interface PurserApi {
   createApiKey(input: CreateApiKeyInput): Promise<ApiKeyWithSecret>;
   revokeApiKey(id: string): Promise<ApiKey>;
 
+  // --- usage ---
+  /** GET /api/v1/apikeys/{id}/usage — token and request counters for one key. */
+  getKeyUsage(keyId: string): Promise<KeyUsage>;
+  /** GET /api/v1/usage/summary — cross-tenant usage totals. */
+  getUsageSummary(): Promise<UsageSummary>;
+
+  // --- enterprise ---
+  /** GET /api/v1/enterprise/status — edition, licensee, features, expiry. */
+  getEnterpriseStatus(): Promise<EnterpriseStatus>;
+
   // --- live metrics (SSE) ---
   /** Subscribe to GET /api/v1/metrics; returns an unsubscribe/close function. */
   streamMetrics(handlers: MetricsStreamHandlers): () => void;
+
+  // --- enterprise ---
+  /** GET /api/v1/enterprise/audit-log — 402 without a valid license. */
+  getAuditLog(limit?: number): Promise<AuditLog>;
+
+  // --- reconciler ---
+  /** GET /api/v1/reconciler/status — live reconciler config + pending event tracker. */
+  getReconcilerStatus(): Promise<ReconcilerStatus>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

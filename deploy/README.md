@@ -7,6 +7,54 @@ build step required** (jump to [§2, Installing with Helm](#2-installing-with-he
 Section 1 below is the **optional "build your own images"** path for a private
 registry or air-gapped mirror.
 
+---
+
+## 0. Docker Compose demo (no GPU, no Kubernetes)
+
+The fastest way to evaluate Purser locally is the `docker-compose.yml` at the
+repository root. It starts all three services (Control Plane, Gateway, UI) using
+the built-in **mock engine** — no GPU and no Kubernetes cluster required.
+
+```bash
+# From the repository root:
+docker compose up -d
+# or:  make demo
+```
+
+| Service | URL |
+|---|---|
+| Operator UI (dashboard) | http://localhost:3000 |
+| Control Plane REST API | http://localhost:8080 |
+| Gateway (OpenAI-compatible) | http://localhost:8081 |
+
+Demo API key: `demo-key-12345`
+
+```bash
+# Verify the Gateway is up:
+curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'
+```
+
+Stop the demo:
+
+```bash
+docker compose down
+# or:  make demo-stop
+```
+
+To attach a local Agent binary to the running demo stack (e.g. to test
+enrollment without real GPU hardware):
+
+```bash
+make demo-agent
+```
+
+This mints a join token via the REST API and launches `./bin/purser-agent` with
+`PURSER_CONTROL_PLANE_ADDR=http://localhost:9443`. The `./bin/purser-agent`
+binary must already be built (`make build` or a release download).
+
+When you are ready to move to a real fleet, continue to
+[§2, Installing with Helm](#2-installing-with-helm).
+
 ```
 deploy/
 ├── docker/

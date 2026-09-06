@@ -2,20 +2,52 @@
 
 The Purser Agent is a native host package that runs as a systemd service. It needs direct access to the node's GPUs/accelerators and supervises an inference engine worker — it does **not** run inside Kubernetes.
 
-## Install from package
+## One-liner install (hosted repository)
 
-Download the package for your distribution from the [v0.1.0 release](https://github.com/andrew19881123/purser/releases/tag/v0.1.0):
+The fastest way to install `purser-agent` on a fleet node. A single command configures the [Cloudsmith](https://cloudsmith.io)-hosted apt or yum repository and installs the latest release:
 
 === "Debian / Ubuntu"
 
     ```bash
-    sudo apt install ./purser-agent_0.1.0_amd64.deb
+    curl -1sLf 'https://dl.cloudsmith.io/public/andrew19881123/purser/setup.deb.sh' | sudo bash
+    sudo apt install purser-agent
     ```
 
-=== "RHEL / Fedora / openSUSE"
+=== "RHEL / Rocky / AlmaLinux"
 
     ```bash
-    sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm
+    curl -1sLf 'https://dl.cloudsmith.io/public/andrew19881123/purser/setup.rpm.sh' | sudo bash
+    sudo yum install purser-agent
+    ```
+
+After installing, continue with [Configure](#configure) to set up the agent environment file.
+
+## Install from package
+
+Download the package for your distribution from the [latest release](https://github.com/andrew19881123/purser/releases/latest):
+
+=== "Debian / Ubuntu (amd64)"
+
+    ```bash
+    sudo apt install ./purser-agent_0.3.0_amd64.deb
+    ```
+
+=== "Debian / Ubuntu (arm64 — Graviton / Ampere)"
+
+    ```bash
+    sudo apt install ./purser-agent_0.3.0_arm64.deb
+    ```
+
+=== "RHEL / Fedora / openSUSE (amd64)"
+
+    ```bash
+    sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm
+    ```
+
+=== "RHEL / Fedora / openSUSE (arm64)"
+
+    ```bash
+    sudo yum install ./purser-agent-0.3.0-1.aarch64.rpm
     ```
 
 The package installs:
@@ -129,81 +161,84 @@ journalctl -u purser-agent --since "1 hour ago"
 
 ## Fleet-scale deployment
 
-### Internal apt / yum repository
+### apt / yum repository
 
-Mirror the `.deb` / `.rpm` packages into an internal repository and push the config with your configuration management tool:
+The hosted Cloudsmith repository is the recommended distribution channel. Configure it on all nodes with the one-liner from [One-liner install](#one-liner-install-hosted-repository), or mirror the packages into an internal repository with your own tooling:
 
 ```bash
-# Example: reprepro for apt
-reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.1.0_amd64.deb
+# Example: reprepro for an internal apt mirror
+reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.3.0_amd64.deb
 ```
 
-### Ansible example
+### Fleet enrollment with Ansible
 
-```yaml
----
-- name: Install and configure Purser Agent
-  hosts: fleet_nodes
-  become: true
+The repository ships a production-ready Ansible role at
+[`ansible/roles/purser_agent/`](https://github.com/andrew19881123/purser/tree/main/ansible/roles/purser_agent)
+that handles repository setup, package or binary installation, env-file
+templating, service management, and post-install verification — all
+idempotent.
 
-  vars:
-    purser_control_plane_addr: "http://cp.internal:9443"
-    purser_cluster_id: "default"
-    # join_token is fetched from the control plane and stored securely
+**Quick start:**
 
-  tasks:
-    - name: Install purser-agent package
-      apt:
-        deb: "https://releases.example.com/purser/purser-agent_0.1.0_amd64.deb"
-      when: ansible_os_family == "Debian"
+```bash
+git clone https://github.com/andrew19881123/purser.git
+cd purser/ansible
 
-    - name: Write agent.env
-      template:
-        src: agent.env.j2
-        dest: /etc/purser/agent.env
-        owner: root
-        group: purser
-        mode: "0640"
-      notify: restart purser-agent
+# Option A: mint a token automatically and enroll in one run
+export PURSER_CP_ADDR=http://cp.internal:8080
+export PURSER_API_TOKEN=<admin-token>
+ansible-playbook -i inventory/ playbooks/enroll_nodes.yml
 
-    - name: Enable and start purser-agent
-      systemd:
-        name: purser-agent
-        enabled: true
-        state: started
-        daemon_reload: true
-
-  handlers:
-    - name: restart purser-agent
-      systemd:
-        name: purser-agent
-        state: restarted
+# Option B: supply a pre-existing token
+export PURSER_CP_ADDR=http://cp.internal:8080
+export PURSER_JOIN_TOKEN=psk_your-token-here
+ansible-playbook -i inventory/ playbooks/install_purser_agents.yml
 ```
 
-`agent.env.j2` template:
+**Example inventory (`ansible/inventory/hosts.ini`):**
 
+```ini
+[gpu_nodes]
+node1.internal  ansible_host=192.168.1.10
+node2.internal  ansible_host=192.168.1.11
+
+[gpu_nodes:vars]
+ansible_user=ubuntu
+purser_cluster_id=production
 ```
-PURSER_AGENT_BIND=0.0.0.0:50151
-PURSER_INFERENCE_PORT=8000
-PURSER_CONTROL_PLANE_ADDR={{ purser_control_plane_addr }}
-PURSER_CLUSTER_ID={{ purser_cluster_id }}
-PURSER_JOIN_TOKEN={{ purser_join_token }}
-PURSER_SECRET_STORE_DIR=/var/lib/purser/secrets
-```
+
+For air-gap installs, set `purser_install_method: "binary"` and
+`purser_binary_url` to a mirrored tarball URL. Full variable reference,
+secrets-manager integration, and GPU device-access notes are in the
+[Ansible integration guide](../integrations/ansible.md).
 
 ## Install from binary tarball
 
-If you prefer not to use the native packages, grab the prebuilt binary tarball from the same release and verify the SHA-256 checksum:
+If you prefer not to use the native packages, grab the prebuilt binary tarball from the same release and verify the SHA-256 checksum.
 
-```bash
-# From the release page
-curl -LO https://github.com/andrew19881123/purser/releases/download/v0.1.0/purser-agent-0.1.0-linux-amd64.tar.gz
-curl -LO https://github.com/andrew19881123/purser/releases/download/v0.1.0/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing
+=== "linux/amd64"
 
-tar -xzf purser-agent-0.1.0-linux-amd64.tar.gz
-sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
-```
+    ```bash
+    TAG=v0.3.0
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/purser-agent-linux-amd64-${TAG}.tar.gz
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
+    sha256sum -c SHA256SUMS --ignore-missing
+
+    tar -xzf purser-agent-linux-amd64-${TAG}.tar.gz
+    sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
+    ```
+
+=== "linux/arm64 (Graviton / Ampere)"
+
+    ```bash
+    TAG=v0.3.0
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/purser-agent-linux-arm64-${TAG}.tar.gz
+    curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
+    sha256sum -c SHA256SUMS --ignore-missing
+
+    tar -xzf purser-agent-linux-arm64-${TAG}.tar.gz
+    sudo install -m 0755 purser-agent /usr/local/bin/purser-agent
+    ```
 
 Then install the unit file and env template from [`packaging/systemd/`](https://github.com/andrew19881123/purser/tree/main/packaging/systemd) and [`packaging/env/agent.env.example`](https://github.com/andrew19881123/purser/tree/main/packaging/env) manually.
 

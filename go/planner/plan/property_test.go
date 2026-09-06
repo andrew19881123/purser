@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -108,7 +109,7 @@ func (planScenario) Generate(rng *rand.Rand, _ int) reflect.Value {
 func TestPlan_PropertyInvariants(t *testing.T) {
 	var feasible, infeasible int
 	f := func(s planScenario) bool {
-		dp, err := Plan(s.nodes, s.links, s.model, s.c)
+		dp, err := Plan(context.Background(), s.nodes, s.links, s.model, s.c)
 		if err != nil {
 			infeasible++
 			// Infeasible input → must be a sensible *PlanError with a reason.
@@ -265,7 +266,7 @@ func TestPlan_PinnedRespected(t *testing.T) {
 	model, _ := dpTestModel(8, 40)
 
 	// The unpinned plan tells us which node naturally serves the layer.
-	base, err := Plan(nodes, links, model, Constraints{})
+	base, err := Plan(context.Background(), nodes, links, model, Constraints{})
 	if err != nil {
 		t.Fatalf("baseline plan: %v", err)
 	}
@@ -282,7 +283,7 @@ func TestPlan_PinnedRespected(t *testing.T) {
 
 	// Pin the layer to the node that already serves it: honoured, plan feasible.
 	pinned := map[LayerRange]NodeID{{Start: layer, End: layer}: NodeID(natural)}
-	dp, err := Plan(nodes, links, model, Constraints{Pinned: pinned})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{Pinned: pinned})
 	if err != nil {
 		t.Fatalf("a pin consistent with the partition must stay feasible, got: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestPlan_PinnedOverflowRejected(t *testing.T) {
 	// Layer 6 can never sit on the host A (that would need A to serve >=7 layers),
 	// so it is always on the tail node; pinning it to A forces the overflow.
 	pinned := map[LayerRange]NodeID{{Start: 6, End: 6}: "A"}
-	dp, err := Plan(nodes, links, model, Constraints{Pinned: pinned})
+	dp, err := Plan(context.Background(), nodes, links, model, Constraints{Pinned: pinned})
 	if dp != nil {
 		t.Fatalf("expected no plan (pin overflows A), got %+v", dp)
 	}

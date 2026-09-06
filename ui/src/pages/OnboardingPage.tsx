@@ -110,9 +110,11 @@ export function OnboardingPage() {
                 <CopyButton value={join.joinToken} />
               </div>
               <p className={`token-expiry${expired ? ' token-expiry--danger' : ''}`}>
-                {expired
-                  ? t('onboarding.token.expired')
-                  : t('onboarding.token.expires', { when: relativeTime(join.expiresAt) })}
+                <span title={new Date(join.expiresAt).toLocaleString()}>
+                  {expired
+                    ? t('onboarding.token.expired')
+                    : t('onboarding.token.expires', { when: relativeTime(join.expiresAt) })}
+                </span>
               </p>
 
               <div className="tabs-block">

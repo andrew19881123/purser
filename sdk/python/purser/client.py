@@ -1,7 +1,8 @@
 """PurserClient — synchronous HTTP client for the Purser management API."""
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Generator
 
 import httpx
 
@@ -151,7 +152,7 @@ class PurserClient:
             NotFoundError: If no node with that ID exists.
             ConflictError: If there are no active deployments to restart.
         """
-        self._request("POST", f"/api/v1/nodes/{node_id}/restart")
+        raise NotImplementedError("restart_node is not yet implemented on the server")
 
     def delete_node(self, node_id: str) -> None:
         """Decommission a node (lifecycle transition to DECOMMISSIONED).
@@ -199,14 +200,8 @@ class PurserClient:
         Raises:
             NotFoundError: If no model with that ID exists.
         """
-        # The server does not have a dedicated GET /models/{id} endpoint, so
-        # we list and filter locally.  This is fine for the catalog sizes
-        # expected in practice.
-        models = self.list_models()
-        for m in models:
-            if m.id == model_id:
-                return m
-        raise NotFoundError(f"model not found: {model_id}")
+        data = self._request("GET", f"/api/v1/models/{model_id}")
+        return Model._from_dict(data)
 
     def delete_model(self, model_id: str) -> None:
         """Remove a model from the catalog.
@@ -277,8 +272,7 @@ class PurserClient:
         Raises:
             NotFoundError: If no model with that ID exists.
         """
-        data = self._request("GET", f"/api/v1/models/{model_id}/health")
-        return ModelHealth(**{k: v for k, v in data.items() if k in ModelHealth.__dataclass_fields__})
+        raise NotImplementedError("get_model_health is not yet implemented on the server")
 
     # ------------------------------------------------------------------
     # Deployments
@@ -352,8 +346,7 @@ class PurserClient:
         Raises:
             NotFoundError: If no key with that ID exists.
         """
-        data = self._request("GET", f"/api/v1/apikeys/{key_id}/usage")
-        return KeyUsage(**{k: v for k, v in data.items() if k in KeyUsage.__dataclass_fields__})
+        raise NotImplementedError("get_key_usage is not yet implemented on the server")
 
     # ------------------------------------------------------------------
     # Join token
@@ -431,6 +424,31 @@ class PurserClient:
             entries=entries,
             chain=chain,
         )
+
+    # ------------------------------------------------------------------
+    # Metrics streaming (SSE)
+    # ------------------------------------------------------------------
+
+    def stream_metrics(self) -> Generator[dict[str, Any], None, None]:
+        """Stream real-time node metrics from GET /api/v1/metrics (SSE).
+
+        Yields dicts with keys: at, aggregate_decode_tok_s, nodes (list).
+        Each dict corresponds to one SSE event (emitted every ~2 seconds).
+
+        Usage::
+
+            for snapshot in client.stream_metrics():
+                print(snapshot['aggregate_decode_tok_s'])
+        """
+        with self._client.stream("GET", "/api/v1/metrics") as response:
+            for line in response.iter_lines():
+                if line.startswith("data:"):
+                    data = line[5:].strip()
+                    if data and data != "[DONE]":
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError:
+                            pass
 
     # ------------------------------------------------------------------
     # Lifecycle

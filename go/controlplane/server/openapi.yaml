@@ -1077,6 +1077,39 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   /models/{id}:
+    get:
+      operationId: getModel
+      summary: Get a model by ID
+      security:
+        - BearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model ID.
+      responses:
+        "200":
+          description: The model.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Model"
+        "404":
+          description: Model not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
     delete:
       operationId: deleteModel
       summary: Remove a model from the catalog

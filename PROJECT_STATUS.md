@@ -5,8 +5,8 @@
 > (pipeline parallelism) su più nodi, e lo espone dietro un unico endpoint OpenAI-compatibile.
 > Usa motori esistenti (llama.cpp, DwarfStar) via un Engine Adapter — non riscrive l'inferenza.
 
-Data snapshot: 2026-09-05. **Questo documento descrive lo scope del rilascio `v0.1.0`** (prima
-release Community) e il lavoro atterrato successivamente (pre-`v0.1.1`). Cronologia completa in [CHANGELOG.md](CHANGELOG.md).
+Data snapshot: 2026-09-06. **Questo documento descrive lo scope del rilascio `v0.1.0`** (prima
+release Community) e il lavoro atterrato successivamente fino a `v0.3` (candidate su `release/v0.3`). Cronologia completa in [CHANGELOG.md](CHANGELOG.md).
 
 ## Architettura & linguaggi (ADR-1)
 
@@ -102,53 +102,64 @@ Lavoro atterrato post-release, non ancora etichettato come `v0.1.1`:
 - **UI default reale**: la dashboard punta all'API reale di default; la modalità mock è opt-in (`PURSER_UI_MOCK=1`). URL configurabile a runtime via `PURSER_API_BASE_URL` (default `/api/v1`, same-origin) tramite `env.js` (servito con `Cache-Control: no-store`, caricato prima del bundle); il chart Helm cabla il valore al container start. **Nota**: l'immagine GHCR `purser-ui:0.1.0` eroga ancora la build mock-by-default fino alla ricostruzione e ripubblicazione dell'immagine.
 - **Gate `gofmt`** nel job Go di CI (copre `go/` e `enterprise/license`).
 
-## Backlog / follow-up (onesto, prioritizzato)
+## Chiuso in v0.3 (release/v0.3, 2026-09-06)
+
+Tutto il lavoro della `release/v0.3` candidate — ~37 feature distribuite in 4 wave:
+
+- **OIDC SSO completo**: Authorization Code Flow + PKCE, session cookie HttpOnly, browser SSO end-to-end funzionante; `PURSER_OIDC_CLIENT_SECRET` ora letto correttamente.
+- **RBAC OIDC**: mapping claim groups/roles → ruoli Purser via `PURSER_OIDC_GROUP_MAPPINGS`; tenant-scoped list deployments.
+- **TLS management API** (auto via PKI interna, `PURSER_TLS_AUTO`) + **rate limiting** per-IP e per-key (100/50 RPS default).
+- **Webhook notification** per approval-required del reconciler (`PURSER_RECONCILER_WEBHOOK_URL`).
+- **Fleet Capacity Headroom API** (`GET /api/v1/fleet/capacity`).
+- **Osservabilità completa**: NodeMetrics→OTEL bridge (5 gauge per nodo), reconciler OTEL metrics (counter/gauge/histogram), trace sampler configurabile (`OTEL_TRACES_SAMPLER`), reconciler status endpoint.
+- **llama.cpp registrato in BackendRegistry** (feature-gated `--features llamacpp`); ModelCache cablato nel path StartEngine; HttpFetcher attivato di default.
+- **`prefix_caching_factor` e `kv_ssd_offload`** in HardwareProfile proto; planner usa le capability reali; flash attention come campo esplicito in EngineParams.
+- **ARM64 build matrix**: linux/arm64 + darwin/arm64 (Apple Silicon M2/M3 come nodi di inferenza).
+- **Demo mode** (`docker-compose.yml`, `docker compose up`, no GPU) + `devcontainer.json` + `make dev` + good-first-issue guide.
+- **SDK**: Python `AsyncPurserClient` + `stream_metrics()` SSE generator; TypeScript `@purser/sdk 0.3.0` zero-dependency.
+- **Planner benchmark suite** con dati baseline reali; Ansible role `purser_agent` per fleet enrollment.
+- **Release pipeline**: ARM64 artifacts, SLSA L2 provenance, cosign SBOM attestazioni, chart signing; apt/yum hosted via Cloudsmith.
+- **Production license trust root** (chiave reale, modello open-core commercialmente funzionale).
+- **Fix e2e scripts**: ROOT auto-detection via `${BASH_SOURCE[0]}` (postmortem `docs/postmortems/e2e_hardcoded_path.md`).
+- **Failover execution** completato e testato.
+- Documentazione GitHub Pages aggiornata: webhook notifications, Ansible integration.
+
+## Backlog / follow-up (post-v0.3, onesto, prioritizzato)
 
 **Distribuzione degli artefatti (residui)**
-- **Installer host mancanti**: `.pkg` (macOS/pkgbuild) e `.msi` (Windows/WiX) oltre alle unit systemd/launchd + script servizio Windows **che già spediscono**.
+- **`.pkg` macOS notarizzato** (P6) e **Homebrew tap** (P7) — richiedono ARM64 (spedito) + firma Apple notarization.
+- **`.msi` Windows** — deferred v0.4.
 
 **Backend reale**
-- **llama.cpp live**: adapter (flag builder, GGUF reader, metrics parser) implementato e unit-testato; il test di conformità live è opt-in (`PURSER_LLAMACPP_BIN`). Manca la validazione con binari llama.cpp reali + hardware GPU.
+- **llama.cpp validazione GPU**: adapter registrato (v0.3); manca la validazione con binari llama.cpp reali + hardware GPU (benchmark + calibrazione costanti Planner).
 - **DwarfStar adapter**, speculative tuning, tensor-parallelism opportunistico (vLLM/SGLang).
 
-**API / contratti UI↔backend da congelare** (assunti dalla UI, alcuni non ancora esposti dal CP)
+**API / contratti UI↔backend da congelare**
 - `GET/DELETE /apikeys`, wiring del join-token nella UI; schema del frame SSE `/api/v1/metrics`; casing JSON (protojson camelCase).
-- **`POST /api/v1/nodes/{id}/restart` non implementato** — omesso intenzionalmente: richiede una decisione di design prima di procedere (comportamento atteso su deployment attivi, coordinamento con il reconciler).
-- (`DELETE /models/{id}`, `POST /models/{id}/plan`, `POST /nodes/{id}/drain`, `DELETE /nodes/{id}` sono ora implementati — vedi "Chiuso dopo v0.1.0".)
+- **`POST /api/v1/nodes/{id}/restart` non implementato** — richiede decisione di design prima di procedere.
 
 **Enterprise / hardening (dietro il key-gate)**
-> Il gate di licenza è **in piedi e testato** (verifica ed25519 offline + `402` nel control-plane);
-> le **capability** enterprise sottostanti sono in gran parte **ancora da implementare** dietro di esso.
-- HA control-plane (Raft) + replica Registry; Gateway HA dietro VIP.
-- Identity & access: RBAC, SSO/SAML/OIDC, LDAP/AD.
-- Compliance: **audit log tamper-evident ora implementato e attivo dietro key-gate** (`go/controlplane/audit/`, engine hash-chain + verifica chain, `GET /api/v1/enterprise/audit-log` — vedi "Chiuso dopo v0.1.0"); isolamento forte multi-tenant e chargeback/usage accounting **ancora da implementare**.
-- Fleet-at-scale: enrollment MDM/Ansible/golden-image, bundle air-gap firmati, CA enterprise.
-- Failover *execution* (il reconciler rileva e pianifica; l'esecuzione del ribilanciamento va completata).
-- Bundle air-gap firmati, self-update firmato.
-
-> Nota: i **pacchetti nativi dell'Agent** (.deb/.rpm) e **Kubernetes/Helm** con immagini GHCR non sono più backlog — sono **spediti e allegati alla Release / pubblicati su GHCR** (vedi "Chiuso in v0.1.0" e "Distribuzione degli artefatti" sopra). Restano qui solo la distribuzione a scala flotta (repo **apt/yum + MDM/Ansible/Intune/GPO**, enrollment di massa, CA enterprise), già coperta da *Fleet-at-scale*.
+> Il gate di licenza è **in piedi e testato**; OIDC+RBAC sono atterrati in v0.3.
+> Restano aperte le capability enterprise più pesanti.
+- **HA control-plane (Raft)** + replica Registry; Gateway HA dietro VIP.
+- **LDAP/AD** — identity provider alternativo a OIDC.
+- Isolamento forte multi-tenant e chargeback/usage accounting.
+- Bundle air-gap firmati, self-update firmato, Agent secrets TPM-backed.
 
 **Community / discovery**
 - Gossip SWIM (foca) — oggi discovery = mDNS+seed+heartbeat.
 
 **CI / qualità**
-- **CI verde** (rust/go/proto/ui). Follow-up: **pin della toolchain in CI** — oggi i job usano gli
-  actions standard (`rust-toolchain@stable`, `setup-go` da `go.mod`, node 22, `buf-setup-action`)
-  invece delle versioni project-local di `.toolchain/` (Rust 1.98, Go 1.27), quindi CI e build locale
-  possono divergere.
+- **Pin della toolchain in CI** — oggi i job usano actions standard invece delle versioni project-local di `.toolchain/`.
 
-## Roadmap post-v0.1
+## Roadmap post-v0.3
 
-Priorità dopo la prima release Community:
+Priorità dopo il rilascio v0.3:
 
-1. **Rifinitura Community** — congelare i contratti API UI↔backend mancanti (`GET/DELETE /apikeys`,
-   wiring join-token nella UI, schema frame SSE `/api/v1/metrics`, casing JSON; decidere il design
-   di `POST /nodes/{id}/restart`) e sostituire mDNS+seed+heartbeat con **gossip SWIM** per una
-   discovery più robusta a scala.
-2. **Feature enterprise dietro il gate** — implementare le capability premium ora coperte solo dal
-   key-gate: **RBAC**/SSO/LDAP, **HA** (Raft + replica registry), isolamento multi-tenant, e
-   l'esecuzione del failover/ribilanciamento. (L'audit log tamper-evident è già implementato —
-   vedi "Chiuso dopo v0.1.0".)
-3. **Validazione hardware** — chiudere il path di inferenza reale: conformità **llama.cpp** live su
+1. **Validazione hardware** — chiudere il path di inferenza reale: conformità **llama.cpp** live su
    binari e GPU reali, adapter **DwarfStar**, e ri-calibrazione delle costanti del Planner con
-   benchmark reali (`tc netem` per la rete).
+   benchmark reali (`tc netem` per la rete). Il benchmark suite è già presente (v0.3).
+2. **Distribuzione macOS** — `.pkg` notarizzato (P6) + Homebrew tap (P7), ora che ARM64 è spedito.
+3. **Enterprise avanzata** — **HA/Raft** (registry replicato, multi-pod K8s), **LDAP/AD** come
+   provider identity alternativo, isolamento multi-tenant pieno.
+4. **API e UI refinement** — congelare i contratti UI↔backend mancanti, decidere `POST /nodes/{id}/restart`.

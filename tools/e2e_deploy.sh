@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # E2E step 2: full zero-config vertical — enroll -> seed model -> deploy -> orchestrate -> route to gateway.
 set -uo pipefail
-ROOT=/home/andrea/ideas/purser
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/env.sh" >/dev/null 2>&1
 CP_HTTP=127.0.0.1:18080; CP_GRPC=127.0.0.1:19443; GW=127.0.0.1:18081
 DB=/tmp/purser-e2e.db; PKI=/tmp/purser-e2e-pki; LOGDIR=/tmp/purser-e2e

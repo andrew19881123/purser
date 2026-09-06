@@ -16,7 +16,7 @@ graph TD
         PVC[("PVC /data\nSQLite registry\n+ PKI CA key")]
         SVC_CP["Service: control-plane\nHTTP :8080 / gRPC :9443"]
         SVC_GW["Service: gateway\nHTTP :8080"]
-        SVC_UI["Service: ui\nHTTP :80"]
+        SVC_UI["Service: ui\nHTTP :8080"]
         ING["Ingress (optional)\npurser.example.com"]
         CP --- PVC
         SVC_CP --> CP
@@ -50,11 +50,24 @@ graph TD
 The chart is published as an OCI artifact on GHCR. The images are public — no pull secret needed:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
 `--set controlPlane.service.type=LoadBalancer` is required when Agents run outside the cluster — it exposes the gRPC RegistrationService (`:9443`) and REST API (`:8080`) to the LAN. With the default `ClusterIP`, Agents cannot reach the Control Plane.
+
+## Verify chart signature
+
+The Helm chart OCI artefact is signed with [cosign](https://docs.sigstore.dev/cosign/overview/) keyless signatures using the GitHub Actions OIDC identity. Verify the chart before installing:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp="https://github.com/andrew19881123/purser/.github/workflows/release.yml@refs/tags/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  oci://ghcr.io/andrew19881123/charts/purser:<VERSION>
+```
+
+Replace `<VERSION>` with the numeric chart version (e.g. `0.3.0`). A successful verification prints the certificate chain and digest — no key management required. Verification uses the Sigstore transparency log (Rekor) to confirm the signature was produced by the official release workflow.
 
 ## Install from source
 
@@ -94,11 +107,11 @@ helm install purser deploy/helm/purser \
 | `ingress.host` | `""` | Required when `ingress.enabled=true`. |
 | `license.key` | `""` | Enterprise license key (`PURSER_LICENSE_KEY`). Empty = community edition. |
 | `image.controlPlane.repository` | `ghcr.io/andrew19881123/purser-control-plane` | Control Plane image repository. |
-| `image.controlPlane.tag` | `0.1.1` | Control Plane image tag. |
+| `image.controlPlane.tag` | `0.3.0` | Control Plane image tag. |
 | `image.gateway.repository` | `ghcr.io/andrew19881123/purser-gateway` | Gateway image repository. |
-| `image.gateway.tag` | `0.1.1` | Gateway image tag. |
+| `image.gateway.tag` | `0.3.0` | Gateway image tag. |
 | `image.ui.repository` | `ghcr.io/andrew19881123/purser-ui` | UI image repository. |
-| `image.ui.tag` | `0.1.1` | UI image tag. |
+| `image.ui.tag` | `0.3.0` | UI image tag. |
 | `imagePullSecrets` | `[]` | Pull secrets for a private registry (not needed for GHCR public images). |
 | `podSecurityContext.fsGroup` | `65532` | Distroless image runs as UID 65532; fsGroup makes the PVC group-writable. |
 
@@ -109,14 +122,14 @@ helm install purser deploy/helm/purser \
 Each component gets its own Service. Set the Control Plane to `LoadBalancer` so out-of-cluster Agents can register:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
 Agents on the LAN reach the Control Plane's external IP directly. Expose the Gateway and UI separately if needed:
 
 ```bash
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer \
   --set gateway.service.type=LoadBalancer \
   --set ui.service.type=LoadBalancer
@@ -127,7 +140,7 @@ helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
 Use NodePort with pinned ports:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=NodePort \
   --set controlPlane.service.httpNodePort=30080 \
   --set controlPlane.service.grpcNodePort=30443
@@ -141,10 +154,10 @@ All three components served from one hostname via a Kubernetes Ingress. Path rou
 |---|---|---|
 | `/api` | control-plane | 8080 |
 | `/v1` | gateway | 8080 |
-| `/` | ui (nginx) | 80 |
+| `/` | ui (nginx) | 8080 |
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.example.com \
   --set ingress.className=nginx
@@ -155,7 +168,7 @@ With the Ingress in place, the UI's same-origin defaults (`/api/v1` and `/v1`) w
 TLS with cert-manager:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.example.com \
   --set ingress.className=nginx \
@@ -172,9 +185,9 @@ helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
 The official images are **public** on GHCR. No authentication required:
 
 ```
-ghcr.io/andrew19881123/purser-control-plane:0.1.1
-ghcr.io/andrew19881123/purser-gateway:0.1.1
-ghcr.io/andrew19881123/purser-ui:0.1.1
+ghcr.io/andrew19881123/purser-control-plane:0.3.0
+ghcr.io/andrew19881123/purser-gateway:0.3.0
+ghcr.io/andrew19881123/purser-ui:0.3.0
 ```
 
 If you mirror images to your own private registry, create a pull secret and reference it:
@@ -185,7 +198,7 @@ kubectl create secret docker-registry regcred \
   --docker-username=<user> \
   --docker-password=<token>
 
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set imagePullSecrets[0].name=regcred \
   --set image.controlPlane.repository=registry.example.com/purser/control-plane \
   --set image.gateway.repository=registry.example.com/purser/gateway \
@@ -206,7 +219,7 @@ The chart creates a PVC with the configured StorageClass (`controlPlane.persiste
 ## Upgrade
 
 ```bash
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0
 ```
 
 The chart uses `--reuse-values` semantics for the gateway internal token (auto-generated at install time and reused on upgrade) to avoid breaking the Control Plane → Gateway route sync.
@@ -218,6 +231,64 @@ helm uninstall purser
 # Remove the retained PVC explicitly if needed:
 kubectl delete pvc -l app.kubernetes.io/instance=purser
 ```
+
+## TLS termination options
+
+The management REST API (`/api/v1`) and the operator dashboard can be secured with TLS. Three patterns are available for Kubernetes deployments:
+
+### Option A: Ingress TLS (recommended for production)
+
+Let the Ingress controller terminate TLS. The Control Plane pod itself stays on plain HTTP and is only reachable cluster-internally:
+
+```bash
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
+  --set ingress.enabled=true \
+  --set ingress.host=purser.example.com \
+  --set ingress.className=nginx \
+  --set "ingress.annotations.cert-manager\.io/cluster-issuer=letsencrypt-prod" \
+  --set ingress.tls[0].secretName=purser-tls \
+  --set ingress.tls[0].hosts[0]=purser.example.com
+```
+
+See [Networking models — Model 3: Ingress](#model-3-ingress-single-hostname) above for the full routing table.
+
+### Option B: Internal PKI auto-TLS (`PURSER_TLS_AUTO`)
+
+The Control Plane issues a self-signed certificate for itself from the internal PKI CA at startup. No cert-manager or external CA required. The certificate is held in memory and renewed on pod restart.
+
+```yaml
+controlPlane:
+  extraEnv:
+    - name: PURSER_TLS_AUTO
+      value: "true"
+```
+
+Useful for: air-gapped clusters, development namespaces, and any environment where the management API is not exposed outside the cluster (e.g. accessed only via `kubectl port-forward`).
+
+### Option C: Explicit cert/key (`PURSER_TLS_CERT` / `PURSER_TLS_KEY`)
+
+Mount a TLS certificate and private key from a Kubernetes Secret and point the Control Plane at the mounted files:
+
+```yaml
+controlPlane:
+  extraEnv:
+    - name: PURSER_TLS_CERT
+      value: /tls/tls.crt
+    - name: PURSER_TLS_KEY
+      value: /tls/tls.key
+  # Mount the Secret as a volume (outside the Helm chart — use extraVolumes /
+  # extraVolumeMounts if your chart version supports them, or patch the Deployment).
+```
+
+Create the Secret from cert-manager or from your own CA:
+
+```bash
+kubectl create secret tls purser-mgmt-tls \
+  --cert=server.crt --key=server.key
+```
+
+!!! note "Rate limiting"
+    The management API has a built-in per-IP and per-API-key rate limiter (100 RPS and 50 RPS by default). Tune via `PURSER_RATE_LIMIT_RPS` and `PURSER_RATE_LIMIT_KEY_RPS` in `controlPlane.extraEnv`. See [Environment Variables](../configuration/env-vars.md#rate-limiting-for-the-management-api) for details.
 
 ## Enterprise options
 

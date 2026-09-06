@@ -17,6 +17,10 @@ message EngineParams {
   optional double pipe_fill = 3;
   uint32 context = 4;
   map<string, string> extra = 5;
+  // Enable flash attention (-fa in llama.cpp). Defaults to false (backward
+  // compatible). The extra["flash_attn"] key remains supported as a fallback
+  // for callers that have not yet migrated to this explicit field.
+  bool flash_attn = 6;
 }
 
 // Kind of lifecycle event emitted by an engine.

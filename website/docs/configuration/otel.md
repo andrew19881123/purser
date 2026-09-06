@@ -6,13 +6,56 @@ OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go)
 
 ## Environment variables
 
-Three standard OpenTelemetry SDK variables are actively read at startup:
+Standard OpenTelemetry SDK variables actively read at startup:
 
 | Variable | Default | Description |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty — OTEL disabled) | OTLP base URL. **Setting this variable enables all telemetry export.** The Control Plane exports over OTLP/HTTP; the Gateway exports over OTLP/gRPC. |
 | `OTEL_SERVICE_NAME` | `purser-control-plane` or `purser-gateway` | `service.name` resource attribute stamped on every span and metric. Defaults differ per component; set explicitly when running multiple instances or when your backend's service map groups by this attribute. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | (empty) | Comma-separated `key=value` pairs appended to every OTLP request. Used for API-key or token authentication with managed backends. Examples: `Authorization=Api-Token dt0c01.xxx` (Dynatrace), `Authorization=Basic <base64>` (Grafana Cloud). |
+| `OTEL_TRACES_SAMPLER` | `always_on` | Trace sampler to use. See [Trace sampling](#trace-sampling) below for all accepted values. |
+| `OTEL_TRACES_SAMPLER_ARG` | (empty) | Numeric argument for ratio-based samplers (float, 0.0–1.0). Required for `traceidratio` and `parentbased_traceidratio`; defaults to `1.0` when unset or unparseable. |
+
+---
+
+---
+
+## Trace sampling
+
+The Control Plane reads the standard `OTEL_TRACES_SAMPLER` variable (case-sensitive). Five values are supported:
+
+| `OTEL_TRACES_SAMPLER` | Behaviour |
+|---|---|
+| `always_on` (default) | Every request is sampled. Good for development; noisy at scale. |
+| `always_off` | No traces are exported. Useful to confirm zero overhead without removing the endpoint. |
+| `traceidratio` | Probabilistic sampling based on the trace ID. Set `OTEL_TRACES_SAMPLER_ARG` to a float between `0.0` and `1.0` (e.g. `0.1` = 10%). Defaults to `1.0` when the arg is absent or unparseable. |
+| `parentbased_traceidratio` | Like `traceidratio` but respects the sampling decision of the parent span (e.g. from an upstream service). Recommended for multi-service setups. |
+| `parentbased_always_off` | Defers to the parent span's sampling decision; samples nothing that does not have a sampled parent. |
+
+### Quick examples
+
+```bash
+# Sample 10% of traces
+OTEL_TRACES_SAMPLER=traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.1
+
+# Respect upstream sampling decision at 5%
+OTEL_TRACES_SAMPLER=parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.05
+
+# Disable tracing entirely
+OTEL_TRACES_SAMPLER=always_off
+```
+
+```yaml
+# Helm values.yaml
+controlPlane:
+  extraEnv:
+    - name: OTEL_TRACES_SAMPLER
+      value: "parentbased_traceidratio"
+    - name: OTEL_TRACES_SAMPLER_ARG
+      value: "0.1"
+```
 
 ---
 
@@ -37,7 +80,9 @@ Tracer name: `purser.gateway`. Exporter: OTLP/gRPC.
 
 ### Metrics
 
-The Control Plane pushes three infrastructure gauges every 30 seconds via OTLP/HTTP:
+The Control Plane pushes metrics every 30 seconds via OTLP/HTTP.
+
+#### Infrastructure gauges (Meter: `purser.control-plane`)
 
 | Metric name | Unit | Description |
 |---|---|---|
@@ -45,7 +90,30 @@ The Control Plane pushes three infrastructure gauges every 30 seconds via OTLP/H
 | `purser.nodes.ready` | `{node}` | Number of nodes in `READY` or `RUNNING` state. |
 | `purser.nodes.total` | `{node}` | Total number of registered nodes. |
 
-Meter name: `purser.control-plane`.
+#### Per-node hardware metrics (Meter: `purser.control-plane`)
+
+These metrics are emitted once per node that has sent at least one heartbeat. Each data point carries a `node_id` attribute. Nodes that have not yet reported are omitted (no zero-fill) so graphs show only live nodes.
+
+| Metric name | Type | Unit | Description |
+|---|---|---|---|
+| `purser.node.cpu_utilization` | Float64Gauge | `%` | CPU utilisation percentage as reported by the node agent (0–100). |
+| `purser.node.gpu_utilization` | Float64Gauge | `%` | GPU utilisation percentage (0–100; 0 when no GPU is present). |
+| `purser.node.mem_bandwidth_utilization` | Float64Gauge | `%` | Memory-bandwidth utilisation as a fraction of peak measured bandwidth (0–100). |
+| `purser.node.tokens_per_second` | Float64Gauge | `{token}/s` | Current token throughput estimate; 0 when the node is not serving. |
+| `purser.node.inference_port_alive` | Int64Gauge | `{bool}` | `1` if the node's inference HTTP port is responding, `0` otherwise. |
+
+These values come from the `NodeMetrics` extension of the agent heartbeat introduced in v0.3. Agents running an older version will leave these gauges at 0. Only the `NodeMetricsGetter` path (wired when the fleet registration server is live) populates these gauges.
+
+#### Reconciler metrics (Meter: `purser.reconciler`)
+
+The self-healing reconciler loop emits counters, gauges, and a histogram to help operators understand control-plane activity and approval backlogs.
+
+| Metric name | Type | Unit | Description |
+|---|---|---|---|
+| `purser.reconciler.events_detected` | Int64Counter | `{event}` | Reconciler events dispatched (past hysteresis threshold), labelled by `type` (`engine_down`, `node_down`, `new_node`, `orphan_deployment`). |
+| `purser.reconciler.events_acted` | Int64Counter | `{event}` | Events where the reconciler actually took a corrective action, labelled by `type`. |
+| `purser.reconciler.events_pending_approval` | Int64Gauge | `{event}` | Events currently waiting for operator approval, labelled by `type`. A non-zero value means the operator needs to review and approve a proposed action. |
+| `purser.reconciler.loop_duration_ms` | Float64Histogram | `ms` | Wall-clock duration of each `Reconcile()` pass. Use P95/P99 to detect registry contention or slow reconcile loops. |
 
 ### Audit log bridge
 
@@ -244,5 +312,12 @@ When metrics are flowing, a useful dashboard includes:
 - **Active deployments** — `purser_deployments_active` gauge
 - **Ready nodes** — `purser_nodes_ready` gauge
 - **Total nodes** — `purser_nodes_total` gauge
+- **Per-node CPU utilisation** — `purser_node_cpu_utilization{node_id="…"}` (0–100 %)
+- **Per-node GPU utilisation** — `purser_node_gpu_utilization{node_id="…"}` (0–100 %)
+- **Token throughput per node** — `purser_node_tokens_per_second{node_id="…"}`
+- **Inference port alive** — `purser_node_inference_port_alive{node_id="…"}` (1 = up, 0 = down)
+- **Reconciler event rate** — `rate(purser_reconciler_events_detected_total[5m])` by `type`
+- **Reconciler approval backlog** — `purser_reconciler_events_pending_approval` by `type`
+- **Reconciler loop P95 latency** — P95 of `purser_reconciler_loop_duration_ms` histogram
 - **Control-plane request latency** — P50/P95 from the `purser.control-plane` trace span durations
 - **Inference latency** — P50/P95/P99 from `purser.gateway.inference` span durations grouped by `model.id`

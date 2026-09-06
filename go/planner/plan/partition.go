@@ -69,12 +69,15 @@ func candidateSubsets(nodes []Node, model ModelSpec, quant Quantization, kv floa
 
 	ramNeeded := quant.SizeGB + kv
 
-	// k_min = smallest k with sum(usefulMemory(ranked[0:k])) >= ramNeeded +
-	// OVERHEAD*k (design 08 §5, rule G1).
+	// k_min = smallest k with sum(usefulMemoryForFit(ranked[0:k])) >= ramNeeded +
+	// OVERHEAD*k (design 08 §5, rule G1). usefulMemoryForFit includes any KV-SSD
+	// offload contribution, so nodes with SSD offload expand the aggregate and can
+	// reduce k_min, enabling single-node (or fewer-node) plans that would otherwise
+	// fail the aggregate check.
 	kMin := -1
 	aggMem := 0.0
 	for k := 1; k <= len(ranked); k++ {
-		aggMem += usefulMemory(ranked[k-1])
+		aggMem += usefulMemoryForFit(ranked[k-1])
 		if aggMem >= ramNeeded+overheadOSRuntimeGB*float64(k) {
 			kMin = k
 			break
@@ -189,8 +192,13 @@ func stageMemNeed(model ModelSpec, quant Quantization, i, j, context int) float6
 
 // stageFits reports whether layers[i:j) fit node n under the HEADROOM margin
 // (design 08 §6). A false result makes the stage's time +Inf in the DP.
+//
+// The memory limit is derived from usefulMemoryForFit (not the bare usefulMemory)
+// so that nodes with KV-SSD offload contribute their SSD-augmented effective
+// memory to the feasibility check — consistent with the phase-B aggregate
+// and the validatePlanMemory backstop.
 func stageFits(n Node, model ModelSpec, quant Quantization, i, j, context int) bool {
-	return stageMemNeed(model, quant, i, j, context) <= usefulMemory(n)*(1-defaultHeadroomFraction)
+	return stageMemNeed(model, quant, i, j, context) <= usefulMemoryForFit(n)*(1-defaultHeadroomFraction)
 }
 
 // stageTimeAt is the shared stage-time model used by BOTH the DP and the

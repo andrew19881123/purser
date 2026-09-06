@@ -22,7 +22,7 @@ use purser_agent::probe::{DefaultProbe, HardwareProbe};
 use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
 use purser_agent::state::NodeStateMachine;
-use purser_agent::supervisor::{BackendRegistry, RestartPolicy, Supervisor};
+use purser_agent::supervisor::{backend_error_msg, BackendRegistry, RestartPolicy, Supervisor};
 use purser_agent::swim;
 
 #[tokio::main]
@@ -32,11 +32,74 @@ async fn main() -> anyhow::Result<()> {
     let config = AgentConfig::from_env().context("loading agent configuration")?;
     let config = Arc::new(config);
 
-    // When http-fetch is enabled: construct an HTTP model fetcher from config.
-    // TODO(phase2): pass to ModelCache::open() when the weight-loading path is
-    // wired in place of FileMirrorFetcher.
-    #[cfg(feature = "http-fetch")]
-    let _http_fetcher = purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
+    // ── Model cache ──────────────────────────────────────────────────────────
+    // The cache resolves logical model refs (e.g. "llama-3.1-8b:Q4_K_M") to
+    // local GGUF file paths before StartEngine reaches the engine adapter.
+    //
+    // Cache directory: PURSER_MODEL_CACHE_DIR (default: ~/.purser/model-cache).
+    // Cache budget:    PURSER_MODEL_CACHE_MAX_BYTES (default: 50 GiB).
+    //
+    // When http-fetch is enabled the HttpFetcher is used (with proxy/CA-bundle
+    // settings from config); otherwise the FileMirrorFetcher copies from a
+    // rack-local NFS/mounted mirror (PURSER_MODEL_MIRROR_DIR, default: same as
+    // cache dir, effectively a no-op until a mirror is configured).
+    let model_cache: Option<Arc<purser_agent::modelcache::ModelCache>> = {
+        let cache_dir: std::path::PathBuf = std::env::var("PURSER_MODEL_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var_os("HOME")
+                    .map(|h| {
+                        std::path::PathBuf::from(h)
+                            .join(".purser")
+                            .join("model-cache")
+                    })
+                    .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/purser/model-cache"))
+            });
+
+        let max_bytes: u64 = std::env::var("PURSER_MODEL_CACHE_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50 * 1024 * 1024 * 1024); // 50 GiB
+
+        #[cfg(not(feature = "http-fetch"))]
+        let fetcher: Box<dyn purser_agent::modelcache::Fetcher> = {
+            let mirror_root = std::env::var("PURSER_MODEL_MIRROR_DIR")
+                .map(std::path::PathBuf::from)
+                .ok();
+            Box::new(purser_agent::modelcache::FileMirrorFetcher {
+                mirror_root,
+            })
+        };
+
+        #[cfg(feature = "http-fetch")]
+        let fetcher: Box<dyn purser_agent::modelcache::Fetcher> = {
+            let client = purser_agent::http_client::build_http_client(&config)
+                .context("building HTTP client for model fetcher")?;
+            Box::new(purser_agent::modelcache::HttpFetcher::with_client(
+                client,
+                config.model_fetch_max_retries,
+            ))
+        };
+
+        match purser_agent::modelcache::ModelCache::open(&cache_dir, max_bytes, fetcher).await {
+            Ok(cache) => {
+                tracing::info!(
+                    dir = %cache_dir.display(),
+                    max_bytes,
+                    "model cache opened"
+                );
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %cache_dir.display(),
+                    "failed to open model cache; StartEngine will skip path resolution"
+                );
+                None
+            }
+        }
+    };
 
     // Security: warn if bound on all interfaces rather than a trusted subnet.
     if config.bind_addr.ip().is_unspecified() {
@@ -56,17 +119,31 @@ async fn main() -> anyhow::Result<()> {
         NodeStateMachine::starting_at(NodeState::Enrolled)
     }));
 
-    // Engine backend selection (only `mock` is registered today; real adapters
-    // register here without changing the supervisor).
+    // Engine backend selection. Backends registered at compile time:
+    //   - `mock`    — always (GPU-free in-process mock)
+    //   - `llamacpp`— only when compiled with `--features llamacpp`
+    // Set PURSER_ENGINE_BACKEND to choose; defaults to `mock`.
     let registry = BackendRegistry::with_builtins();
     let backend_name =
         std::env::var("PURSER_ENGINE_BACKEND").unwrap_or_else(|_| "mock".to_string());
-    let backend = registry.build(&backend_name).with_context(|| {
-        format!(
-            "unknown engine backend {backend_name:?}; known: {:?}",
-            registry.names()
-        )
-    })?;
+
+    // Emit a clear, actionable message when llamacpp is requested but the
+    // binary was compiled without the feature (generic "unknown backend" would
+    // be confusing in that case).
+    let backend = registry
+        .build(&backend_name)
+        .with_context(|| backend_error_msg(&backend_name, &registry))?;
+
+    // Warn when the llamacpp backend is active but its binary directory is not
+    // configured — the adapter will fall back to searching PATH, which may not
+    // find the binaries on a fresh node.
+    #[cfg(feature = "llamacpp")]
+    if backend_name == "llamacpp" && std::env::var("PURSER_LLAMACPP_BIN").is_err() {
+        tracing::warn!(
+            "PURSER_ENGINE_BACKEND=llamacpp but PURSER_LLAMACPP_BIN is not set; \
+             llama.cpp binaries (rpc-server, llama-server) will be searched in PATH"
+        );
+    }
     // The GPU-free `mock` backend has no serving process of its own, so a HOST
     // start must also stand up an in-process OpenAI-compatible server on the
     // inference port. Real backends serve their own endpoint — leave it unset.
@@ -81,15 +158,16 @@ async fn main() -> anyhow::Result<()> {
         Supervisor::with_state_machine(backend, RestartPolicy::default(), Arc::clone(&machine))
     };
 
-    let probe = Arc::new(DefaultProbe::with_backends(
-        node_id.clone(),
-        registry.names(),
-    ));
+    let probe = Arc::new(
+        DefaultProbe::with_backends(node_id.clone(), registry.names())
+            .with_prefix_caching_factor(config.prefix_caching_factor),
+    );
     let svc = AgentSvc::new(
         Arc::clone(&probe) as Arc<dyn HardwareProbe>,
         Arc::clone(&config),
         Arc::clone(&supervisor),
         Arc::clone(&machine),
+        model_cache,
     );
 
     tracing::info!(
@@ -279,19 +357,38 @@ async fn main() -> anyhow::Result<()> {
                     let _ = secret_store.put("client_cert", &enrollment.client_cert);
                     let _ = secret_store.put("ca_cert", &enrollment.ca_cert);
                     {
-                        let mut sm = machine_for_task.lock().unwrap();
+                        let mut sm =
+                            machine_for_task.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = sm.enrolled();
                         let _ = sm.ready();
                     }
-                    if let Err(e) = discovery::run_heartbeat(
-                        &cp_addr,
-                        enrollment.node_id,
-                        hb_source,
-                        health_interval,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "heartbeat stream ended");
+                    // H6: reconnect loop with exponential backoff so a transient
+                    // control-plane outage does not permanently sever heartbeating.
+                    let node_id_for_hb = enrollment.node_id;
+                    let mut hb_delay = Duration::from_secs(1);
+                    loop {
+                        match discovery::run_heartbeat(
+                            &cp_addr,
+                            node_id_for_hb.clone(),
+                            Arc::clone(&hb_source),
+                            health_interval,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                tracing::info!("heartbeat stream ended gracefully");
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    retry_in = ?hb_delay,
+                                    "heartbeat disconnected, retrying"
+                                );
+                                tokio::time::sleep(hb_delay).await;
+                                hb_delay = (hb_delay * 2).min(Duration::from_secs(60));
+                            }
+                        }
                     }
                 }
                 Err(e) => {

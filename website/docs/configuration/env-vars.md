@@ -22,7 +22,38 @@ Source: `go/controlplane/main.go` (`loadConfig()`)
 | `PURSER_HF_TOKEN` | (empty) | HuggingFace API token used by `POST /api/v1/models/import` when the caller does not supply an `X-HF-Token` header. Required for private and gated models; leave empty for public-model-only access. |
 | `PURSER_OIDC_ISSUER` | (empty) | OIDC provider discovery URL. When set, the Control Plane enforces OIDC authentication on the admin UI and management REST API. Example: `https://login.microsoftonline.com/<tenant>/v2.0`. Must be paired with `PURSER_OIDC_CLIENT_ID`. |
 | `PURSER_OIDC_CLIENT_ID` | (empty) | Expected audience (client ID) claim in tokens issued by the OIDC provider. Required when `PURSER_OIDC_ISSUER` is set; startup fails if the issuer is set but the client ID is empty. |
+| `PURSER_OIDC_CLIENT_SECRET` | (empty) | OAuth2 client secret for confidential clients. Optional — leave unset for public/PKCE-only clients. Used in the Authorization Code Flow token exchange. |
+| `PURSER_OIDC_REDIRECT_URI` | (empty) | Full callback URL for the Authorization Code Flow, e.g. `https://purser.example.com/auth/callback`. When set, activates `GET /auth/login` and `GET /auth/callback` — the PKCE browser SSO endpoints. Must match the redirect URI registered with the IdP. |
+| `PURSER_SESSION_SECRET` | (auto) | 64-character hex-encoded 32-byte HMAC-SHA256 key for signing session cookies. When unset, an ephemeral random key is generated at startup (sessions expire on process restart). Set to a persistent value for rolling deployments: `openssl rand -hex 32`. |
+| `PURSER_OIDC_GROUP_MAPPINGS` | (empty) | JSON object mapping OIDC `groups` or `roles` claim values to Purser RBAC roles (`admin`, `viewer`, `inference`). Example: `'{"purser-admins":"admin","purser-viewers":"viewer"}'`. When a token's claim matches a key, the highest-privilege mapped role is enforced — no API key required. See [OIDC Group Claim Mapping](oidc.md#group-claim-mapping). |
 | `PURSER_PLANNER_ORDERING_THRESHOLD` | `10` | Fleet size at or below which the planner uses the exact Held-Karp algorithm to find the minimum-cost pipeline ordering. Above this threshold the planner switches to the nearest-neighbour + 2-opt heuristic. Held-Karp has O(2^N·N²) complexity and is feasible up to ~12 nodes; raise this value only on planners with abundant memory and CPU. Read once at startup; restart the process to apply a new value. |
+
+### TLS for the management API
+
+The management REST API (`/api/v1`) can be served over HTTPS. Three modes are supported (in precedence order):
+
+1. **Explicit cert/key** — supply PEM file paths via `PURSER_TLS_CERT` + `PURSER_TLS_KEY`.
+2. **Auto (internal PKI)** — set `PURSER_TLS_AUTO=true`. The Control Plane issues a short-lived self-signed certificate for `localhost` and the machine hostname from the internal CA.
+3. **Plain HTTP** — the default when neither of the above is set.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_TLS_CERT` | (empty) | Path to a PEM-encoded TLS certificate file. When set together with `PURSER_TLS_KEY`, the management API is served over HTTPS. Has no effect when `PURSER_TLS_AUTO=true`. |
+| `PURSER_TLS_KEY` | (empty) | Path to a PEM-encoded TLS private key file. Required when `PURSER_TLS_CERT` is set. |
+| `PURSER_TLS_AUTO` | `false` | When `true`, `1`, or `yes`, the Control Plane issues a self-signed certificate from the internal PKI CA for `localhost` and the machine hostname. The certificate is held in memory — no disk files are written. Takes precedence over `PURSER_TLS_CERT`/`PURSER_TLS_KEY`. Suitable for development and air-gapped environments where cert-manager is not available. |
+
+### Rate limiting for the management API
+
+Two independent token-bucket rate limiters protect the management REST API against accidental CI/CD hammering and per-key abuse. Both are per-process (not distributed) and are lazily initialised per source IP or per API-key hash.
+
+`GET /api/v1/cluster/health` and `GET /api/v1/openapi.json` are **always exempt** from both limiters (monitoring must never be throttled).
+
+On limit exceeded the server returns `429 Too Many Requests` with a `Retry-After: 1` header.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_RATE_LIMIT_RPS` | `100` | Per-source-IP rate limit in requests per second. Each unique client IP gets an independent token bucket with a burst size equal to the RPS value. Set to `-1` to disable. |
+| `PURSER_RATE_LIMIT_KEY_RPS` | `50` | Per-API-key rate limit in requests per second. Applies to any request carrying a Bearer token that is not the internal gateway token. Set to `-1` to disable. |
 
 ### Reconciler tuning
 
@@ -36,6 +67,8 @@ unparseable values fall back to the compiled defaults shown below.
 | `PURSER_RECONCILER_NODE_OFFLINE_AFTER` | `45s` | How long since the last heartbeat before a node is considered offline (NodeTimeout). |
 | `PURSER_RECONCILER_HYSTERESIS` | `30s` | Minimum dwell time a discrepancy must persist before the loop acts (time-based anti-churn). |
 | `PURSER_RECONCILER_ACTION_COOLDOWN` | `2m` | Minimum time between re-issuing the same corrective action (prevents hammering while a prior action takes effect). |
+| `PURSER_RECONCILER_WEBHOOK_URL` | (empty) | HTTP(S) endpoint that receives a `POST` request whenever the reconciler raises an `approval_required` event (e.g. a node going down that requires operator sign-off before failover). See [Webhook Notifications](./webhook.md) for payload format and retry behaviour. When empty, no webhook is sent. |
+| `PURSER_RECONCILER_WEBHOOK_RETRIES` | `3` | Maximum number of POST attempts before the webhook delivery is abandoned. Each retry uses exponential backoff (500 ms, 1 s, 2 s, …). Must be a positive integer; values ≤ 0 fall back to 3. |
 
 ### Control Plane: Helm wiring
 
@@ -65,7 +98,7 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_INFERENCE_PORT` | `8000` | Port the local inference engine serves the OpenAI-compatible API on. Must match the Control Plane's `DefaultInferencePort` (the advertised host endpoint). |
 | `PURSER_AGENT_ADVERTISED_ADDR` | (derived) | Explicit `host:port` this node's `AgentService` is reachable at as seen by the Control Plane. When absent, derived from `PURSER_AGENT_BIND` (primary local non-loopback IPv4 when bound to `0.0.0.0`). |
 | `PURSER_INFERENCE_ADVERTISED_ADDR` | (derived) | Explicit `host:port` where this node serves inference, as seen by the Gateway. When absent, derived from the advertised host plus `PURSER_INFERENCE_PORT`. |
-| `PURSER_ENGINE_BACKEND` | `mock` | Engine backend name. Only `mock` is registered today; real GPU adapters register here without changing the service. Set `llamacpp` for the llama.cpp adapter. |
+| `PURSER_ENGINE_BACKEND` | `mock` | Engine backend to use. Valid values: `mock` (always available — GPU-free in-process backend, used in CI and testing) and `llamacpp` (real llama.cpp RPC processes — only available when the agent is compiled with `--features llamacpp`). Requesting `llamacpp` without that feature produces a clear startup error with the fix. |
 | `PURSER_LLAMACPP_BIN` | (unset) | Absolute path to the `llama-cli` (or `llama.cpp` server) binary. When set, the agent runs `$PURSER_LLAMACPP_BIN --version` at startup to populate the `llamacpp` entry in `engine_versions` on the node's `HardwareProfile`. If unset or the binary is not executable the version is reported as `"unknown"`. |
 | `PURSER_SEEDS` | (none) | Comma-separated extra discovery seed peers (`host:port`) in addition to mDNS LAN discovery. |
 | `RUST_LOG` | `info` | Log level for the agent (uses `tracing_subscriber`). Examples: `debug`, `purser_agent=debug,info`. |
@@ -74,8 +107,10 @@ Source: `rust/crates/agent/src/config.rs` (`AgentConfig::from_env()`) and `rust/
 | `PURSER_SWIM_SEED_ADDRS` | (empty) | Comma-separated `host:port` SWIM peers to announce to on startup (UDP addresses, matching `PURSER_SWIM_BIND_ADDR` on those nodes). Complements `PURSER_SEEDS` (the mDNS + gRPC seed path); the two discovery mechanisms run in parallel when SWIM is enabled. |
 | `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` (or `/var/lib/purser/secrets` when `$HOME` is unset) | Directory where encrypted secret files (`*.enc`) and the auto-generated key file (`.secret_key`) are stored. Created with mode 0700 on first use. |
 | `PURSER_SECRET_KEY` | (unset — auto-generated) | 32-byte AES-256 encryption key, hex- or base64-encoded (64 hex chars or 44 base64 chars). When set it takes precedence over the key file. When unset, the key is loaded from `{PURSER_SECRET_STORE_DIR}/.secret_key` or freshly generated and saved there. Consumed directly by `EncryptedFileSecretStore`, not stored in `AgentConfig`. |
-| `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the 100 ms DRAM microbenchmark and reports this value in the `HardwareProfile` sent to the Control Plane. Useful in CI environments or for manual calibration. |
+| `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` | (none) | Synthetic memory-bandwidth value in GB/s (`f32`). When set, the agent skips the DRAM microbenchmark entirely and always reports this value in the `HardwareProfile`. Takes precedence over `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`. Useful in CI environments or for manual calibration. |
+| `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS` | `6` | How often (in whole hours) the agent re-runs the 100 ms DRAM bandwidth microbenchmark to refresh the cached `mem_bandwidth_gbs` value. The initial measurement always runs at first probe. Set to `0` to re-measure on every probe call. Has no effect when `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` is set. |
 | `PURSER_MODEL_FETCH_MAX_RETRIES` | `3` | Number of additional HTTP fetch attempts after the first failure when downloading model weights (`HttpFetcher`). `0` means try once with no retries. Transient errors (5xx, network/timeout) are retried; 4xx errors fail immediately without retrying. |
+| `PURSER_MODEL_MIRROR_URL` | (none) | Base URL for HTTP(S) model weight downloads, e.g. `https://models.internal/weights`. When set, the agent uses `HttpFetcher` to pull weights from this origin. When absent, `FileMirrorFetcher` is used (local/mounted mirror). The `http-fetch` Cargo feature must be enabled (it is included in the default build). |
 
 ### Engine version detection
 
@@ -120,7 +155,7 @@ Both variables are **required** — the gateway refuses to start with a clear er
 
 | Variable | Default | Description |
 |---|---|---|
-| `PURSER_CONTROL_PLANE_URL` | (empty) | Control Plane base URL for usage reporting (e.g. `http://control-plane:8080`). When set, the gateway posts per-request token counts to `POST /api/v1/usage` after each inference call completes. When unset, usage recording is skipped (backward-compatible). |
+| `PURSER_CONTROL_PLANE_URL` | (empty) | Control Plane base URL for usage reporting (e.g. `http://control-plane:8080`). When set, the gateway posts per-request token counts to `POST /api/v1/usage` after each inference call completes. When unset, usage recording is skipped (backward-compatible). Token counts posted by the Gateway are aggregated per tenant and surfaced in the **Settings → Usage Summary** table of the operator dashboard, and via `GET /api/v1/usage/summary`. Individual API-key usage is available at `GET /api/v1/apikeys/{id}/usage` and in the token column of the API keys table. |
 
 ### Authentication
 
@@ -158,13 +193,15 @@ A value of `0` disables the corresponding limit.
 
 ## OpenTelemetry
 
-OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go) and Gateway (Rust). All three variables below are actively read at startup. When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, both components stay on their built-in no-op providers — zero overhead, nothing phoned home.
+OpenTelemetry instrumentation is **fully implemented** in the Control Plane (Go) and Gateway (Rust). The variables below are actively read at startup. When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, both components stay on their built-in no-op providers — zero overhead, nothing phoned home.
 
 | Variable | Default | Description |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP exporter base URL. Setting this activates trace and metric export. Control Plane exports over OTLP/HTTP; Gateway exports over OTLP/gRPC. Examples: `http://otel-collector:4318` (self-hosted), `https://abc12345.live.dynatrace.com/api/v2/otlp` (Dynatrace). |
 | `OTEL_SERVICE_NAME` | `purser-control-plane` / `purser-gateway` | Service name stamped on all spans and metrics. Defaults differ per component; set explicitly when running multiple instances. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | (empty) | Comma-separated `key=value` pairs added to OTLP requests for authentication. Example: `Authorization=Api-Token dt0c01.xxx` (Dynatrace), `Authorization=Basic <base64>` (Grafana Cloud). |
+| `OTEL_TRACES_SAMPLER` | `always_on` | Trace sampler for the Control Plane. Accepted values: `always_on`, `always_off`, `traceidratio`, `parentbased_traceidratio`, `parentbased_always_off`. See [OpenTelemetry: Trace sampling](otel.md#trace-sampling). |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling ratio (float 0.0–1.0) for `traceidratio` and `parentbased_traceidratio`. Ignored by other samplers. |
 
 See [OpenTelemetry configuration](otel.md) for full details: emitted signals, metric names, the audit-log span-event bridge, and per-backend configuration examples.
 
@@ -172,13 +209,13 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ## Complete list by component
 
-### Control Plane env vars (17)
+### Control Plane env vars (28)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_OIDC_CLIENT_SECRET`, `PURSER_OIDC_REDIRECT_URI`, `PURSER_SESSION_SECRET`, `PURSER_OIDC_GROUP_MAPPINGS`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
 
-### Agent env vars (20)
+### Agent env vars (22)
 
-`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_MODEL_FETCH_MAX_RETRIES`
+`PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`, `PURSER_MODEL_FETCH_MAX_RETRIES`, `PURSER_MODEL_MIRROR_URL`
 
 ### Gateway env vars (13)
 

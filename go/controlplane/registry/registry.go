@@ -59,6 +59,11 @@ type Registry interface {
 	// --- API keys ----------------------------------------------------------
 	CreateAPIKey(ctx context.Context, k *APIKey) error
 	GetAPIKey(ctx context.Context, id string) (*APIKey, error)
+	// GetAPIKeyByHash returns the single enabled API key whose key_hash equals
+	// keyHash (SHA-256 hex of the raw token). Returns ErrNotFound when no
+	// enabled key matches. The single-row indexed query is O(1) vs. the O(n)
+	// full-scan that ListAPIKeys + loop would require.
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
 	ListAPIKeys(ctx context.Context) ([]*APIKey, error)
 	UpdateAPIKey(ctx context.Context, k *APIKey) error
 	DeleteAPIKey(ctx context.Context, id string) error
@@ -85,4 +90,14 @@ type Registry interface {
 	// GetUsageSummary returns usage grouped by tenant since the given time.
 	// A zero since means "all time".
 	GetUsageSummary(ctx context.Context, since time.Time) ([]TenantUsage, error)
+
+	// --- Inference audit log (AI Act Art.12) --------------------------------
+	// RecordInferenceEvent appends an inference event to the audit log.
+	// The operation is idempotent: a duplicate RequestID is silently ignored.
+	// A nil event is a no-op and returns nil.
+	RecordInferenceEvent(ctx context.Context, event *InferenceEvent) error
+	// ListInferenceEvents returns paginated inference audit events matching
+	// the filter described in req. Unset filter fields are ignored. The
+	// default limit is 100; the maximum is 1000.
+	ListInferenceEvents(ctx context.Context, req *ListInferenceEventsRequest) (*ListInferenceEventsResponse, error)
 }

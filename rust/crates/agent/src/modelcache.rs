@@ -158,6 +158,16 @@ impl HttpFetcher {
             max_retries,
         }
     }
+
+    /// Construct an `HttpFetcher` using a pre-built client (e.g. one
+    /// configured with a corporate proxy or custom CA via
+    /// [`crate::http_client::build_http_client`]).
+    pub fn with_client(client: reqwest::Client, max_retries: u32) -> Self {
+        Self {
+            client,
+            max_retries,
+        }
+    }
 }
 
 #[cfg(feature = "http-fetch")]
@@ -420,6 +430,14 @@ impl ModelCache {
     /// Whether `model_ref` is cached.
     pub fn contains(&self, model_ref: &str) -> bool {
         self.inner.lock().unwrap().entries.contains_key(model_ref)
+    }
+
+    /// Return the on-disk GGUF path for `model_ref` if it is present in the
+    /// cache and the blob still exists on disk, touching the LRU clock. Returns
+    /// `None` if the model is not cached or its blob has been removed.
+    pub fn get(&self, model_ref: &str) -> Option<PathBuf> {
+        self.touch_if_present(model_ref)
+            .map(|sha| self.blob_path(&sha))
     }
 
     /// Touch the LRU clock for `model_ref` if cached and its blob still exists;
@@ -746,6 +764,41 @@ mod tests {
     fn _assert_send_sync() {
         fn is_send_sync<T: Send + Sync>() {}
         is_send_sync::<Arc<ModelCache>>();
+    }
+
+    // ── I3: ModelCache initialises with the appropriate Fetcher ──────────────
+
+    /// When PURSER_MODEL_MIRROR_URL is absent, ModelCache should be constructible
+    /// with a FileMirrorFetcher (the default path).
+    #[tokio::test]
+    async fn model_cache_opens_with_file_mirror_fetcher() {
+        let cache_dir = tempdir().unwrap();
+        let cache = ModelCache::open(
+            cache_dir.path(),
+            1_000_000,
+            Box::new(FileMirrorFetcher::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cache.total_bytes(), 0);
+    }
+
+    /// When the http-fetch feature is enabled, ModelCache should be constructible
+    /// with an HttpFetcher — this exercises the PURSER_MODEL_MIRROR_URL code path.
+    #[cfg(feature = "http-fetch")]
+    #[tokio::test]
+    async fn model_cache_opens_with_http_fetcher() {
+        let cache_dir = tempdir().unwrap();
+        let cache = ModelCache::open(
+            cache_dir.path(),
+            1_000_000,
+            Box::new(HttpFetcher::new(0)),
+        )
+        .await
+        .unwrap();
+        // Cache opened successfully with HttpFetcher (no downloads yet).
+        assert_eq!(cache.total_bytes(), 0);
+        assert!(cache.cached_refs().is_empty());
     }
 
     // ── HttpFetcher tests (require `http-fetch` feature + a live axum server) ──

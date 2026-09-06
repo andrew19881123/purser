@@ -13,6 +13,7 @@ import {
   IconLayers,
   IconChat,
   IconSettings,
+  IconShield,
   IconMoon,
   IconSun,
 } from './icons';
@@ -27,11 +28,12 @@ interface NavItem {
 }
 
 const OPERATE: NavItem[] = [
-  { to: '/', labelKey: 'nav.onboarding', icon: <IconRocket />, end: true },
+  { to: '/', labelKey: 'nav.gettingStarted', icon: <IconRocket />, end: true },
   { to: '/fleet', labelKey: 'nav.fleet', icon: <IconServer /> },
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
   { to: '/model-studio', labelKey: 'nav.modelStudio', icon: <IconBox /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
+  { to: '/audit', labelKey: 'nav.audit', icon: <IconShield /> },
   { to: '/join-token', labelKey: 'nav.joinTokens', icon: <IconKey /> },
 ];
 const USE: NavItem[] = [

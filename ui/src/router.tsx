@@ -1,10 +1,11 @@
-// Routing. We use a HASH router on purpose: the SPA is a static bundle served
-// by the control plane from an unknown mount path, possibly in an air-gapped
-// environment with no URL-rewrite config. Hash routing makes every deep link
-// work under any static host with zero server configuration. Swapping to
-// history routing later is a one-liner (createBrowserRouter) if the control
-// plane guarantees an index.html fallback.
-import { createHashRouter } from 'react-router-dom';
+// Routing. We use history routing (createBrowserRouter) because the control
+// plane's nginx serves a try_files fallback to index.html, making every deep
+// link work cleanly without a '#' fragment. URLs are clean and bookmarkable.
+// If you ever need to run the SPA in an air-gapped environment without URL-
+// rewrite support, swap back to hash routing with a one-liner:
+//   import { createHashRouter } from 'react-router-dom';
+//   export const router = createHashRouter([...]);
+import { createBrowserRouter } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { FleetPage } from './pages/FleetPage';
@@ -15,9 +16,10 @@ import { JoinTokenPage } from './pages/JoinTokenPage';
 import { ModelStudioPage } from './pages/ModelStudioPage';
 import { PlaygroundPage } from './pages/PlaygroundPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AuditPage } from './pages/AuditPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
-export const router = createHashRouter([
+export const router = createBrowserRouter([
   {
     path: '/',
     element: <Layout />,
@@ -31,6 +33,7 @@ export const router = createHashRouter([
       { path: 'join-token', element: <JoinTokenPage /> },
       { path: 'playground', element: <PlaygroundPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'audit', element: <AuditPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

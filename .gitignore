@@ -39,6 +39,7 @@ pki-state/
 *.ed25519.key
 license-signing-*.pem
 license-signing.key
+purser-license-signing.key
 
 # --- Internal solution-design & strategy docs (kept local, not published) ---
 docs/
@@ -52,3 +53,4 @@ docs/
 *.log
 *.swp
 .DS_Store
+CLAUDE.local.md

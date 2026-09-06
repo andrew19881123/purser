@@ -118,27 +118,20 @@ export const config = {
 /**
  * Call this when the control-plane API responds with 401 Unauthorized.
  *
- * When OIDC is configured the browser is redirected to the IdP authorization
- * endpoint so the user can log in with their corporate account
- * (EntraID / Okta / Keycloak). The redirect uses the authorization code flow
- * with openid+email scopes — no PKCE in v0.2, just the login redirect.
+ * When OIDC is configured the browser is redirected to the control plane's
+ * GET /auth/login endpoint, which handles PKCE state generation and the IdP
+ * redirect server-side. This keeps PKCE entirely server-managed and avoids
+ * exposing the code_verifier to the browser.
  *
  * When OIDC is not configured this is a no-op.
  */
 export function handleUnauthorized(): void {
-  const oidcCfg = config.oidc;
-  if (!oidcCfg) return;
-
-  // Build the IdP authorization URL. The path follows the OAuth 2.0 /
-  // OpenID Connect authorization endpoint convention used by EntraID, Okta,
-  // and Keycloak (all reachable at <issuer>/oauth2/v2.0/authorize or similar).
-  const authUrl = new URL(`${oidcCfg.issuer}/oauth2/v2.0/authorize`);
-  authUrl.searchParams.set('client_id', oidcCfg.clientId);
-  authUrl.searchParams.set('redirect_uri', oidcCfg.redirectUri);
-  authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('scope', 'openid email');
+  if (!config.oidc) return;
 
   if (typeof window !== 'undefined') {
-    window.location.href = authUrl.toString();
+    // Redirect to the control plane's login endpoint. The server generates
+    // the PKCE state/verifier pair, redirects to the IdP, and after a
+    // successful callback sets a session cookie and redirects back to /.
+    window.location.href = '/auth/login';
   }
 }

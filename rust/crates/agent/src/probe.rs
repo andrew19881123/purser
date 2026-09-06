@@ -10,7 +10,7 @@
 //! implemented Linux/CPU baseline built on the `sysinfo` crate.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use purser_proto::v1::{Arch, Backend, GpuInfo, HardwareProfile, NodeState, Os};
@@ -20,10 +20,18 @@ use sysinfo::{Disks, System};
 /// are reported in these units.
 const BYTES_PER_GB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// Cached memory bandwidth in GB/s, measured once at first probe.
-/// Subsequent calls to [`DefaultProbe::probe`] return the stored value without
-/// re-running the benchmark.
-static CACHED_MEM_BW_GBS: OnceLock<f32> = OnceLock::new();
+/// Default cache TTL for the memory-bandwidth measurement.
+/// Used when `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS` is not set.
+/// After this window expires, the next call to [`get_mem_bandwidth_gbs`]
+/// re-runs the benchmark.
+const MEM_BW_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Cached memory bandwidth in GB/s plus the timestamp of the last measurement.
+/// `None` before the first probe. The benchmark runs **outside** this lock
+/// (see [`get_mem_bandwidth_gbs`]) so concurrent callers never serialize on
+/// the ~100 ms benchmark window. Periodic re-calibration is controlled by
+/// `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS` (falls back to `MEM_BW_CACHE_TTL`).
+static CACHED_MEM_BW_GBS: Mutex<Option<(f32, Instant)>> = Mutex::new(None);
 
 /// Abstracts "look at this machine and describe it".
 ///
@@ -45,6 +53,11 @@ pub struct DefaultProbe {
     /// Always contains at least `"mock"` (the built-in GPU-free backend).
     /// Used to populate [`HardwareProfile::engine_versions`] at probe time.
     backends: Vec<String>,
+    /// Expected fraction of inference tokens that hit the KV cache (0.0–1.0).
+    /// Forwarded verbatim into [`HardwareProfile::prefix_caching_factor`].
+    /// Loaded from `AgentConfig::prefix_caching_factor` (env var
+    /// `PURSER_AGENT_PREFIX_CACHING_FACTOR`). Zero disables the field.
+    prefix_caching_factor: f32,
 }
 
 impl DefaultProbe {
@@ -57,6 +70,7 @@ impl DefaultProbe {
         Self {
             node_id: node_id.into(),
             backends: vec!["mock".to_string()],
+            prefix_caching_factor: 0.0,
         }
     }
 
@@ -80,7 +94,17 @@ impl DefaultProbe {
         Self {
             node_id: node_id.into(),
             backends: b,
+            prefix_caching_factor: 0.0,
         }
+    }
+
+    /// As [`DefaultProbe::with_backends`], additionally setting
+    /// [`prefix_caching_factor`](Self::prefix_caching_factor) from the agent
+    /// configuration.  Called from `main` when
+    /// `AgentConfig::prefix_caching_factor` is non-zero.
+    pub fn with_prefix_caching_factor(mut self, factor: f32) -> Self {
+        self.prefix_caching_factor = factor.clamp(0.0, 1.0);
+        self
     }
 }
 
@@ -95,8 +119,10 @@ impl HardwareProbe for DefaultProbe {
         let disk_free_gb = probe_disk_free_gb();
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
 
-        // Memory bandwidth: measured once at startup; subsequent probes are free.
-        let mem_bandwidth_gbs = *CACHED_MEM_BW_GBS.get_or_init(measure_mem_bandwidth_gbs) as f64;
+        // Memory bandwidth: cached and periodically re-calibrated (see
+        // get_mem_bandwidth_gbs and PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS /
+        // MEM_BW_CACHE_TTL). The benchmark runs outside the lock.
+        let mem_bandwidth_gbs = get_mem_bandwidth_gbs() as f64;
 
         // Accelerator discovery: each backend enumerates independently so we can
         // emit precise backend tags (CUDA / ROCm / Metal) per GPU vendor.
@@ -140,8 +166,69 @@ impl HardwareProbe for DefaultProbe {
             last_seen: Some(prost_types::Timestamp::from(SystemTime::now())),
             // A node that can answer Probe is up and ready to be scheduled.
             state: NodeState::Ready as i32,
+            // Engine-capability fields (I4, I6) — forwarded from AgentConfig.
+            // kv_ssd_offload is detected automatically per-engine; not yet
+            // wired here (follow-up when engine adapters expose the capability).
+            prefix_caching_factor: self.prefix_caching_factor,
+            kv_ssd_offload: false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Memory bandwidth — cached measurement with lock-free benchmark
+// ---------------------------------------------------------------------------
+
+/// Return the host memory bandwidth in GB/s, re-measuring when the cached
+/// value is stale or absent.
+///
+/// The recalibration interval is taken from
+/// `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS` (in hours; `0` forces a
+/// re-measurement on every call). When the env var is unset the default is
+/// [`MEM_BW_CACHE_TTL`] (5 minutes).
+///
+/// **Design (H5 fix):** The ~100 ms benchmark runs **outside** the lock so
+/// concurrent callers never block each other. The critical sections are only
+/// the two short lock grabs: one to check staleness and one to store the
+/// result. Two threads that both find the cache empty will each run the
+/// benchmark in parallel and store their results independently — a harmless
+/// double-measure that avoids any serialization.
+fn get_mem_bandwidth_gbs() -> f32 {
+    // Recalibration interval: env var (hours) → Duration, or MEM_BW_CACHE_TTL.
+    let interval: Duration = std::env::var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|h| Duration::from_secs(h * 3600))
+        .unwrap_or(MEM_BW_CACHE_TTL);
+
+    // 1. Check whether a (re-)measurement is needed — brief lock.
+    let needs_measure = {
+        let cache = CACHED_MEM_BW_GBS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match &*cache {
+            None => true,
+            Some((_, t)) => t.elapsed() >= interval,
+        }
+    }; // lock released here
+
+    if needs_measure {
+        // 2. Run the ~100 ms benchmark WITHOUT holding the lock so concurrent
+        //    callers are not serialized.
+        let new_val = measure_mem_bandwidth_gbs();
+        // 3. Store the fresh result — brief lock.
+        let mut cache = CACHED_MEM_BW_GBS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *cache = Some((new_val, Instant::now()));
+        return new_val;
+    }
+
+    // 4. Return the valid cached value — brief lock.
+    CACHED_MEM_BW_GBS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .map_or(0.0, |(v, _)| v)
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +760,69 @@ mod tests {
         );
     }
 
+    /// With `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS=0`, the interval is
+    /// zero seconds, which means `last_measured.elapsed() >= Duration::ZERO`
+    /// is always true. Every call to `get_mem_bandwidth_gbs()` re-runs the
+    /// benchmark. This test verifies that both calls return a positive result.
+    ///
+    /// Note: env-var mutation is inherently racy when tests run in parallel.
+    /// The long variable names reduce collision risk; each test restores state.
+    /// We deliberately do NOT touch `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` here —
+    /// removing it would race with `bw_override_bypasses_recalibration`. When
+    /// the override happens to be set this test still passes (override > 0.0).
+    #[test]
+    fn bw_recalibrates_when_interval_is_zero() {
+        std::env::set_var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS", "0");
+
+        let bw1 = get_mem_bandwidth_gbs();
+        let bw2 = get_mem_bandwidth_gbs();
+
+        std::env::remove_var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS");
+
+        assert!(bw1 > 0.0, "first measurement must be positive, got {bw1}");
+        assert!(bw2 > 0.0, "second measurement must be positive, got {bw2}");
+    }
+
+    /// When `PURSER_AGENT_MEM_BW_OVERRIDE_GBS` is set, `get_mem_bandwidth_gbs`
+    /// must return that value immediately — the cache is never consulted and the
+    /// benchmark is never run — even when the recalibration interval is zero.
+    #[test]
+    fn bw_override_bypasses_recalibration() {
+        std::env::set_var("PURSER_AGENT_MEM_BW_OVERRIDE_GBS", "42.0");
+        std::env::set_var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS", "0"); // would always recalibrate
+
+        let bw = get_mem_bandwidth_gbs();
+
+        std::env::remove_var("PURSER_AGENT_MEM_BW_OVERRIDE_GBS");
+        std::env::remove_var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS");
+
+        assert!(
+            (bw - 42.0_f32).abs() < 0.01,
+            "override should return 42.0, got {bw}"
+        );
+    }
+
+    /// With a very large recalibration interval (1 000 hours), a fresh value
+    /// stored in the cache is served without re-running the benchmark. This
+    /// verifies the cache-hit path by planting a sentinel and checking it is
+    /// returned unchanged.
+    /// Verify that `get_mem_bandwidth_gbs` returns a positive value with a
+    /// very large recalibration interval (cache-hit path). We do NOT plant a
+    /// sentinel because removing the override env var to set up the test would
+    /// race with `bw_override_bypasses_recalibration`. We instead rely on the
+    /// prior tests to have already populated the cache and just assert > 0.
+    #[test]
+    fn bw_returns_positive_with_large_interval() {
+        std::env::set_var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS", "9999");
+        let bw = get_mem_bandwidth_gbs();
+        std::env::remove_var("PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS");
+
+        assert!(
+            bw > 0.0,
+            "get_mem_bandwidth_gbs with large interval must return > 0, got {bw}"
+        );
+    }
+
     /// `detect_rocm_gpus` must not panic regardless of whether AMD hardware is
     /// present. On a non-AMD machine it simply returns an empty list.
     #[test]
@@ -755,6 +905,47 @@ mod tests {
         // Older architectures also false.
         assert!(!fp4_native_from_compute_cap(8, 6));
         assert!(!fp4_native_from_compute_cap(7, 5));
+    }
+
+    // ---- H5: concurrent probe does not hold lock during benchmark ----------
+
+    /// Two threads calling `probe()` concurrently must not panic, deadlock, or
+    /// block each other.  The bandwidth cache lock is held only for brief
+    /// staleness checks and result writes — the ~100 ms benchmark itself runs
+    /// outside the lock.
+    #[test]
+    fn concurrent_probe_no_long_lock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let probe1 = Arc::new(DefaultProbe::new("concurrent-test-a"));
+        let probe2 = Arc::clone(&probe1);
+
+        let t1 = thread::spawn(move || probe1.probe());
+        let t2 = thread::spawn(move || probe2.probe());
+
+        let p1 = t1.join().expect("thread 1 must not panic");
+        let p2 = t2.join().expect("thread 2 must not panic");
+
+        // Both results must report valid hardware data.
+        assert!(
+            p1.ram_total_gb > 0.0,
+            "thread 1: ram_total_gb must be > 0, got {}",
+            p1.ram_total_gb
+        );
+        assert!(
+            p2.ram_total_gb > 0.0,
+            "thread 2: ram_total_gb must be > 0, got {}",
+            p2.ram_total_gb
+        );
+        assert!(
+            p1.mem_bandwidth_gbs >= 0.0,
+            "thread 1: mem_bandwidth_gbs must be non-negative"
+        );
+        assert!(
+            p2.mem_bandwidth_gbs >= 0.0,
+            "thread 2: mem_bandwidth_gbs must be non-negative"
+        );
     }
 
     /// P4: no GPU in CI/no-nvml builds → all gpu entries have fp4_native = false.

@@ -14,6 +14,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { api, type CreateApiKeyInput } from '../api/client';
+import { config } from '../api/config';
 import type { ChatClient } from '../api/openai';
 import type { DeployOverrides, ImportSource, MetricsSnapshot } from '../api/types';
 
@@ -30,6 +31,7 @@ export const qk = {
   join: ['join'] as const,
   apiKeys: ['apiKeys'] as const,
   gatewayModels: (baseUrl: string) => ['gatewayModels', baseUrl] as const,
+  reconcilerStatus: ['reconcilerStatus'] as const,
 };
 
 // --- fleet ------------------------------------------------------------------
@@ -68,6 +70,35 @@ export function useNodeAction() {
   return { drain, restart, remove };
 }
 
+// --- reconciler status ------------------------------------------------------
+
+/**
+ * Live reconciler health: state machine phase, last-sync timestamp, and pending
+ * / error counts. Backed by GET /api/v1/reconciler/status (v0.3+ endpoint).
+ * When the endpoint is absent (older control plane) the query enters the error
+ * state after one retry — FleetPage renders a "Status unknown" badge instead of
+ * crashing or hiding the card entirely.
+ */
+export interface ReconcilerStatus {
+  state: 'idle' | 'syncing' | 'error';
+  lastSyncAt: string | null;
+  pendingCount: number;
+  errorCount: number;
+}
+
+export function useReconcilerStatus() {
+  return useQuery({
+    queryKey: qk.reconcilerStatus,
+    queryFn: (): Promise<ReconcilerStatus> =>
+      fetch(`${config.apiBase}/reconciler/status`, { credentials: 'same-origin' }).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<ReconcilerStatus>;
+      }),
+    retry: 1,
+    retryDelay: 2000,
+  });
+}
+
 // --- catalog / model --------------------------------------------------------
 
 export function useCatalog() {
@@ -85,6 +116,19 @@ export function useImportModel() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (source: ImportSource) => api.importModel(source),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.catalog }),
+  });
+}
+
+/**
+ * Mutation: delete a model from the catalog.
+ * On success the catalog cache is invalidated. On 409 the error is surfaced to the caller
+ * (model is referenced by active deployments — tear them down first).
+ */
+export function useDeleteModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (modelId: string) => api.deleteModel(modelId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.catalog }),
   });
 }
@@ -116,6 +160,17 @@ export function useModel(id: string | undefined) {
     queryKey: qk.model(id ?? ''),
     queryFn: () => api.getModel(id as string),
     enabled: Boolean(id),
+  });
+}
+
+// --- model health -----------------------------------------------------------
+
+export function useModelHealth(modelId: string | undefined) {
+  return useQuery({
+    queryKey: ['modelHealth', modelId],
+    queryFn: () => api.getModelHealth(modelId!),
+    enabled: !!modelId,
+    refetchInterval: 10_000,
   });
 }
 
@@ -222,6 +277,34 @@ export function useRevokeApiKey() {
   });
 }
 
+// --- usage ------------------------------------------------------------------
+
+export function useKeyUsage(keyId: string | undefined) {
+  return useQuery({
+    queryKey: ['keyUsage', keyId],
+    queryFn: () => api.getKeyUsage(keyId!),
+    enabled: !!keyId,
+  });
+}
+
+export function useUsageSummary() {
+  return useQuery({ queryKey: ['usageSummary'], queryFn: () => api.getUsageSummary() });
+}
+
+export function useEnterpriseStatus() {
+  return useQuery({ queryKey: ['enterpriseStatus'], queryFn: () => api.getEnterpriseStatus() });
+}
+
+// --- enterprise -------------------------------------------------------------
+
+export function useAuditLog(limit = 100) {
+  return useQuery({
+    queryKey: ['auditLog', limit],
+    queryFn: () => api.getAuditLog(limit),
+  });
+}
+
+
 // --- gateway (playground) ---------------------------------------------------
 
 /** GET /v1/models on the Gateway (mock or real, per the chat client). */
@@ -239,18 +322,24 @@ export function useGatewayModels(chatClient: ChatClient) {
 
 /**
  * Subscribe to GET /api/v1/metrics for the lifetime of the component and expose
- * the latest snapshot. Returns null until the first frame arrives (or if the
- * stream errors), so callers can gracefully fall back to polled data.
+ * the latest snapshot. Returns null snapshot until the first frame arrives.
+ * `streamError` is set when the SSE stream errors so callers can show a stale
+ * data warning while still displaying the last known values.
  */
-export function useMetricsStream(): MetricsSnapshot | null {
+export function useMetricsStream(): { snapshot: MetricsSnapshot | null; streamError: boolean } {
   const [snapshot, setSnapshot] = useState<MetricsSnapshot | null>(null);
+  const [streamError, setStreamError] = useState(false);
   useEffect(() => {
     let alive = true;
     const stop = api.streamMetrics({
       onMetrics: (s) => {
-        if (alive) setSnapshot(s);
+        if (alive) {
+          setSnapshot(s);
+          setStreamError(false);
+        }
       },
       onError: () => {
+        if (alive) setStreamError(true);
         /* keep the last good snapshot; polled data covers the gap */
       },
     });
@@ -259,5 +348,5 @@ export function useMetricsStream(): MetricsSnapshot | null {
       stop();
     };
   }, []);
-  return snapshot;
+  return { snapshot, streamError };
 }
