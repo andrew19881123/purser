@@ -83,4 +83,6 @@ nav:
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Gateway (/v1 OpenAI): api/gateway.md
+  - Development:
+    - Benchmarking the Planner: development/benchmarking.md
   - Changelog: changelog.md

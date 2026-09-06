@@ -1,0 +1,31 @@
+# Planner micro-benchmark baseline
+#
+# Run: go test ./plan/... -bench=. -benchmem -count=1 -run='^$'
+# Machine: 11th Gen Intel Core i7-11390H @ 3.40 GHz, linux/amd64
+# Go:      (project toolchain — see env.sh)
+# Date:    2026-09-06
+#
+# To compare against a new run:
+#   go test ./plan/... -bench=. -benchmem -count=5 -run='^$' > new.txt
+#   benchstat bench_baseline.txt new.txt
+#
+# Scenario notes (node spec: 24 GB VRAM / 56 GB RAM / 200 GB/s):
+#   SmallFleet     — 4 nodes, 7B q4 model   → single-node plan (rule G3)
+#   MediumFleet    — 20 nodes, 100B q4 model → 3-node pipeline split
+#   LargeFleet     — 100 nodes, 80B q8 model → 8-node pipeline split
+#   NoFit          — 4 nodes, 500B q4 model  → early-exit PlanError (phase A)
+#   ForceNodeCount — 4 nodes, 7B q4, count=1 → forced single-node + validatePlanMemory
+#   FitAll         — 20 nodes, 10-model catalog → full phase A–F pipeline
+
+goos: linux
+goarch: amd64
+pkg: github.com/purser/purser/go/planner/plan
+cpu: 11th Gen Intel(R) Core(TM) i7-11390H @ 3.40GHz
+BenchmarkPlanSmallFleet-8       	  162116	      8912 ns/op	    6515 B/op	      72 allocs/op
+BenchmarkPlanMediumFleet-8      	     100	  10930830 ns/op	 1037021 B/op	   11209 allocs/op
+BenchmarkPlanLargeFleet-8       	      30	  36355833 ns/op	 8851529 B/op	   79221 allocs/op
+BenchmarkPlanNoFit-8            	 1756676	       667.7 ns/op	     744 B/op	       7 allocs/op
+BenchmarkPlanForceNodeCount-8   	  148372	      7426 ns/op	    6403 B/op	      72 allocs/op
+BenchmarkFitAll-8               	      12	  99629336 ns/op	19060470 B/op	  179853 allocs/op
+PASS
+ok  	github.com/purser/purser/go/planner/plan	7.995s

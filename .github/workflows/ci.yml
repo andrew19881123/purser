@@ -65,6 +65,13 @@ jobs:
       - name: test
         working-directory: go/${{ matrix.module }}
         run: go test ./...
+      - name: benchmark
+        if: matrix.module == 'planner'
+        working-directory: go/planner
+        run: |
+          CGO_ENABLED=0 go test ./plan/... -bench=. -benchmem -benchtime=1x \
+            -run='^$' 2>&1 | tee /tmp/planner-bench-results.txt
+          cat /tmp/planner-bench-results.txt
       - name: gofmt
         run: |
           files=$(gofmt -l go enterprise/license)

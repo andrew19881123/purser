@@ -23,7 +23,7 @@ graph LR
 | **API Gateway** | Rust | `rust/crates/gateway` | OpenAI-compatible `/v1` endpoint, auth, quota, route-sync from Control Plane |
 | **Agent** | Rust | `rust/crates/agent` | Per-node daemon: hardware probe, link benchmark, engine supervisor, model cache, mDNS / SWIM discovery |
 | **Engine Adapter** | Rust | `rust/crates/engine-adapter` | `EngineBackend` trait; mock backend (default) and llama.cpp backend |
-| **Planner** | Go | `go/planner` | Dynamic-programming optimal layer-split algorithm |
+| **Planner** | Go | `go/planner` | Dynamic-programming optimal layer-split algorithm; micro-benchmark suite covers single-node, 3-node, 8-node, no-fit, and full catalog scenarios (see [Benchmarking the Planner](../development/benchmarking.md)) |
 | **Dashboard UI** | TypeScript/React | `ui/` | SPA for fleet view, model catalog, deploy, and chat playground |
 | **Proto contracts** | Protobuf | `proto/purser/v1` | Source of truth for gRPC types, generating both Go and Rust bindings |
 
