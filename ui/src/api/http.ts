@@ -36,6 +36,7 @@ import type {
   LinkQuality,
   MetricsSnapshot,
   MetricsStreamHandlers,
+  ModelHealth,
   ModelSpec,
   NodeLoadStatus,
   NodeView,
@@ -466,6 +467,10 @@ export function createHttpApi(baseUrl: string): PurserApi {
           };
           return { feasible: true, plan: normalizePlan(merged) };
         }),
+
+    // GET /api/v1/models/{id}/health — operational health of a deployed model.
+    getModelHealth: (modelId: string) =>
+      request<unknown>(`/models/${enc(modelId)}/health`).then((raw) => raw as ModelHealth),
 
     // --- deployments ---
     // Dry-run plan (preview). Conventional path alongside POST .../deploy.

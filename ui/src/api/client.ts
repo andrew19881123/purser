@@ -27,6 +27,7 @@ import type {
   JoinInfo,
   JoinTokenResult,
   MetricsStreamHandlers,
+  ModelHealth,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
@@ -59,6 +60,8 @@ export interface PurserApi {
   importModel(source: ImportSource): Promise<ModelSpec>;
   /** POST /api/v1/models/{id}/plan — dry-run plan; returns feasibility + split diagram. */
   previewModelPlan(modelId: string): Promise<PlanPreviewResult>;
+  /** GET /api/v1/models/{id}/health — operational health of a deployed model. */
+  getModelHealth(modelId: string): Promise<ModelHealth>;
 
   // --- deployments ---
   planDeployment(modelId: string, overrides: DeployOverrides): Promise<DeploymentPlan>;

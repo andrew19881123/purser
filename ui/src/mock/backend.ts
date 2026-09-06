@@ -17,6 +17,8 @@ import type {
   JoinTokenResult,
   MetricsSnapshot,
   MetricsStreamHandlers,
+  ModelHealth,
+  ModelHealthStatus,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
@@ -176,6 +178,38 @@ export const mockBackend: PurserApi = {
       importedModels.push(structuredClone(spec));
     }
     return delay(structuredClone(spec), 700);
+  },
+
+  getModelHealth(modelId: string): Promise<ModelHealth> {
+    // Find the most-recent deployment for this model.
+    let latest: Deployment | undefined;
+    for (const dep of deployments.values()) {
+      if (dep.plan.modelId === modelId) {
+        if (!latest || new Date(dep.createdAt) > new Date(latest.createdAt)) {
+          latest = dep;
+        }
+      }
+    }
+    if (!latest) {
+      return delay<ModelHealth>({
+        modelId,
+        status: 'unavailable',
+        deploymentId: '',
+        deploymentState: '',
+        nodeCount: 0,
+        errorMessage: 'no deployment found for this model',
+      });
+    }
+    let status: ModelHealthStatus = 'unavailable';
+    if (latest.state === 'active') status = 'healthy';
+    else if (latest.state === 'provisioning' || latest.state === 'stopping') status = 'degraded';
+    return delay<ModelHealth>({
+      modelId,
+      status,
+      deploymentId: latest.id,
+      deploymentState: latest.state,
+      nodeCount: latest.nodeStatus.length,
+    });
   },
 
   previewModelPlan(modelId: string): Promise<PlanPreviewResult> {
