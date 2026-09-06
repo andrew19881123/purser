@@ -434,3 +434,23 @@ type GDPRErasureLog struct {
 	EventsErased int64     `json:"events_erased"`
 	ErasureType  string    `json:"erasure_type"`
 }
+
+// ServiceAccount is a machine identity for CI/CD and automation use cases.
+// It participates in the OAuth2 client_credentials grant: the client_secret
+// is exchanged for a short-lived (15 min) HMAC-signed JWT via POST /auth/token
+// so the secret never travels on subsequent API requests.
+// ClientSecretHash is never exposed in JSON responses (json:"-").
+type ServiceAccount struct {
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	Tenant           string     `json:"tenant"`
+	Role             string     `json:"role"`
+	Scopes           []string   `json:"scopes,omitempty"`
+	ClientID         string     `json:"client_id"`
+	ClientSecretHash string     `json:"-"`
+	Enabled          bool       `json:"enabled"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}

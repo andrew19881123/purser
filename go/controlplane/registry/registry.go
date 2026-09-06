@@ -72,6 +72,26 @@ type Registry interface {
 	// and enforce fail-closed authentication when no Bearer token is presented.
 	HasAnyAPIKey(ctx context.Context) (bool, error)
 
+	// --- Service Accounts (OAuth2 client_credentials machine auth) ---------
+	// CreateServiceAccount generates a client_id and client_secret, stores only
+	// the SHA-256 hex hash of the secret, and returns the plaintext secret
+	// exactly once. The caller must present secret to POST /auth/token to obtain
+	// a short-lived JWT.
+	CreateServiceAccount(ctx context.Context, sa *ServiceAccount) (clientSecret string, err error)
+	// GetServiceAccountByClientID returns the enabled, non-expired service
+	// account with the given client_id. Returns ErrNotFound when no match.
+	GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error)
+	// ListServiceAccounts returns all service accounts. When tenant is non-empty,
+	// only accounts belonging to that tenant are returned.
+	ListServiceAccounts(ctx context.Context, tenant string) ([]*ServiceAccount, error)
+	// RevokeServiceAccount soft-deletes a service account (sets enabled=0).
+	// Returns ErrNotFound when no account with id exists.
+	RevokeServiceAccount(ctx context.Context, id string) error
+	// UpdateServiceAccountLastUsed updates the last_used_at timestamp for the
+	// given account. Callers should throttle this to avoid write amplification
+	// on the token-issuance hot-path.
+	UpdateServiceAccountLastUsed(ctx context.Context, id string, at time.Time) error
+
 	// --- Certs (internal PKI) ----------------------------------------------
 	CreateCert(ctx context.Context, c *Cert) error
 	GetCert(ctx context.Context, serial string) (*Cert, error)

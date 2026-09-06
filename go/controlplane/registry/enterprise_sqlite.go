@@ -10,6 +10,9 @@ package registry
 //   * Wave B real implementations (API key lifecycle):
 //     RotateAPIKey, UpdateAPIKeyLastUsed, ListAPIKeysExpiringBefore,
 //     RecordAPIKeyAccess, HasAnyAPIKey, ListAPIKeyAccessLog.
+//   * Service account implementations (OAuth2 client_credentials machine auth, v0.3):
+//     CreateServiceAccount, GetServiceAccountByClientID, ListServiceAccounts,
+//     RevokeServiceAccount, UpdateServiceAccountLastUsed.
 //   * Stubs for remaining Wave B methods: model pricing, tenant quotas,
 //     policy versions, GDPR erasure — each returns errNotImplemented.
 //
@@ -19,7 +22,11 @@ package registry
 
 import (
 	"context"
+	crand "crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -357,6 +364,106 @@ func (r *SQLiteRegistry) ListAPIKeysExpiringBefore(ctx context.Context, before t
 	return out, rows.Err()
 }
 
+// --- Service Account helpers -------------------------------------------------
+
+// saGenHexID generates a random hex string of n bytes (so 2n hex characters).
+// Used to mint service-account IDs and client IDs.
+func saGenHexID(n int) string {
+	b := make([]byte, n)
+	_, _ = crand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// --- Service Account methods -------------------------------------------------
+
+// CreateServiceAccount generates a client_id and a random client_secret,
+// stores only the SHA-256 hex hash of the secret, and returns the plaintext
+// secret exactly once. Fields ID, ClientID, ClientSecretHash, CreatedAt, and
+// UpdatedAt are written back into sa.
+func (r *SQLiteRegistry) CreateServiceAccount(ctx context.Context, sa *ServiceAccount) (string, error) {
+	sa.ID = "sa-" + saGenHexID(8)       // "sa-" + 16 hex chars
+	sa.ClientID = "sa_" + saGenHexID(4) // "sa_" + 8 hex chars
+
+	// Generate a cryptographically random client_secret.
+	secretBytes := make([]byte, 32)
+	if _, err := crand.Read(secretBytes); err != nil {
+		return "", fmt.Errorf("registry: create_service_account: generate secret: %w", err)
+	}
+	clientSecret := base64.RawURLEncoding.EncodeToString(secretBytes)
+
+	// Persist only the SHA-256 hex hash — never the plaintext.
+	sum := sha256.Sum256([]byte(clientSecret))
+	sa.ClientSecretHash = hex.EncodeToString(sum[:])
+
+	now := nowUTC()
+	sa.CreatedAt = now
+	sa.UpdatedAt = now
+
+	if sa.Role == "" {
+		sa.Role = "inference"
+	}
+
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO service_accounts
+		 (id, name, tenant, role, scopes, client_id, client_secret_hash,
+		  enabled, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		sa.ID, sa.Name, sa.Tenant, sa.Role, scopesJSON(sa.Scopes),
+		sa.ClientID, sa.ClientSecretHash,
+		fmtNullTimePtr(sa.ExpiresAt), fmtTime(now), fmtTime(now),
+	)
+	if err != nil {
+		return "", fmt.Errorf("registry: create_service_account: %w", err)
+	}
+	return clientSecret, nil
+}
+
+// GetServiceAccountByClientID returns the enabled, non-expired service account
+// with the given client_id. Returns ErrNotFound when no matching row exists.
+func (r *SQLiteRegistry) GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT id, name, tenant, role, scopes, client_id, client_secret_hash,
+		        enabled, expires_at, last_used_at, created_at, updated_at
+		 FROM service_accounts
+		 WHERE client_id=? AND enabled=1
+		   AND (expires_at IS NULL OR expires_at > ?)`,
+		clientID, fmtTime(time.Now()),
+	)
+	return scanServiceAccount(row)
+}
+
+// ListServiceAccounts returns service accounts, optionally filtered by tenant.
+// When tenant is empty, all accounts (across all tenants) are returned.
+// Results are ordered by created_at DESC (newest first).
+func (r *SQLiteRegistry) ListServiceAccounts(ctx context.Context, tenant string) ([]*ServiceAccount, error) {
+	const cols = `id, name, tenant, role, scopes, client_id, client_secret_hash,
+	              enabled, expires_at, last_used_at, created_at, updated_at`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if tenant == "" {
+		rows, err = r.db.QueryContext(ctx,
+			`SELECT `+cols+` FROM service_accounts ORDER BY created_at DESC`)
+	} else {
+		rows, err = r.db.QueryContext(ctx,
+			`SELECT `+cols+` FROM service_accounts WHERE tenant=? ORDER BY created_at DESC`, tenant)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("registry: list_service_accounts: %w", err)
+	}
+	defer rows.Close()
+	var out []*ServiceAccount
+	for rows.Next() {
+		sa, err := scanServiceAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("registry: list_service_accounts scan: %w", err)
+		}
+		out = append(out, sa)
+	}
+	return out, rows.Err()
+}
+
 // RecordAPIKeyAccess appends one row to api_key_access_log. The caller is
 // responsible for extracting only the /24 prefix of the client IP before
 // calling this method (GDPR Art.5 data minimisation).
@@ -367,6 +474,32 @@ func (r *SQLiteRegistry) RecordAPIKeyAccess(ctx context.Context, entry *APIKeyAc
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.APIKeyID, entry.KeyHash, entry.Method, entry.Path,
 		entry.IPPrefix, entry.UserAgent, entry.StatusCode, fmtTime(entry.RequestAt),
+	)
+	return err
+}
+
+// RevokeServiceAccount soft-deletes the service account with the given id
+// (sets enabled=0, updated_at=now). Returns ErrNotFound when the row does
+// not exist or is already revoked.
+func (r *SQLiteRegistry) RevokeServiceAccount(ctx context.Context, id string) error {
+	now := nowUTC()
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE service_accounts SET enabled=0, updated_at=? WHERE id=?`,
+		fmtTime(now), id,
+	)
+	if err != nil {
+		return fmt.Errorf("registry: revoke_service_account: %w", err)
+	}
+	return mustAffect(res, "service_account", id)
+}
+
+// UpdateServiceAccountLastUsed sets the last_used_at timestamp for the given
+// account. Callers are responsible for throttling calls to avoid write
+// amplification on the token-issuance hot-path.
+func (r *SQLiteRegistry) UpdateServiceAccountLastUsed(ctx context.Context, id string, at time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE service_accounts SET last_used_at=?, updated_at=? WHERE id=?`,
+		fmtTime(at), fmtTime(at), id,
 	)
 	return err
 }
@@ -468,4 +601,48 @@ func (r *SQLiteRegistry) RecordGDPRErasure(_ context.Context, _ *GDPRErasureLog)
 
 func (r *SQLiteRegistry) EraseInferenceEventsBySubject(_ context.Context, _ string) (int64, error) {
 	return 0, errNotImplemented
+}
+
+// --- internal scan helper ----------------------------------------------------
+
+// scanServiceAccount scans one row from a service_accounts SELECT. It accepts
+// both *sql.Row and *sql.Rows via the common Scan interface.
+func scanServiceAccount(s interface{ Scan(...any) error }) (*ServiceAccount, error) {
+	var (
+		sa         ServiceAccount
+		scopes     string
+		enabled    int64
+		expiresAt  sql.NullString
+		lastUsedAt sql.NullString
+		createdAt  sql.NullString
+		updatedAt  sql.NullString
+	)
+	err := s.Scan(
+		&sa.ID, &sa.Name, &sa.Tenant, &sa.Role, &scopes, &sa.ClientID,
+		&sa.ClientSecretHash, &enabled, &expiresAt, &lastUsedAt,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	sa.Enabled = enabled != 0
+	sa.CreatedAt = parseTime(createdAt)
+	sa.UpdatedAt = parseTime(updatedAt)
+	if expiresAt.Valid && expiresAt.String != "" {
+		if t, err := time.Parse(tsLayout, expiresAt.String); err == nil {
+			sa.ExpiresAt = &t
+		}
+	}
+	if lastUsedAt.Valid && lastUsedAt.String != "" {
+		if t, err := time.Parse(tsLayout, lastUsedAt.String); err == nil {
+			sa.LastUsedAt = &t
+		}
+	}
+	if scopes != "" && scopes != "[]" {
+		_ = json.Unmarshal([]byte(scopes), &sa.Scopes)
+	}
+	return &sa, nil
 }

@@ -532,17 +532,22 @@ func New(reg registry.Registry, cfg Config) *Server {
 		s.oidcConfig = cfg.OIDC
 	}
 
-	// Session secret for session cookie signing. Used by both signSession and
-	// verifySession. When not provided and OIDC is configured, auto-generate an
-	// ephemeral key (sessions expire on process restart).
+	// Session secret for signing session cookies (OIDC) and service account
+	// JWTs. Always generated: service account token issuance requires a signing
+	// key even when OIDC is disabled. An explicit PURSER_SESSION_SECRET ensures
+	// tokens survive process restarts; the ephemeral fallback is safe for
+	// development and short-lived CI environments.
 	if len(cfg.SessionSecret) > 0 {
 		s.sessionSecret = cfg.SessionSecret
-	} else if s.oidcVerifier != nil {
-		s.sessionSecret = make([]byte, 32)
-		if _, err := rand.Read(s.sessionSecret); err != nil {
+	} else {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
 			panic("purser: generate ephemeral session secret: " + err.Error())
 		}
-		logger.Warn("PURSER_SESSION_SECRET not set; using ephemeral key (sessions expire on restart)")
+		s.sessionSecret = key
+		if s.oidcVerifier != nil {
+			logger.Warn("PURSER_SESSION_SECRET not set; using ephemeral key (sessions expire on restart)")
+		}
 	}
 
 	// PKCE state store: always initialised so the auth endpoints are ready.
@@ -877,6 +882,9 @@ var rbacPublicPaths = map[string]bool{
 	"/api/v1/cluster/health": true,
 	"/api/v1/cluster/status": true,
 	"/api/v1/openapi.json":   true,
+	// /auth/token is the OAuth2 client_credentials token endpoint — it IS the
+	// authentication endpoint and must be reachable without a prior credential.
+	"/auth/token": true,
 }
 
 // rbacMiddleware enforces role-based access control on every request based on
@@ -949,6 +957,37 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 			}
 			return
+		}
+
+		// 2c. Service account JWT: HMAC-signed token issued by POST /auth/token.
+		// Format: base64url(payload_json).base64url(hmac_sig). Verified in-memory
+		// — no DB lookup required so the hot-path stays O(1).
+		if token != "" {
+			if claims, ok := s.parseServiceAccountToken(token); ok {
+				switch claims.Role {
+				case "admin":
+					next.ServeHTTP(w, r)
+				case "viewer":
+					if r.Method != http.MethodGet {
+						s.writeJSON(w, http.StatusForbidden, map[string]any{
+							"error":   "forbidden",
+							"message": "service account viewer role allows read-only access",
+						})
+						return
+					}
+					next.ServeHTTP(w, r)
+				default: // "inference" or unknown
+					if strings.HasPrefix(r.URL.Path, "/api/v1/") {
+						s.writeJSON(w, http.StatusForbidden, map[string]any{
+							"error":   "forbidden",
+							"message": "service account inference role cannot manage the cluster",
+						})
+						return
+					}
+					next.ServeHTTP(w, r)
+				}
+				return
+			}
 		}
 
 		// 3. No token → fail-closed for /api/v1/* when auth is configured.
@@ -1222,6 +1261,15 @@ func (s *Server) routes() {
 	// Backchannel logout: called by the IdP when a user session ends at the
 	// IdP side. No user credential is presented — the IdP signs the token.
 	s.mux.HandleFunc("POST /auth/backchannel-logout", s.handleBackchannelLogout)
+
+	// OAuth2 client_credentials token endpoint — no auth required (IS the auth).
+	// /auth/token is in rbacPublicPaths so it bypasses key/RBAC checks.
+	s.mux.HandleFunc("POST /auth/token", s.handleTokenEndpoint)
+
+	// Service account management (admin only).
+	s.mux.HandleFunc("POST /api/v1/service-accounts", s.handleCreateServiceAccount)
+	s.mux.HandleFunc("GET /api/v1/service-accounts", s.handleListServiceAccounts)
+	s.mux.HandleFunc("DELETE /api/v1/service-accounts/{id}", s.handleRevokeServiceAccount)
 
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)

@@ -262,22 +262,6 @@ CREATE TABLE IF NOT EXISTS pkce_state (
 );
 CREATE INDEX IF NOT EXISTS idx_pkce_state_expires ON pkce_state(expires_at);
 
--- api_key_access_log: per-request access log for API key audit and anomaly
--- detection. ip_prefix stores the /24 CIDR prefix only (GDPR data minimisation).
-CREATE TABLE IF NOT EXISTS api_key_access_log (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    api_key_id   TEXT    NOT NULL,
-    key_hash     TEXT    NOT NULL,
-    method       TEXT    NOT NULL DEFAULT '',
-    path         TEXT    NOT NULL DEFAULT '',
-    ip_prefix    TEXT    NOT NULL DEFAULT '',  -- /24 CIDR, GDPR data minimisation
-    user_agent   TEXT    NOT NULL DEFAULT '',
-    status_code  INTEGER NOT NULL DEFAULT 0,
-    request_at   TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_akacl_key_id     ON api_key_access_log(api_key_id, request_at);
-CREATE INDEX IF NOT EXISTS idx_akacl_request_at ON api_key_access_log(request_at);
-
 -- model_pricing: cost schedule per model. The most-recent row per model_id
 -- (highest effective_from) is the active price. tiers is a JSON array:
 -- [{"threshold_tokens": N, "multiplier": M}, ...] for volume discounts.
@@ -349,3 +333,24 @@ CREATE TABLE IF NOT EXISTS gdpr_erasure_log (
     events_erased     INTEGER NOT NULL DEFAULT 0,
     erasure_type      TEXT    NOT NULL DEFAULT 'inference_audit'
 );
+
+-- service_accounts: machine identities for CI/CD OAuth2 client_credentials flow.
+-- client_secret is never stored; only its SHA-256 hex hash is persisted.
+-- The client_credentials grant issues short-lived (15 min) HMAC-signed JWTs
+-- so the secret never travels on subsequent requests.
+CREATE TABLE IF NOT EXISTS service_accounts (
+    id                 TEXT    PRIMARY KEY,
+    name               TEXT    NOT NULL,
+    tenant             TEXT    NOT NULL DEFAULT '',
+    role               TEXT    NOT NULL DEFAULT 'inference',
+    scopes             TEXT    NOT NULL DEFAULT '[]',
+    client_id          TEXT    NOT NULL UNIQUE,
+    client_secret_hash TEXT    NOT NULL,
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    expires_at         TEXT,            -- NULL = never expires
+    last_used_at       TEXT,            -- NULL = never used; throttled writes
+    created_at         TEXT    NOT NULL,
+    updated_at         TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sa_client_id ON service_accounts(client_id);
+CREATE INDEX IF NOT EXISTS idx_sa_tenant ON service_accounts(tenant);

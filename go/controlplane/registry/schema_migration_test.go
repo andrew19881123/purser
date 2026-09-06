@@ -7,17 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newTestRegistry returns a freshly migrated in-memory registry for schema
-// tests. It delegates to openTemp (defined in sqlite_test.go).
-func newTestRegistry(t *testing.T) registry.Registry {
-	t.Helper()
-	return openTemp(t)
-}
-
 // TestSchemaMigrationAddsNewTables verifies that every Wave B table exists in
 // the schema after a fresh Migrate.
 func TestSchemaMigrationAddsNewTables(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg := openTemp(t)
 	tables := []string{
 		"oidc_sessions",
 		"pkce_state",
@@ -27,6 +20,7 @@ func TestSchemaMigrationAddsNewTables(t *testing.T) {
 		"tenant_quota_usage",
 		"policy_versions",
 		"gdpr_erasure_log",
+		"service_accounts",
 	}
 	sr := reg.(*registry.SQLiteRegistry)
 	for _, tbl := range tables {
@@ -42,7 +36,7 @@ func TestSchemaMigrationAddsNewTables(t *testing.T) {
 // TestAPIKeyExpiresAtColumnExists verifies that the enterprise lifecycle
 // columns are present in api_keys after a fresh Migrate.
 func TestAPIKeyExpiresAtColumnExists(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg := openTemp(t)
 	sr := reg.(*registry.SQLiteRegistry)
 	// Insert a row with expires_at to confirm the column is present.
 	_, err := sr.DB().Exec(
@@ -59,7 +53,7 @@ func TestAPIKeyExpiresAtColumnExists(t *testing.T) {
 // TestAPIKeyEnterpriseColumnsExist verifies that all five enterprise lifecycle
 // columns were added to the api_keys table.
 func TestAPIKeyEnterpriseColumnsExist(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg := openTemp(t)
 	sr := reg.(*registry.SQLiteRegistry)
 
 	rows, err := sr.DB().Query("PRAGMA table_info(api_keys)")
@@ -94,7 +88,7 @@ func TestAPIKeyEnterpriseColumnsExist(t *testing.T) {
 // TestInferenceAuditLogModelVersionColumns verifies that the AI Act Art.12
 // model-version tracking columns were added to inference_audit_log.
 func TestInferenceAuditLogModelVersionColumns(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg := openTemp(t)
 	sr := reg.(*registry.SQLiteRegistry)
 
 	rows, err := sr.DB().Query("PRAGMA table_info(inference_audit_log)")
