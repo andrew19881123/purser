@@ -66,6 +66,43 @@ purser apikeys create --name my-viewer --role viewer
 - A viewer key attempting a `POST`, `PUT`, `PATCH`, or `DELETE` request also
   receives `403 Forbidden` before the request reaches any handler.
 
+## Tenant isolation
+
+Purser scopes list responses to the requesting principal's tenant so that
+viewers in one tenant cannot enumerate resources belonging to another.
+
+### How it works
+
+Every request is inspected by `extractRequestTenant` before a list query runs:
+
+| Authenticated as | Tenant scope |
+|---|---|
+| Admin API key | All tenants (unrestricted) |
+| Viewer / inference API key | Key's own `tenant` field only |
+| Viewer API key with empty `tenant` | All tenants (global viewer) |
+| OIDC viewer with `tid`/`tenant_id` claim | Claim's tenant only |
+| OIDC admin | All tenants (unrestricted) |
+| Unauthenticated | All tenants (handler decides if auth is required) |
+
+### Affected endpoints
+
+| Endpoint | Admin view | Non-admin viewer view |
+|---|---|---|
+| `GET /api/v1/apikeys` | All enabled and disabled keys | Only enabled keys in own tenant |
+| `GET /api/v1/deployments` | All deployments | Only deployments whose `detail.tenant` matches |
+
+`GET /api/v1/nodes` and `GET /api/v1/models` are infrastructure and catalog
+resources shared across all tenants — they are not scoped.
+
+### Known limitation — deployments (v0.4 TODO)
+
+The `deployments` table stores the tenant inside the `detail` JSON blob rather
+than in a dedicated `tenant_id` column. The current filter therefore reads all
+deployments into memory and discards those that do not match. A proper
+`tenant_id` column with a SQL `WHERE` clause is planned for v0.4.
+
+---
+
 ## OIDC-sourced roles
 
 When OIDC authentication is enabled and `PURSER_OIDC_GROUP_MAPPINGS` is

@@ -53,6 +53,12 @@ type Registry interface {
 	CreateDeployment(ctx context.Context, d *Deployment) error
 	GetDeployment(ctx context.Context, id string) (*Deployment, error)
 	ListDeployments(ctx context.Context) ([]*Deployment, error)
+	// ListDeploymentsByTenant returns deployments scoped to tenant.
+	// When tenant is "", all deployments are returned (admin view).
+	// When tenant is non-empty, only deployments whose Detail JSON contains a
+	// matching "tenant" field are returned. This is a Go-side filter because
+	// the deployments table has no top-level tenant_id column (planned for v0.4).
+	ListDeploymentsByTenant(ctx context.Context, tenant string) ([]*Deployment, error)
 	UpdateDeployment(ctx context.Context, d *Deployment) error
 	DeleteDeployment(ctx context.Context, id string) error
 
@@ -65,6 +71,11 @@ type Registry interface {
 	// full-scan that ListAPIKeys + loop would require.
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
 	ListAPIKeys(ctx context.Context) ([]*APIKey, error)
+	// ListAPIKeysByTenant returns API keys scoped to tenant.
+	// When tenant is "", all keys are returned (admin view).
+	// When tenant is non-empty, only enabled keys belonging to that tenant
+	// are returned; disabled keys are hidden from tenant-scoped views.
+	ListAPIKeysByTenant(ctx context.Context, tenant string) ([]*APIKey, error)
 	UpdateAPIKey(ctx context.Context, k *APIKey) error
 	DeleteAPIKey(ctx context.Context, id string) error
 	// HasAnyAPIKey returns true when at least one enabled API key exists in the
