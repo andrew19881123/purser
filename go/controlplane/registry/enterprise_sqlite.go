@@ -1,57 +1,203 @@
 package registry
 
-// enterprise_sqlite.go — stub implementations of the Wave B Registry methods
-// on *SQLiteRegistry.  Each stub returns a "not implemented" error so the
-// compile-time interface assertion in sqlite.go continues to pass while the
-// real implementations land in subsequent epics.
-//
-// NOTE: Do NOT add production logic here. Individual Wave B epics own their
-// own *_sqlite.go files (e.g. oidc_sqlite.go, quota_sqlite.go). These stubs
-// exist solely to satisfy the interface contract during the foundational
-// schema epic.
+// enterprise_sqlite.go — Wave B Registry method implementations on
+// *SQLiteRegistry. The OIDC session store and PKCE state are fully
+// implemented here; other Wave B methods (API-key lifecycle, model pricing,
+// tenant quota, etc.) remain as stubs until their respective epics land.
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 )
 
 var errNotImplemented = errors.New("registry: not implemented")
 
+// nullStr converts an empty Go string to a SQL NULL, or returns the string
+// unchanged. Use for nullable TEXT columns where an empty string has no
+// storage meaning (e.g. refresh_token_enc when no refresh token is available).
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// fmtNullTimePtr encodes a *time.Time for a nullable TEXT column. A nil pointer
+// stores as SQL NULL; a non-nil pointer stores as RFC3339Nano UTC.
+func fmtNullTimePtr(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return fmtTime(*t)
+}
+
 // --- OIDC Session Store -------------------------------------------------------
 
-func (r *SQLiteRegistry) CreateOIDCSession(_ context.Context, _ *OIDCSession) error {
-	return errNotImplemented
+// CreateOIDCSession persists a new browser session. INSERT OR REPLACE lets
+// callers re-issue a session token without explicit deletion of the old row.
+func (r *SQLiteRegistry) CreateOIDCSession(ctx context.Context, s *OIDCSession) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO oidc_sessions
+		 (token_hash, sub, email, idp_issuer, auth_method, created_at, expires_at,
+		  revoked, refresh_token_enc, access_token_expiry)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		s.TokenHash, s.Sub, s.Email, s.IDPIssuer, s.AuthMethod,
+		fmtTime(s.CreatedAt), fmtTime(s.ExpiresAt),
+		nullStr(s.RefreshTokenEnc),
+		fmtNullTimePtr(s.AccessTokenExpiry),
+	)
+	return err
 }
 
-func (r *SQLiteRegistry) GetOIDCSession(_ context.Context, _ string) (*OIDCSession, error) {
-	return nil, errNotImplemented
+// GetOIDCSession returns a non-revoked, non-expired session by token_hash.
+// Returns ErrNotFound when the hash is unknown, the session is revoked, or it
+// has already expired.
+func (r *SQLiteRegistry) GetOIDCSession(ctx context.Context, tokenHash string) (*OIDCSession, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT token_hash, sub, email, idp_issuer, auth_method, created_at, expires_at,
+		        revoked, revoked_at, refresh_token_enc, access_token_expiry
+		 FROM oidc_sessions
+		 WHERE token_hash=? AND revoked=0 AND expires_at > ?`,
+		tokenHash, fmtTime(time.Now()),
+	)
+	var s OIDCSession
+	var createdAtStr, expiresAtStr string
+	var revokedInt int
+	var revokedAtNS, refreshEncNS, accessExpiryNS sql.NullString
+	err := row.Scan(
+		&s.TokenHash, &s.Sub, &s.Email, &s.IDPIssuer, &s.AuthMethod,
+		&createdAtStr, &expiresAtStr, &revokedInt, &revokedAtNS,
+		&refreshEncNS, &accessExpiryNS,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if t, e := time.Parse(tsLayout, createdAtStr); e == nil {
+		s.CreatedAt = t
+	}
+	if t, e := time.Parse(tsLayout, expiresAtStr); e == nil {
+		s.ExpiresAt = t
+	}
+	s.Revoked = revokedInt != 0
+	if revokedAtNS.Valid && revokedAtNS.String != "" {
+		if t, e := time.Parse(tsLayout, revokedAtNS.String); e == nil {
+			s.RevokedAt = &t
+		}
+	}
+	if refreshEncNS.Valid {
+		s.RefreshTokenEnc = refreshEncNS.String
+	}
+	if accessExpiryNS.Valid && accessExpiryNS.String != "" {
+		if t, e := time.Parse(tsLayout, accessExpiryNS.String); e == nil {
+			s.AccessTokenExpiry = &t
+		}
+	}
+	return &s, nil
 }
 
-func (r *SQLiteRegistry) RevokeOIDCSessionsBySubject(_ context.Context, _ string) (int, error) {
-	return 0, errNotImplemented
+// RevokeOIDCSessionsBySubject marks all active sessions for sub as revoked.
+// Returns the number of rows updated.
+func (r *SQLiteRegistry) RevokeOIDCSessionsBySubject(ctx context.Context, sub string) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE oidc_sessions SET revoked=1, revoked_at=? WHERE sub=? AND revoked=0`,
+		fmtTime(time.Now()), sub,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
-func (r *SQLiteRegistry) RevokeOIDCSessionByTokenHash(_ context.Context, _ string) error {
-	return errNotImplemented
+// RevokeOIDCSessionByTokenHash revokes the single session identified by tokenHash.
+func (r *SQLiteRegistry) RevokeOIDCSessionByTokenHash(ctx context.Context, tokenHash string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE oidc_sessions SET revoked=1, revoked_at=? WHERE token_hash=?`,
+		fmtTime(time.Now()), tokenHash,
+	)
+	return err
 }
 
-func (r *SQLiteRegistry) DeleteExpiredOIDCSessions(_ context.Context) (int, error) {
-	return 0, errNotImplemented
+// DeleteExpiredOIDCSessions removes sessions that have expired or that were
+// revoked more than 24 hours ago. Returns the number of rows deleted.
+func (r *SQLiteRegistry) DeleteExpiredOIDCSessions(ctx context.Context) (int, error) {
+	now := fmtTime(time.Now())
+	old := fmtTime(time.Now().Add(-24 * time.Hour))
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM oidc_sessions WHERE expires_at < ? OR (revoked=1 AND revoked_at < ?)`,
+		now, old,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // --- PKCE State ---------------------------------------------------------------
 
-func (r *SQLiteRegistry) SetPKCEState(_ context.Context, _, _ string, _ time.Duration) error {
-	return errNotImplemented
+// SetPKCEState stores a PKCE state/verifier pair with the given TTL. INSERT OR
+// REPLACE ensures only one entry exists per state_hash at a time.
+func (r *SQLiteRegistry) SetPKCEState(ctx context.Context, stateHash, verifier string, ttl time.Duration) error {
+	expires := time.Now().Add(ttl)
+	_, err := r.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO pkce_state (state_hash, verifier, expires_at) VALUES (?, ?, ?)`,
+		stateHash, verifier, fmtTime(expires),
+	)
+	return err
 }
 
-func (r *SQLiteRegistry) ConsumePKCEState(_ context.Context, _ string) (string, bool, error) {
-	return "", false, errNotImplemented
+// ConsumePKCEState atomically retrieves and deletes the verifier for stateHash.
+// Returns (verifier, true, nil) on success; ("", false, nil) when the state is
+// not found or has expired. Expired rows are deleted opportunistically.
+func (r *SQLiteRegistry) ConsumePKCEState(ctx context.Context, stateHash string) (verifier string, ok bool, err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var v, expiresStr string
+	err = tx.QueryRowContext(ctx,
+		`SELECT verifier, expires_at FROM pkce_state WHERE state_hash=?`, stateHash,
+	).Scan(&v, &expiresStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	// Check expiry in Go so we can opportunistically delete the stale row.
+	expires, parseErr := time.Parse(tsLayout, expiresStr)
+	if parseErr != nil || time.Now().After(expires) {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM pkce_state WHERE state_hash=?`, stateHash)
+		_ = tx.Commit()
+		return "", false, nil
+	}
+
+	if _, err = tx.ExecContext(ctx, `DELETE FROM pkce_state WHERE state_hash=?`, stateHash); err != nil {
+		return "", false, err
+	}
+	return v, true, tx.Commit()
 }
 
-func (r *SQLiteRegistry) DeleteExpiredPKCEStates(_ context.Context) (int, error) {
-	return 0, errNotImplemented
+// DeleteExpiredPKCEStates removes all rows whose expires_at is in the past.
+// Returns the number of rows deleted.
+func (r *SQLiteRegistry) DeleteExpiredPKCEStates(ctx context.Context) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM pkce_state WHERE expires_at < ?`, fmtTime(time.Now()),
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // --- API Key Lifecycle --------------------------------------------------------

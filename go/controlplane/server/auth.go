@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/purser/purser/go/controlplane/registry"
 )
 
 // ---- Constants ----
@@ -118,6 +120,14 @@ func (s *pkceStateStore) lenUnsafe() int {
 }
 
 // ---- PKCE helpers ----
+
+// sha256HexOf returns the lowercase hex-encoded SHA-256 digest of s. Used to
+// derive a token_hash from the raw session cookie value and a state_hash from
+// the OAuth2 state parameter so raw secrets are never stored in the database.
+func sha256HexOf(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
 
 // generatePKCE generates a 32-byte random code_verifier (base64url, no
 // padding) and its S256 code_challenge = base64url(SHA256(verifier)).
@@ -219,7 +229,18 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	state := hex.EncodeToString(stateBytes)
 
-	s.pkceStore.set(state, verifier)
+	// Store PKCE state: prefer the distributed SQLite store (HA) when a
+	// registry is attached; fall back to the bounded in-memory store otherwise
+	// (e.g. in tests that do not wire up a registry).
+	stateHash := sha256HexOf(state)
+	if s.reg != nil {
+		if err := s.reg.SetPKCEState(r.Context(), stateHash, verifier, pkceTTL); err != nil {
+			s.log.Debug("SetPKCEState SQLite failed, falling back to in-memory", "err", err)
+			s.pkceStore.set(state, verifier)
+		}
+	} else {
+		s.pkceStore.set(state, verifier)
+	}
 
 	authURL := s.oidcConfig.Issuer + "/oauth2/v2.0/authorize"
 	q := url.Values{}
@@ -260,7 +281,21 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "missing_state", "state parameter required")
 		return
 	}
-	codeVerifier, ok := s.pkceStore.get(state)
+
+	// Consume PKCE state: prefer SQLite (HA) when registry is available;
+	// fall back to in-memory for deployments without a registry.
+	stateHash := sha256HexOf(state)
+	var codeVerifier string
+	var ok bool
+	if s.reg != nil {
+		var pkceErr error
+		codeVerifier, ok, pkceErr = s.reg.ConsumePKCEState(r.Context(), stateHash)
+		if pkceErr != nil {
+			s.log.Warn("ConsumePKCEState error", "err", pkceErr)
+		}
+	} else {
+		codeVerifier, ok = s.pkceStore.get(state)
+	}
 	if !ok {
 		s.writeError(w, http.StatusBadRequest, "invalid_state",
 			"state is unknown or expired; restart the login flow")
@@ -351,6 +386,26 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
+
+	// 6b. Persist the session in SQLite so any cluster node can validate or
+	// revoke it (HA support: login on node-A, subsequent request on node-B).
+	if s.reg != nil {
+		tokenHash := sha256HexOf(sessionToken)
+		if err := s.reg.CreateOIDCSession(r.Context(), &registry.OIDCSession{
+			TokenHash:  tokenHash,
+			Sub:        sub,
+			Email:      email,
+			IDPIssuer:  s.oidcConfig.Issuer,
+			AuthMethod: "oidc",
+			CreatedAt:  time.Now(),
+			ExpiresAt:  time.Now().Add(sessionTTL),
+		}); err != nil {
+			// Non-fatal: the HMAC-signed cookie still authenticates the user on
+			// the current node; revocation will simply not propagate across nodes.
+			s.log.Debug("CreateOIDCSession failed", "err", err)
+		}
+	}
+
 	s.log.Info("OIDC login complete", "sub", sub, "email", email)
 
 	// 7. Redirect to the dashboard.
