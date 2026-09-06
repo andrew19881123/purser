@@ -296,6 +296,14 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("registry ready", "db", cfg.dbPath)
 
+	// Seed built-in platform roles (idempotent — safe to run on every start).
+	if err := reg.SeedSystemRoles(migCtx); err != nil {
+		slog.Warn("failed to seed system roles", "err", err)
+		// Not fatal: system roles may already exist or the registry is read-only.
+	} else {
+		slog.Info("platform system roles seeded")
+	}
+
 	// Raft HA — optional; only started when PURSER_RAFT_NODE_ID is set.
 	// When absent the control plane runs in single-node (standalone) mode,
 	// which is the default deployment and retains full backward compatibility.

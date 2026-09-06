@@ -910,9 +910,10 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 // rbacPublicPaths are the paths that bypass RBAC regardless of the key
 // presented. These are always accessible (e.g. health check, API schema).
 var rbacPublicPaths = map[string]bool{
-	"/api/v1/cluster/health": true,
-	"/api/v1/cluster/status": true,
-	"/api/v1/openapi.json":   true,
+	"/api/v1/cluster/health":   true,
+	"/api/v1/cluster/status":   true,
+	"/api/v1/openapi.json":     true,
+	"/api/v1/platform/health":  true, // unauthenticated liveness probe (K8s-compatible)
 	// /auth/token is the OAuth2 client_credentials token endpoint — it IS the
 	// authentication endpoint and must be reachable without a prior credential.
 	"/auth/token": true,
@@ -1217,7 +1218,11 @@ func bearerToken(r *http.Request) string {
 
 // actorFromRequest extracts a displayable actor identity from the request.
 // Priority: OIDC sub claim > OIDC email claim > API key fingerprint (first 8
-// hex chars of SHA-256) > "system".
+// hex chars of SHA-256, optionally suffixed with "@team" when the key is
+// team-scoped) > "system".
+//
+// The "@team" suffix makes every audit entry immediately identifiable with
+// the team that made the call, e.g. "apikey:abc12345@team-ml".
 func actorFromRequest(r *http.Request) string {
 	if sub, ok := r.Context().Value(ctxKeyOIDCSub).(string); ok && sub != "" {
 		return "oidc:" + sub
@@ -1227,7 +1232,12 @@ func actorFromRequest(r *http.Request) string {
 	}
 	if token := bearerToken(r); token != "" {
 		sum := sha256.Sum256([]byte(token))
-		return "apikey:" + hex.EncodeToString(sum[:])[:8]
+		base := "apikey:" + hex.EncodeToString(sum[:])[:8]
+		// Append team context when the validated API key carries a Tenant field.
+		if key := apiKeyFromContext(r.Context()); key != nil && key.Tenant != "" {
+			return base + "@" + key.Tenant
+		}
+		return base
 	}
 	return "system"
 }
@@ -1507,6 +1517,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleUpsertPoolQuota)
 	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/quotas", s.handleListPoolQuotas)
 	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleDeletePoolQuota)
+
+	// Platform: status overview (admin) and liveness probe (public).
+	s.mux.HandleFunc("GET /api/v1/platform/status", s.handlePlatformStatus)
+	s.mux.HandleFunc("GET /api/v1/platform/health", s.handlePlatformHealth)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
