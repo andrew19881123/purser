@@ -24,6 +24,10 @@ RUN npm run build
 # ── Final ────────────────────────────────────────────────────────────────
 FROM nginx:alpine AS final
 
+# Non-root user — UID 65532 matches the distroless nonroot convention used by
+# other Purser images (control-plane, gateway).
+RUN addgroup -S purser && adduser -S -G purser -u 65532 purser
+
 # SPA routing config: unknown routes fall back to index.html (client-side
 # react-router deep links / reloads work); also serves env.js uncached.
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
@@ -37,4 +41,18 @@ COPY --from=builder /app/ui/dist /usr/share/nginx/html
 COPY deploy/docker/docker-entrypoint.d/40-purser-runtime-config.sh /docker-entrypoint.d/40-purser-runtime-config.sh
 RUN chmod +x /docker-entrypoint.d/40-purser-runtime-config.sh
 
-EXPOSE 80
+# Allow the non-root user to write nginx runtime files.
+# Remove the global `user nginx;` directive (setuid requires root); nginx will
+# run as whichever OS user the container starts as.
+RUN sed -i '/^user /d' /etc/nginx/nginx.conf \
+    && chown -R purser:purser \
+         /var/cache/nginx \
+         /var/log/nginx \
+         /usr/share/nginx/html \
+         /etc/nginx/conf.d \
+    && touch /var/run/nginx.pid \
+    && chown purser:purser /var/run/nginx.pid
+
+EXPOSE 8080
+
+USER purser
