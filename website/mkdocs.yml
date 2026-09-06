@@ -60,6 +60,7 @@ nav:
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md
   - Configuration:
+    - purser.yaml (Declarative Config): configuration/purser-yaml.md
     - Environment Variables: configuration/env-vars.md
     - OIDC (EntraID / Okta / Keycloak): configuration/oidc.md
     - OpenTelemetry: configuration/otel.md
