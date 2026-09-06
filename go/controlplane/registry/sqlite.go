@@ -551,6 +551,36 @@ func (r *SQLiteRegistry) ListDeployments(ctx context.Context) ([]*Deployment, er
 	return out, rows.Err()
 }
 
+// ListDeploymentsByTenant returns deployments whose Detail JSON blob contains a
+// "tenant" field matching tenant. When tenant is "", all deployments are returned
+// (admin view). Filtering is done in Go because the deployments table has no
+// top-level tenant_id column; a dedicated column is planned for v0.4.
+func (r *SQLiteRegistry) ListDeploymentsByTenant(ctx context.Context, tenant string) ([]*Deployment, error) {
+	if tenant == "" {
+		return r.ListDeployments(ctx)
+	}
+	all, err := r.ListDeployments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type detailTenant struct {
+		Tenant string `json:"tenant"`
+	}
+	var filtered []*Deployment
+	for _, d := range all {
+		var td detailTenant
+		if len(d.Detail) > 0 {
+			if jsonErr := json.Unmarshal(d.Detail, &td); jsonErr == nil && td.Tenant == tenant {
+				filtered = append(filtered, d)
+			}
+		}
+	}
+	if filtered == nil {
+		filtered = []*Deployment{}
+	}
+	return filtered, nil
+}
+
 func (r *SQLiteRegistry) UpdateDeployment(ctx context.Context, d *Deployment) error {
 	d.UpdatedAt = nowUTC()
 	res, err := r.db.ExecContext(ctx, `
@@ -655,6 +685,36 @@ func (r *SQLiteRegistry) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 			return nil, fmt.Errorf("registry: list api_keys: %w", err)
 		}
 		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// ListAPIKeysByTenant returns API keys for the given tenant.
+// When tenant is "", all keys are returned (admin view, same as ListAPIKeys).
+// When tenant is non-empty, only enabled keys whose tenant column matches are
+// returned ordered by creation date descending.
+func (r *SQLiteRegistry) ListAPIKeysByTenant(ctx context.Context, tenant string) ([]*APIKey, error) {
+	if tenant == "" {
+		return r.ListAPIKeys(ctx)
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE tenant=? AND enabled=1 ORDER BY created_at DESC`,
+		tenant,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("registry: list api_keys by tenant: %w", err)
+	}
+	defer rows.Close()
+	var out []*APIKey
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, fmt.Errorf("registry: list api_keys by tenant: %w", err)
+		}
+		out = append(out, k)
+	}
+	if out == nil {
+		out = []*APIKey{}
 	}
 	return out, rows.Err()
 }

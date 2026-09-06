@@ -116,6 +116,11 @@ const (
 	// "tid" (EntraID) or "tenant_id" claim. Used by list handlers to scope results
 	// for viewer-role tokens.
 	ctxKeyOIDCTenant
+	// ctxKeyAPIKey is the context key for the validated *registry.APIKey resolved
+	// by rbacMiddleware. Set for any request whose Bearer token matched an enabled
+	// API key in the registry; used by extractRequestTenant to scope list responses
+	// to the key's own tenant for non-admin roles.
+	ctxKeyAPIKey
 )
 
 // OIDCConfig configures the optional OIDC authentication layer for the admin
@@ -887,6 +892,11 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Inject the matched key into context so list-endpoint handlers can call
+		// extractRequestTenant without a second registry lookup. This must happen
+		// before the role switch so all code paths see the key.
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyAPIKey, matched))
+
 		// 5–7. Enforce role.
 		switch matched.Role {
 		case "admin":
@@ -949,6 +959,36 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+// apiKeyFromContext returns the validated *registry.APIKey that rbacMiddleware
+// injected into the request context, or nil when the request was authenticated
+// via OIDC or anonymously (no API key Bearer token).
+func apiKeyFromContext(ctx context.Context) *registry.APIKey {
+	k, _ := ctx.Value(ctxKeyAPIKey).(*registry.APIKey)
+	return k
+}
+
+// extractRequestTenant returns the tenant identifier used to scope list-endpoint
+// responses for the current request:
+//
+//   - Non-admin API key holders (viewer, inference) are scoped to the tenant
+//     stored on their key. A viewer key with an empty tenant sees everything.
+//   - OIDC viewer tokens with a "tid"/"tenant_id" claim are scoped to that claim.
+//   - Admin API keys and OIDC admin tokens see everything (returns "").
+//   - Unauthenticated requests (no Bearer token) see everything (returns "").
+func (s *Server) extractRequestTenant(r *http.Request) string {
+	// API key path: non-admin key holders are scoped to their tenant.
+	if key := apiKeyFromContext(r.Context()); key != nil && key.Role != "admin" {
+		return key.Tenant
+	}
+	// OIDC path: viewer with a tenant claim in the token is scoped to it.
+	if oidcRole, _ := r.Context().Value(ctxKeyOIDCRole).(string); oidcRole == "viewer" {
+		if oidcTenant, _ := r.Context().Value(ctxKeyOIDCTenant).(string); oidcTenant != "" {
+			return oidcTenant
+		}
+	}
+	return ""
 }
 
 // rateLimitExempt reports whether the request is exempt from rate limiting.
@@ -2401,11 +2441,13 @@ func (s *Server) handlePreviewPlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListDeployments returns all deployments. Tenant-scoped OIDC viewer
-// tokens restrict the response to deployments whose Detail.tenant matches the
-// token's tenant claim (foundational multi-tenant isolation layer).
+// handleListDeployments returns deployments scoped to the requesting tenant.
+// Admin API keys and unauthenticated requests see all deployments. Non-admin
+// API key holders and OIDC viewers with a tenant claim see only deployments
+// whose Detail.tenant matches their tenant (see extractRequestTenant).
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
-	deps, err := s.reg.ListDeployments(r.Context())
+	tenant := s.extractRequestTenant(r)
+	deps, err := s.reg.ListDeploymentsByTenant(r.Context(), tenant)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
 		return
@@ -2413,25 +2455,6 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	if deps == nil {
 		deps = []*registry.Deployment{}
 	}
-
-	// Tenant scoping: a viewer with an OIDC tenant claim only sees deployments
-	// whose Detail JSON contains a matching "tenant" field. Admin tokens and
-	// API-key-based viewers see all deployments (no tenant claim → no filter).
-	if oidcRole, _ := r.Context().Value(ctxKeyOIDCRole).(string); oidcRole == "viewer" {
-		if oidcTenant, _ := r.Context().Value(ctxKeyOIDCTenant).(string); oidcTenant != "" {
-			var filtered []*registry.Deployment
-			for _, d := range deps {
-				if deploymentTenant(d) == oidcTenant {
-					filtered = append(filtered, d)
-				}
-			}
-			if filtered == nil {
-				filtered = []*registry.Deployment{}
-			}
-			deps = filtered
-		}
-	}
-
 	s.writeJSON(w, http.StatusOK, map[string]any{"deployments": deps})
 }
 
@@ -2577,12 +2600,16 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListAPIKeys returns all API keys. The plaintext key and its SHA-256
+// handleListAPIKeys returns API keys scoped to the requesting tenant.
+// Admin API keys and unauthenticated requests see all keys. Non-admin API key
+// holders and OIDC viewers with a tenant claim see only their own tenant's
+// enabled keys (see extractRequestTenant). The plaintext key and its SHA-256
 // hash are never returned — only metadata (id, name, tenant, quota, enabled,
 // created_at, updated_at). The KeyHash field on registry.APIKey carries
 // json:"-" so it is excluded from marshalling automatically.
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := s.reg.ListAPIKeys(r.Context())
+	tenant := s.extractRequestTenant(r)
+	keys, err := s.reg.ListAPIKeysByTenant(r.Context(), tenant)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "list_apikeys_failed", err.Error())
 		return
