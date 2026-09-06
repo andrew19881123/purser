@@ -222,6 +222,22 @@ export function useRevokeApiKey() {
   });
 }
 
+export function useKeyUsage(keyId: string | undefined) {
+  return useQuery({
+    queryKey: ['keyUsage', keyId],
+    queryFn: () => api.getKeyUsage(keyId!),
+    enabled: !!keyId,
+  });
+}
+
+export function useUsageSummary() {
+  return useQuery({ queryKey: ['usageSummary'], queryFn: () => api.getUsageSummary() });
+}
+
+export function useEnterpriseStatus() {
+  return useQuery({ queryKey: ['enterpriseStatus'], queryFn: () => api.getEnterpriseStatus() });
+}
+
 // --- gateway (playground) ---------------------------------------------------
 
 /** GET /v1/models on the Gateway (mock or real, per the chat client). */

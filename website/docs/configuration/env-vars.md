@@ -155,7 +155,7 @@ Both variables are **required** — the gateway refuses to start with a clear er
 
 | Variable | Default | Description |
 |---|---|---|
-| `PURSER_CONTROL_PLANE_URL` | (empty) | Control Plane base URL for usage reporting (e.g. `http://control-plane:8080`). When set, the gateway posts per-request token counts to `POST /api/v1/usage` after each inference call completes. When unset, usage recording is skipped (backward-compatible). |
+| `PURSER_CONTROL_PLANE_URL` | (empty) | Control Plane base URL for usage reporting (e.g. `http://control-plane:8080`). When set, the gateway posts per-request token counts to `POST /api/v1/usage` after each inference call completes. When unset, usage recording is skipped (backward-compatible). Token counts posted by the Gateway are aggregated per tenant and surfaced in the **Settings → Usage Summary** table of the operator dashboard, and via `GET /api/v1/usage/summary`. Individual API-key usage is available at `GET /api/v1/apikeys/{id}/usage` and in the token column of the API keys table. |
 
 ### Authentication
 

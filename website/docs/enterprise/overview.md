@@ -62,6 +62,15 @@ The Helm chart stores the key in a Kubernetes Secret and injects it into the Con
 
 ## Checking license status
 
+### Dashboard
+
+The **Settings** page of the operator dashboard shows a **License** section at the bottom. It displays:
+
+- **Community edition**: a neutral "Community" badge and a link to upgrade documentation.
+- **Enterprise edition**: the licensee name, a badge per enabled feature (`audit`, `ha`, `rbac`, …), and the expiry date. A red "Expired" badge appears when the key has passed its `expires` date.
+
+### API
+
 ```bash
 curl -s http://<control-plane>:8080/api/v1/enterprise/status | python3 -m json.tool
 ```

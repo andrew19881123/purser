@@ -450,3 +450,46 @@ export interface PlanPreviewResult {
   reason?: string;
   plan?: DeploymentPlan;
 }
+
+// ---------------------------------------------------------------------------
+// Usage accounting — mirrors GET /api/v1/apikeys/{id}/usage and
+// GET /api/v1/usage/summary (reported by the Gateway to the Control Plane
+// via POST /api/v1/usage after each inference call).
+// ---------------------------------------------------------------------------
+
+/** Token usage for a single API key. GET /api/v1/apikeys/{id}/usage */
+export interface KeyUsage {
+  apiKeyId: string;
+  totalRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Aggregate usage for one tenant (team). */
+export interface TenantUsage {
+  tenant: string;
+  totalRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Cross-tenant usage summary. GET /api/v1/usage/summary */
+export interface UsageSummary {
+  tenants: TenantUsage[];
+}
+
+// ---------------------------------------------------------------------------
+// Enterprise — GET /api/v1/enterprise/status.
+// ---------------------------------------------------------------------------
+
+/**
+ * License and edition status returned by the control plane.
+ * edition === 'community' means no license key is loaded.
+ */
+export interface EnterpriseStatus {
+  edition: 'community' | 'enterprise';
+  licensee: string;
+  features: string[];
+  /** ISO-8601 expiry timestamp; absent on community edition. */
+  expires?: string;
+}

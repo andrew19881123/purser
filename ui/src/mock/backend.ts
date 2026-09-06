@@ -12,14 +12,17 @@ import type {
   ClusterCapacity,
   Deployment,
   DeploymentPlan,
+  EnterpriseStatus,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   MetricsSnapshot,
   MetricsStreamHandlers,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  UsageSummary,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
 import { clamp } from '../lib/format';
@@ -294,6 +297,44 @@ export const mockBackend: PurserApi = {
     if (!key) throw new NotFoundError(`API key ${id} was not found.`);
     key.revoked = true;
     return delay(structuredClone(key), 350);
+  },
+
+  getKeyUsage(keyId: string): Promise<KeyUsage> {
+    const key = apiKeys.find((k) => k.id === keyId);
+    if (!key) throw new NotFoundError(`API key ${keyId} was not found.`);
+    // Deterministic fake counts derived from the key id.
+    const seed = keyId.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    return delay(
+      {
+        apiKeyId: keyId,
+        totalRequests: (seed * 37) % 50_000,
+        inputTokens: (seed * 1_301) % 5_000_000,
+        outputTokens: (seed * 613) % 2_000_000,
+      },
+      200,
+    );
+  },
+
+  getUsageSummary(): Promise<UsageSummary> {
+    const teams = Array.from(new Set(apiKeys.map((k) => k.team)));
+    return delay(
+      {
+        tenants: teams.map((team) => {
+          const seed = team.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+          return {
+            tenant: team,
+            totalRequests: (seed * 41) % 100_000,
+            inputTokens: (seed * 1_409) % 10_000_000,
+            outputTokens: (seed * 709) % 4_000_000,
+          };
+        }),
+      },
+      260,
+    );
+  },
+
+  getEnterpriseStatus(): Promise<EnterpriseStatus> {
+    return delay({ edition: 'community', licensee: 'community', features: [] }, 180);
   },
 
   streamMetrics(handlers: MetricsStreamHandlers): () => void {
