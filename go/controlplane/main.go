@@ -77,10 +77,14 @@ type config struct {
 	rateLimitKeyRPS float64 // PURSER_RATE_LIMIT_KEY_RPS (default 50)
 
 	// configPath, when non-empty, names a purser.yaml to apply at startup
-	// (env PURSER_CONFIG). Enables GitOps-style reconciliation: the desired
-	// state is applied once on boot; the Wave 3 reconciler loop will generalise
-	// this to continuous drift correction.
+	// and to watch for changes (env PURSER_CONFIG). Enables GitOps-style
+	// reconciliation: the file is applied once on boot and then polled every
+	// configInterval seconds; any change triggers a re-apply automatically.
 	configPath string
+
+	// configInterval is how often the watcher polls purser.yaml for changes.
+	// Read from PURSER_CONFIG_INTERVAL (seconds); default 30 s.
+	configInterval time.Duration
 }
 
 func loadConfig() config {
@@ -101,6 +105,7 @@ func loadConfig() config {
 		rateLimitRPS:    envFloat("PURSER_RATE_LIMIT_RPS", 0),
 		rateLimitKeyRPS: envFloat("PURSER_RATE_LIMIT_KEY_RPS", 0),
 		configPath:      envOr("PURSER_CONFIG", ""),
+		configInterval:  envDuration("PURSER_CONFIG_INTERVAL", 30*time.Second),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -141,6 +146,17 @@ func envFloat(key string, def float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+// envDuration reads key as an integer number of seconds.
+// Falls back to def when the variable is unset or unparsable.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
 		}
 	}
 	return def
@@ -475,6 +491,32 @@ func run(logger *slog.Logger) error {
 				)
 			}
 		}
+
+		// GitOps continuous reconciliation: poll purser.yaml every configInterval
+		// and re-apply automatically whenever its content changes. The watcher
+		// fires immediately on the first tick so it is safe to skip the startup
+		// apply above when refactoring — both paths are idempotent.
+		watcher := configpkg.NewWatcher(cfg.configPath, cfg.configInterval, func(c *configpkg.ClusterConfig) {
+			wCtx, wCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer wCancel()
+			result, err := srv.ApplyClusterConfig(wCtx, c)
+			if err != nil {
+				logger.Error("config watcher: apply failed", "path", cfg.configPath, "err", err)
+				return
+			}
+			logger.Info("config watcher: applied",
+				"path", cfg.configPath,
+				"models_added", result.ModelsAdded,
+				"deployments_added", result.DeploymentsAdded,
+				"quotas_upserted", result.QuotasUpserted,
+			)
+		})
+		go func() {
+			if err := watcher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Warn("config watcher stopped", "path", cfg.configPath, "err", err)
+			}
+		}()
+		logger.Info("config watcher started", "path", cfg.configPath, "interval", cfg.configInterval)
 	}
 
 	errCh := make(chan error, 2)
