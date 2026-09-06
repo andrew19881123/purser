@@ -1,7 +1,7 @@
 # OIDC Configuration (EntraID / Okta / Keycloak)
 
 !!! note "OIDC is available in the community edition"
-    As of v0.2, OIDC authentication is **implemented** and available without an enterprise license. Set `PURSER_OIDC_ISSUER` and `PURSER_OIDC_CLIENT_ID` to enable it. Machine-to-machine access (API keys, the internal gateway token) also continues to work regardless of OIDC state.
+    As of v0.3, OIDC authentication includes a full **Authorization Code Flow + PKCE** browser SSO endpoint. Set `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, and `PURSER_OIDC_REDIRECT_URI` to enable it. Machine-to-machine access (API keys, the internal gateway token) also continues to work regardless of OIDC state.
 
 ---
 
@@ -14,8 +14,9 @@ When configured, OIDC protects:
 
 What is **exempt** from OIDC:
 
-- **Gateway API keys** — machine-to-machine inference traffic uses bearer tokens (`PURSER_GATEWAY_API_KEYS`), which bypass OIDC
-- **Internal gateway token** — Control Plane → Gateway route sync (`PURSER_GATEWAY_INTERNAL_TOKEN`) is a separate shared secret, unaffected by OIDC
+- **`GET /auth/login` and `GET /auth/callback`** — the login flow endpoints themselves are unauthenticated
+- **Gateway API keys** — machine-to-machine inference traffic uses bearer tokens, which bypass OIDC
+- **Internal gateway token** — Control Plane → Gateway route sync is a separate shared secret, unaffected by OIDC
 - **Agent gRPC** — Agent enrollment and heartbeat use mTLS certificates issued by the internal PKI, not OIDC
 
 ---
@@ -26,8 +27,89 @@ What is **exempt** from OIDC:
 |---|---|
 | `PURSER_OIDC_ISSUER` | OIDC issuer URL (the provider's discovery document root). Examples: `https://login.microsoftonline.com/<tenant-id>/v2.0`, `https://<tenant>.okta.com`, `https://keycloak.example.com/realms/<realm>` |
 | `PURSER_OIDC_CLIENT_ID` | OAuth2 application (client) ID registered with the provider. |
-| `PURSER_OIDC_CLIENT_SECRET` | OAuth2 client secret (for confidential clients). |
-| `PURSER_LICENSE_KEY` | Enterprise license key — OIDC requires a valid license with the SSO/OIDC feature entitlement. |
+| `PURSER_OIDC_CLIENT_SECRET` | OAuth2 client secret for confidential clients. Optional — leave unset for public PKCE-only clients. |
+| `PURSER_OIDC_REDIRECT_URI` | Full callback URL registered with the IdP, e.g. `https://purser.example.com/auth/callback`. **Required** to enable the Authorization Code Flow + PKCE browser SSO endpoints (`GET /auth/login`, `GET /auth/callback`). |
+| `PURSER_SESSION_SECRET` | 64-character hex-encoded 32-byte HMAC key used to sign session cookies. When unset, an ephemeral random key is generated at startup (sessions expire on process restart). **Set this for persistent sessions** across restarts or rolling deployments. Generate with: `openssl rand -hex 32` |
+
+---
+
+## Authorization Code Flow setup (browser SSO)
+
+As of v0.3, Purser implements the **OAuth 2.0 Authorization Code Flow with PKCE** (RFC 7636) server-side. The browser never handles the code_verifier — all PKCE state is managed by the control plane.
+
+### How it works
+
+1. Browser hits a protected page → oidcMiddleware detects no valid session → redirects to `GET /auth/login`.
+2. `GET /auth/login` generates a cryptographic `state` (32 random bytes, hex) and PKCE `code_verifier` (32 random bytes, base64url), computes `code_challenge = base64url(SHA256(verifier))`, stores `state→verifier` for 10 minutes, and redirects the browser to the IdP.
+3. User authenticates at the IdP; IdP redirects to `GET /auth/callback?code=…&state=…`.
+4. `GET /auth/callback` validates the `state`, exchanges the code for tokens at the IdP's token endpoint (attaching `code_verifier`), verifies the returned ID token, and sets an HttpOnly session cookie (`purser_session`, 8h TTL, HMAC-SHA256 signed).
+5. Browser is redirected to `/`. Subsequent API and UI requests are authenticated via the session cookie.
+
+### Session cookie properties
+
+| Property | Value |
+|---|---|
+| Name | `purser_session` |
+| HttpOnly | Yes |
+| Secure | Yes (when served over HTTPS) |
+| SameSite | Lax |
+| TTL | 8 hours |
+| Signature | HMAC-SHA256, key from `PURSER_SESSION_SECRET` |
+
+---
+
+## Microsoft EntraID (Azure AD) — Authorization Code Flow
+
+### 1. Register an application in Entra ID
+
+1. In the Azure portal, go to **Azure Active Directory → App registrations → New registration**.
+2. Set:
+   - Name: `Purser`
+   - Redirect URI (Web): `https://purser.example.com/auth/callback`
+3. After creation, note the **Application (client) ID** and **Directory (tenant) ID**.
+4. Under **Certificates & secrets**, create a client secret and note the value.
+5. Under **API permissions**, add `openid`, `profile`, `email` (delegated, Microsoft Graph).
+
+### 2. Configure Purser
+
+```bash
+PURSER_OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0
+PURSER_OIDC_CLIENT_ID=<application-client-id>
+PURSER_OIDC_CLIENT_SECRET=<client-secret-value>
+PURSER_OIDC_REDIRECT_URI=https://purser.example.com/auth/callback
+PURSER_SESSION_SECRET=$(openssl rand -hex 32)
+```
+
+### 3. Helm values.yaml snippet
+
+```yaml
+controlPlane:
+  extraEnv:
+    - name: PURSER_OIDC_ISSUER
+      value: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+    - name: PURSER_OIDC_CLIENT_ID
+      value: "<application-client-id>"
+    - name: PURSER_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: purser-oidc
+          key: client-secret
+    - name: PURSER_OIDC_REDIRECT_URI
+      value: "https://purser.example.com/auth/callback"
+    - name: PURSER_SESSION_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: purser-oidc
+          key: session-secret
+```
+
+Create the secret:
+
+```bash
+kubectl create secret generic purser-oidc \
+  --from-literal=client-secret=<client-secret-value> \
+  --from-literal=session-secret=$(openssl rand -hex 32)
+```
 
 ---
 
@@ -94,6 +176,8 @@ kubectl create secret generic purser-oidc \
 PURSER_OIDC_ISSUER=https://your-tenant.okta.com
 PURSER_OIDC_CLIENT_ID=<client-id>
 PURSER_OIDC_CLIENT_SECRET=<client-secret>
+PURSER_OIDC_REDIRECT_URI=https://purser.example.com/auth/callback
+PURSER_SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 ### 3. Helm values.yaml snippet
@@ -110,6 +194,13 @@ controlPlane:
         secretKeyRef:
           name: purser-oidc
           key: client-secret
+    - name: PURSER_OIDC_REDIRECT_URI
+      value: "https://purser.example.com/auth/callback"
+    - name: PURSER_SESSION_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: purser-oidc
+          key: session-secret
 ```
 
 ---
@@ -132,6 +223,8 @@ controlPlane:
 PURSER_OIDC_ISSUER=https://keycloak.example.com/realms/<realm>
 PURSER_OIDC_CLIENT_ID=purser
 PURSER_OIDC_CLIENT_SECRET=<keycloak-client-secret>
+PURSER_OIDC_REDIRECT_URI=https://purser.example.com/auth/callback
+PURSER_SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 ### 3. Helm values.yaml snippet
@@ -148,6 +241,13 @@ controlPlane:
         secretKeyRef:
           name: purser-oidc
           key: client-secret
+    - name: PURSER_OIDC_REDIRECT_URI
+      value: "https://purser.example.com/auth/callback"
+    - name: PURSER_SESSION_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: purser-oidc
+          key: session-secret
 ```
 
 ---

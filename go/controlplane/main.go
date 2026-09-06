@@ -10,6 +10,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -194,8 +196,13 @@ func run(logger *slog.Logger) error {
 	// If either is empty, OIDC is disabled — the community default. When both
 	// are set the provider is discovered eagerly so a bad issuer URL fails here
 	// at startup with a clear message rather than at the first admin request.
+	//
+	// Authorization Code Flow + PKCE (browser SSO) is activated when
+	// PURSER_OIDC_REDIRECT_URI is also set; PURSER_OIDC_CLIENT_SECRET is
+	// optional for confidential clients.
 	var oidcCfg *server.OIDCConfig
 	var oidcVerifier server.TokenVerifier
+	var sessionKey []byte
 	if oidcIssuer := os.Getenv("PURSER_OIDC_ISSUER"); oidcIssuer != "" {
 		oidcClientID := os.Getenv("PURSER_OIDC_CLIENT_ID")
 		if oidcClientID == "" {
@@ -205,11 +212,44 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("OIDC discovery failed for issuer %s: %w", oidcIssuer, err)
 		}
-		oidcCfg = &server.OIDCConfig{Issuer: oidcIssuer, ClientID: oidcClientID}
+		// provider.Endpoint() returns the IdP's AuthURL and TokenURL from its
+		// discovery document — no extra import needed.
+		ep := provider.Endpoint()
+		oidcCfg = &server.OIDCConfig{
+			Issuer:        oidcIssuer,
+			ClientID:      oidcClientID,
+			ClientSecret:  os.Getenv("PURSER_OIDC_CLIENT_SECRET"),
+			RedirectURI:   os.Getenv("PURSER_OIDC_REDIRECT_URI"),
+			TokenEndpoint: ep.TokenURL,
+		}
 		oidcVerifier = server.NewOIDCVerifierAdapter(
 			provider.Verifier(&oidc.Config{ClientID: oidcClientID}),
 		)
-		logger.Info("OIDC authentication enabled", "issuer", oidcIssuer, "client_id", oidcClientID)
+		logger.Info("OIDC authentication enabled",
+			"issuer", oidcIssuer,
+			"client_id", oidcClientID,
+			"pkce_flow", oidcCfg.RedirectURI != "",
+		)
+
+		// Session secret for signing session cookies (Authorization Code Flow).
+		// PURSER_SESSION_SECRET must be a 64-character hex string (32 bytes).
+		// When unset, an ephemeral random key is generated — sessions expire on
+		// process restart. Persist the key for long-lived deployments.
+		if secretHex := os.Getenv("PURSER_SESSION_SECRET"); secretHex != "" {
+			sessionKey, err = hex.DecodeString(secretHex)
+			if err != nil {
+				return fmt.Errorf("PURSER_SESSION_SECRET must be hex-encoded: %w", err)
+			}
+			if len(sessionKey) != 32 {
+				return fmt.Errorf("PURSER_SESSION_SECRET must be exactly 32 bytes (64 hex chars), got %d", len(sessionKey))
+			}
+		} else {
+			sessionKey = make([]byte, 32)
+			if _, err := rand.Read(sessionKey); err != nil {
+				return fmt.Errorf("generate ephemeral session secret: %w", err)
+			}
+			logger.Warn("PURSER_SESSION_SECRET not set; using ephemeral key (sessions expire on restart)")
+		}
 	} else {
 		logger.Info("OIDC authentication disabled (set PURSER_OIDC_ISSUER to enable)")
 	}
@@ -229,6 +269,7 @@ func run(logger *slog.Logger) error {
 		OIDCVerifier:  oidcVerifier,
 		InternalToken: cfg.internalToken,
 		HFToken:       cfg.hfToken,
+		SessionSecret: sessionKey,
 	})
 
 	// Start the background OTEL infrastructure metrics collector (nodes ready/

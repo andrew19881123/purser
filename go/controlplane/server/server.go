@@ -105,6 +105,16 @@ type OIDCConfig struct {
 	Issuer string
 	// ClientID is the expected audience claim in tokens issued by the provider.
 	ClientID string
+	// ClientSecret is the OAuth2 client secret for confidential clients.
+	// Optional — leave empty for public clients or pure PKCE flows.
+	ClientSecret string
+	// RedirectURI is the full callback URL for the Authorization Code Flow,
+	// e.g. http://localhost:8080/auth/callback. When set, GET /auth/login and
+	// GET /auth/callback are activated as browser SSO endpoints.
+	RedirectURI string
+	// TokenEndpoint is the IdP's token exchange URL (populated from OIDC
+	// discovery in main.go). Required for the callback code exchange.
+	TokenEndpoint string
 }
 
 // TokenVerifier is the single interface oidcMiddleware uses to verify raw ID
@@ -209,6 +219,12 @@ type Config struct {
 	// constructing a client from environment variables at request time.
 	// Primarily useful for testing with a pre-configured mock client.
 	VertexAI *importer.VertexAIClient
+	// SessionSecret is the 32-byte HMAC-SHA256 key used to sign session cookies
+	// issued by the Authorization Code Flow callback. When nil and OIDC is
+	// configured, an ephemeral random key is auto-generated at startup (sessions
+	// expire when the process restarts). Set PURSER_SESSION_SECRET to a fixed
+	// 32-byte hex key for persistence across restarts.
+	SessionSecret []byte
 }
 
 // Server holds the API dependencies and the composed HTTP handler.
@@ -227,7 +243,10 @@ type Server struct {
 	publicAddr    string
 	license       *license.License
 	oidcVerifier  TokenVerifier // nil = OIDC disabled
-	internalToken string        // gateway exemption secret
+	oidcConfig    *OIDCConfig   // nil when OIDC not configured
+	sessionSecret []byte        // HMAC-SHA256 key for session cookie signing
+	pkceStore     *pkceStateStore
+	internalToken string // gateway exemption secret
 	hfToken       string
 	hfBaseURL     string
 	vertexai      *importer.VertexAIClient
@@ -304,6 +323,27 @@ func New(reg registry.Registry, cfg Config) *Server {
 		logger.Info("OIDC authentication enabled", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID)
 	}
 
+	// Store the OIDC config for the Authorization Code Flow handlers.
+	if cfg.OIDC != nil {
+		s.oidcConfig = cfg.OIDC
+	}
+
+	// Session secret for session cookie signing. Used by both signSession and
+	// verifySession. When not provided and OIDC is configured, auto-generate an
+	// ephemeral key (sessions expire on process restart).
+	if len(cfg.SessionSecret) > 0 {
+		s.sessionSecret = cfg.SessionSecret
+	} else if s.oidcVerifier != nil {
+		s.sessionSecret = make([]byte, 32)
+		if _, err := rand.Read(s.sessionSecret); err != nil {
+			panic("purser: generate ephemeral session secret: " + err.Error())
+		}
+		logger.Warn("PURSER_SESSION_SECRET not set; using ephemeral key (sessions expire on restart)")
+	}
+
+	// PKCE state store: always initialised so the auth endpoints are ready.
+	s.pkceStore = newPKCEStateStore()
+
 	s.routes()
 
 	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
@@ -348,14 +388,16 @@ func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(
 // before delegating to next. It is a pass-through when s.oidcVerifier is nil
 // (OIDC not configured). When active:
 //
-//  1. Requests carrying the correct X-Purser-Internal-Token header are
+//  1. /auth/login and /auth/callback are always exempted — they ARE the login
+//     flow and are unauthenticated by definition.
+//  2. Requests carrying the correct X-Purser-Internal-Token header are
 //     exempted so the gateway can perform route-sync without a human token.
-//  2. All other requests must include a valid Bearer token in the Authorization
-//     header; absent, malformed, or invalid tokens yield 401 Unauthorized with
-//     a JSON body {"error":"unauthorized","message":"valid OIDC token required"}.
-//  3. On a valid token the verified sub and email claims are injected into the
-//     request context (keyed by ctxKeyOIDCSub / ctxKeyOIDCEmail) so handlers
-//     can log the authenticated actor.
+//  3. A valid "Authorization: Bearer <ID-token>" is accepted (existing path).
+//  4. A valid "Cookie: purser_session=<signed-token>" is accepted as an
+//     alternative to Bearer (browser SSO path).
+//  5. Browser requests (Accept: text/html) with neither credential are
+//     redirected to /auth/login when the Authorization Code Flow is configured.
+//  6. API requests with neither credential receive 401 JSON.
 func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. OIDC disabled — pass through unconditionally.
@@ -363,37 +405,58 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 2. Gateway internal-token exemption: the gateway sends route-sync
+		// 2. Auth endpoints are exempt: they ARE the login flow.
+		if r.URL.Path == "/auth/login" || r.URL.Path == "/auth/callback" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 3. Gateway internal-token exemption: the gateway sends route-sync
 		// requests with X-Purser-Internal-Token; those must not require a
 		// human OIDC token.
 		if s.internalToken != "" && r.Header.Get("X-Purser-Internal-Token") == s.internalToken {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 3. Extract Bearer token from the Authorization header.
-		rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || strings.TrimSpace(rawToken) == "" {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error":   "unauthorized",
-				"message": "valid OIDC token required",
-			})
+		// 4. Try Bearer token (ID token from the IdP, existing flow).
+		if rawToken, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && strings.TrimSpace(rawToken) != "" {
+			sub, email, err := s.oidcVerifier.VerifyToken(r.Context(), rawToken)
+			if err != nil {
+				s.log.Debug("OIDC token verification failed", "err", err)
+				s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error":   "unauthorized",
+					"message": "valid OIDC token required",
+				})
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+			ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		// 4. Verify the token via the configured IdP.
-		sub, email, err := s.oidcVerifier.VerifyToken(r.Context(), rawToken)
-		if err != nil {
-			s.log.Debug("OIDC token verification failed", "err", err)
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error":   "unauthorized",
-				"message": "valid OIDC token required",
-			})
+		// 5. Try session cookie (browser SSO path).
+		if len(s.sessionSecret) > 0 {
+			if cookie, err := r.Cookie(sessionCookieName); err == nil {
+				if sub, email, err := s.verifySession(cookie.Value); err == nil {
+					ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+					ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				} else {
+					s.log.Debug("OIDC session cookie invalid", "err", err)
+				}
+			}
+		}
+		// 6. No valid credential. Redirect browser requests to /auth/login when
+		// the Authorization Code Flow is configured; return 401 JSON otherwise.
+		if strings.Contains(r.Header.Get("Accept"), "text/html") &&
+			s.oidcConfig != nil && s.oidcConfig.RedirectURI != "" {
+			http.Redirect(w, r, "/auth/login", http.StatusFound)
 			return
 		}
-		// 5. Inject verified claims into the request context for downstream
-		// handlers to log as the authenticated actor.
-		ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
-		ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"error":   "unauthorized",
+			"message": "valid OIDC token required",
+		})
 	})
 }
 
@@ -512,6 +575,11 @@ func bearerToken(r *http.Request) string {
 }
 
 func (s *Server) routes() {
+	// Authorization Code Flow + PKCE endpoints (browser SSO).
+	// These are exempt from oidcMiddleware — they ARE the login flow.
+	s.mux.HandleFunc("GET /auth/login", s.handleAuthLogin)
+	s.mux.HandleFunc("GET /auth/callback", s.handleAuthCallback)
+
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)
 	s.mux.HandleFunc("POST /api/v1/nodes/{id}/drain", s.handleDrainNode)
