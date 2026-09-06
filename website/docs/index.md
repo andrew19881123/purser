@@ -4,7 +4,8 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/andrew19881123/purser/blob/main/LICENSE)
 [![CI](https://github.com/andrew19881123/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/andrew19881123/purser/actions/workflows/ci.yml)
-[![Status: v0.3 candidate](https://img.shields.io/badge/status-v0.3_candidate-brightgreen)](https://github.com/andrew19881123/purser/blob/main/CHANGELOG.md)
+[![Release: v0.3.0](https://img.shields.io/badge/release-v0.3.0-blue)](https://github.com/andrew19881123/purser/releases/tag/v0.3.0)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/andrew19881123/purser/blob/main/PROJECT_STATUS.md)
 
 ## What is Purser?
 
@@ -113,7 +114,7 @@ For production Kubernetes deployments see the [Quickstart guide](getting-started
 
 ## Status
 
-**v0.3 candidate — "Production-Grade Enterprise".** The complete zero-config vertical — *enroll → deploy → chat* — is demonstrated end-to-end, single-node and split across a multi-node pipeline. v0.3 ships: OIDC SSO (PKCE), RBAC, TLS everywhere, webhook notifications, ARM64 builds, Python and TypeScript SDKs, llama.cpp backend (feature-gated), and a Planner calibrated with real engine capabilities. HA/Raft is targeted for v0.4.
+**Alpha — v0.3.0.** The zero-config vertical (*enroll → deploy → chat*) is implemented and demonstrated end-to-end. v0.3 adds: Anthropic Messages API (`/v1/messages`), `purser.yaml` config-as-code + GitOps reconciler, inference audit log (AI Act Art.12), deployment approval gates (Art.14), OPA policy engine, HA Raft foundation, chargeback reports, HTTP proxy + custom CA, and backup/restore CLI. Live inference on real GPU hardware not yet validated — not recommended for production.
 
 See the full [Changelog](changelog.md) for details.
 
