@@ -16,10 +16,10 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go/controlplane/go.mod
 
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload E2E logs
         if: steps.e2e.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-single-node-logs
           path: /tmp/purser-e2e/
