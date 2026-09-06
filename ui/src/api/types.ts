@@ -450,3 +450,16 @@ export interface PlanPreviewResult {
   reason?: string;
   plan?: DeploymentPlan;
 }
+
+// --- model health ---
+export type ModelHealthStatus = 'healthy' | 'degraded' | 'unavailable';
+
+/** Response shape for GET /api/v1/models/{id}/health */
+export interface ModelHealth {
+  modelId: string;
+  status: ModelHealthStatus;
+  deploymentId: string;
+  deploymentState: string;
+  nodeCount: number;
+  errorMessage?: string;
+}

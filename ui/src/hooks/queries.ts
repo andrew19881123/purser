@@ -119,6 +119,17 @@ export function useModel(id: string | undefined) {
   });
 }
 
+// --- model health -----------------------------------------------------------
+
+export function useModelHealth(modelId: string | undefined) {
+  return useQuery({
+    queryKey: ['modelHealth', modelId],
+    queryFn: () => api.getModelHealth(modelId!),
+    enabled: !!modelId,
+    refetchInterval: 10_000,
+  });
+}
+
 // --- deployments ------------------------------------------------------------
 
 export function useDeployments() {
