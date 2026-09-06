@@ -187,6 +187,14 @@ containerSecurityContext:
   seccompProfile:
     type: RuntimeDefault
 
+# --- Security: encryption at rest ---
+# Options for encrypting the control plane's SQLite database at rest.
+# See: website/docs/operations/security-at-rest.md
+security:
+  integrityCheckOnStart: false   # PRAGMA integrity_check at startup (~1s for large DBs)
+  encryptedPVC: false            # add annotations requesting encrypted PVC storage
+  encryptionAnnotations: {}      # cloud-provider annotations (e.g. AWS KMS ARN)
+
 # -- Pod-level security context. The distroless image runs as UID 65532;
 # fsGroup makes the persistent volume group-writable for that user.
 podSecurityContext:

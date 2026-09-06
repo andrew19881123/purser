@@ -5,6 +5,10 @@ metadata:
   name: {{ include "purser.controlPlane.fullname" . }}-data
   labels:
     {{- include "purser.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+  {{- if and .Values.security.encryptedPVC .Values.security.encryptionAnnotations }}
+  annotations:
+    {{- toYaml .Values.security.encryptionAnnotations | nindent 4 }}
+  {{- end }}
 spec:
   accessModes:
     - {{ .Values.controlPlane.persistence.accessMode | quote }}

@@ -7,6 +7,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -48,7 +50,10 @@ var _ Registry = (*SQLiteRegistry)(nil)
 func Open(dsn string) (*SQLiteRegistry, error) {
 	// Enable foreign keys, WAL journaling and a busy timeout via DSN pragmas so
 	// every connection in the pool is configured identically.
-	conn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", dsn)
+	// WAL + synchronous=NORMAL: full durability on commit, no fsync on every
+	// page write. Safe for single-writer deployments on modern OS+hardware and
+	// gives a ~2-5x write-throughput improvement over the default FULL mode.
+	conn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn)
 	db, err := sql.Open("sqlite", conn)
 	if err != nil {
 		return nil, fmt.Errorf("registry: open sqlite: %w", err)
@@ -120,6 +125,22 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 	// Unique index on key_hash so GetAPIKeyByHash is an O(1) point lookup.
 	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys (key_hash)`); err != nil {
 		return fmt.Errorf("registry: migrate: %w", err)
+	}
+
+	// Optional startup integrity check: set PURSER_DB_INTEGRITY_CHECK=1 to run
+	// SQLite's PRAGMA integrity_check(100). Detects on-disk corruption early
+	// (torn writes, media errors, partial truncation). Adds roughly 1 s per GiB
+	// of database size; recommended in production, safe to skip in development.
+	// See: website/docs/operations/security-at-rest.md
+	if os.Getenv("PURSER_DB_INTEGRITY_CHECK") == "1" {
+		var result string
+		if err := r.db.QueryRowContext(ctx, "PRAGMA integrity_check(100)").Scan(&result); err != nil {
+			return fmt.Errorf("registry: integrity check failed: %w", err)
+		}
+		if result != "ok" {
+			return fmt.Errorf("registry: database integrity check failed: %s (consider restoring from backup)", result)
+		}
+		slog.Info("database integrity check passed")
 	}
 	return nil
 }
