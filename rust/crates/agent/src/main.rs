@@ -16,7 +16,7 @@ use tonic::transport::Server;
 
 use purser_agent::config::AgentConfig;
 use purser_agent::discovery::{self, Membership};
-use purser_agent::healing::{diagnose, DiagnosisInput, Liveness, NodeHealthMonitor};
+use purser_agent::healing::{diagnose, CertMonitor, DiagnosisInput, Liveness, NodeHealthMonitor};
 use purser_agent::linkbench::BandwidthReflector;
 use purser_agent::probe::{DefaultProbe, HardwareProbe};
 use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
@@ -316,6 +316,52 @@ async fn main() -> anyhow::Result<()> {
                         error = %e,
                         "SWIM gossip layer failed to start; falling back to mDNS + seed discovery"
                     );
+                }
+            }
+        });
+    }
+
+    // Cert expiry monitor: checks the mTLS client certificate every 6 hours and
+    // logs a warning when fewer than 24 hours remain, or an error when it has
+    // already expired.  The agent cannot heartbeat after expiry and is silently
+    // ejected by the control plane, so early warning is critical.
+    {
+        let cert_monitor = CertMonitor::new(Arc::clone(&secret_store));
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(purser_agent::healing::CHECK_INTERVAL);
+            loop {
+                ticker.tick().await;
+
+                if cert_monitor.is_expired() {
+                    tracing::error!(
+                        "mTLS certificate has EXPIRED — agent cannot communicate with \
+                         the control plane. Re-enrollment required: set PURSER_JOIN_TOKEN \
+                         and restart the agent."
+                    );
+                } else if cert_monitor.needs_renewal() {
+                    let days_left = cert_monitor
+                        .cert_expiry_secs()
+                        .map(|e| {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            e.saturating_sub(now) / 86_400
+                        })
+                        .unwrap_or(0);
+                    tracing::warn!(
+                        days_left,
+                        "mTLS certificate expires soon — re-enroll before it expires. \
+                         Set PURSER_JOIN_TOKEN and restart the agent. \
+                         Auto re-enrollment is planned for v0.4."
+                    );
+                } else if let Some(expiry) = cert_monitor.cert_expiry_secs() {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let days_left = expiry.saturating_sub(now) / 86_400;
+                    tracing::debug!(days_left, "mTLS certificate valid");
                 }
             }
         });
