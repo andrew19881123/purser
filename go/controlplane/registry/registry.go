@@ -130,4 +130,22 @@ type Registry interface {
 	// DeletePolicy removes the policy with the given name. Returns ErrNotFound
 	// when no such policy exists.
 	DeletePolicy(ctx context.Context, name string) error
+
+	// --- API Key Lifecycle (Wave B) ----------------------------------------
+	// RotateAPIKey atomically marks oldID as rotated (sets rotated_at, enabled=0)
+	// and inserts newKey with predecessor_id = oldID. The operation is
+	// transactional: either both changes land or neither does.
+	RotateAPIKey(ctx context.Context, oldID string, newKey *APIKey) error
+	// UpdateAPIKeyLastUsed updates the last_used_at timestamp for the given key.
+	// Callers should throttle this to at most once per 5 minutes to limit write
+	// amplification on the auth hot-path.
+	UpdateAPIKeyLastUsed(ctx context.Context, keyID string, at time.Time) error
+	// ListAPIKeysExpiringBefore returns all enabled keys whose expires_at is
+	// before the given timestamp (used by the expiry-notification background job).
+	ListAPIKeysExpiringBefore(ctx context.Context, before time.Time) ([]*APIKey, error)
+	// RecordAPIKeyAccess appends one row to api_key_access_log.
+	RecordAPIKeyAccess(ctx context.Context, entry *APIKeyAccessEntry) error
+	// HasAnyAPIKey returns true when at least one enabled API key exists (used
+	// to detect a first-run / bootstrap state).
+	HasAnyAPIKey(ctx context.Context) (bool, error)
 }

@@ -78,6 +78,12 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		// RBAC role for API keys. Default "admin" preserves full access for
 		// any key created before this column existed.
 		{"api_keys", "role", "TEXT NOT NULL DEFAULT 'admin'"},
+		// Enterprise lifecycle columns for API keys (Wave B).
+		{"api_keys", "expires_at", "TEXT"},
+		{"api_keys", "last_used_at", "TEXT"},
+		{"api_keys", "predecessor_id", "TEXT NOT NULL DEFAULT ''"},
+		{"api_keys", "rotated_at", "TEXT"},
+		{"api_keys", "scopes", "TEXT NOT NULL DEFAULT '[]'"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -625,13 +631,18 @@ func (r *SQLiteRegistry) GetAPIKey(ctx context.Context, id string) (*APIKey, err
 	return k, nil
 }
 
-// GetAPIKeyByHash returns the enabled API key whose key_hash column equals
-// keyHash. The WHERE clause hits the idx_api_keys_hash unique index, making
-// the lookup O(1) — the preferred path for the RBAC middleware hot-path.
+// GetAPIKeyByHash returns the enabled, non-expired API key whose key_hash
+// column equals keyHash. The WHERE clause hits the idx_api_keys_hash unique
+// index, making the lookup O(1) — the preferred path for the RBAC middleware
+// hot-path. Expired keys (expires_at IS NOT NULL AND expires_at <= now) are
+// treated as non-existent and ErrNotFound is returned.
 func (r *SQLiteRegistry) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT `+apiKeyCols+` FROM api_keys WHERE key_hash = ? AND enabled = 1 LIMIT 1`,
-		keyHash)
+		`SELECT `+apiKeyCols+` FROM api_keys
+		 WHERE key_hash = ? AND enabled = 1
+		   AND (expires_at IS NULL OR expires_at > ?)
+		 LIMIT 1`,
+		keyHash, fmtTime(time.Now()))
 	k, err := scanAPIKey(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound

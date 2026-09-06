@@ -131,6 +131,37 @@ type APIKey struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Enterprise lifecycle fields (Wave B).
+	// ExpiresAt is nil when the key never expires.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// LastUsedAt is nil when the key has never been used. Updates are throttled
+	// (at most once per 5 minutes) to minimise write amplification on the hot
+	// auth path.
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// PredecessorID links this key to the key it replaced (rotation chain).
+	// Empty string when this key was not created via RotateAPIKey.
+	PredecessorID string `json:"predecessor_id,omitempty"`
+	// RotatedAt is set when this key has been superseded by a successor.
+	// Nil means the key is still active (or was deleted rather than rotated).
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
+	// Scopes is a JSON-backed list of fine-grained permission strings.
+	// An empty slice means the key's permissions are governed by Role alone.
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// APIKeyAccessEntry records a single authenticated API request for audit and
+// anomaly detection. IPPrefix stores only the /24 CIDR prefix (GDPR Art.5
+// data minimisation — the full client IP is never persisted).
+type APIKeyAccessEntry struct {
+	ID         int64     `json:"id"`
+	APIKeyID   string    `json:"api_key_id"`
+	KeyHash    string    `json:"-"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	IPPrefix   string    `json:"ip_prefix"` // /24 CIDR
+	UserAgent  string    `json:"user_agent"`
+	StatusCode int       `json:"status_code"`
+	RequestAt  time.Time `json:"request_at"`
 }
 
 // Session records an inference session for metrics/attribution.

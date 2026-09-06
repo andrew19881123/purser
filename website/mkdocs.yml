@@ -64,6 +64,7 @@ nav:
     - Enrollment Bundle: install/enrollment-bundle.md
   - Configuration:
     - purser.yaml (Declarative Config): configuration/purser-yaml.md
+    - API Key Lifecycle: configuration/api-keys.md
     - Environment Variables: configuration/env-vars.md
     - Network Proxy & Custom CA: configuration/network-proxy.md
     - OIDC (EntraID / Okta / Keycloak): configuration/oidc.md

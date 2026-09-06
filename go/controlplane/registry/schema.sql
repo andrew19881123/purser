@@ -77,17 +77,46 @@ CREATE INDEX IF NOT EXISTS idx_deployments_model ON deployments (model_id);
 
 -- api_keys: gateway credentials, quotas and associated tenant. Only a hash of
 -- the key material is stored.
+-- role is backfilled via ensureColumn in Migrate for databases created before
+-- it was introduced; included here so fresh installs get it in one step.
+-- expires_at, last_used_at, predecessor_id, rotated_at, scopes: enterprise
+-- lifecycle fields (Wave B). Also backfilled via ensureColumn on upgrade.
 CREATE TABLE IF NOT EXISTS api_keys (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL DEFAULT '',
-    key_hash   TEXT NOT NULL,
-    tenant     TEXT NOT NULL DEFAULT '',
-    quota      INTEGER NOT NULL DEFAULT 0,
-    enabled    INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id             TEXT    PRIMARY KEY,
+    name           TEXT    NOT NULL DEFAULT '',
+    key_hash       TEXT    NOT NULL,
+    tenant         TEXT    NOT NULL DEFAULT '',
+    quota          INTEGER NOT NULL DEFAULT 0,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    -- RBAC role (admin|viewer|inference). Default "admin" preserves access
+    -- for keys created before RBAC was introduced.
+    role           TEXT    NOT NULL DEFAULT 'admin',
+    -- enterprise lifecycle (NULL = no constraint / not applicable)
+    expires_at     TEXT,                       -- NULL = never expires; RFC3339 UTC
+    last_used_at   TEXT,                       -- NULL = never used; throttled writes
+    predecessor_id TEXT    NOT NULL DEFAULT '', -- rotation chain; '' if no predecessor
+    rotated_at     TEXT,                       -- when replaced by a successor; NULL if active
+    scopes         TEXT    NOT NULL DEFAULT '[]' -- JSON array of permission strings
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant);
+
+-- api_key_access_log: per-request access log for API key audit and anomaly
+-- detection. ip_prefix stores the /24 CIDR prefix only (GDPR data minimisation).
+CREATE TABLE IF NOT EXISTS api_key_access_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id   TEXT    NOT NULL,
+    key_hash     TEXT    NOT NULL,
+    method       TEXT    NOT NULL DEFAULT '',
+    path         TEXT    NOT NULL DEFAULT '',
+    ip_prefix    TEXT    NOT NULL DEFAULT '',  -- /24 CIDR, GDPR data minimisation
+    user_agent   TEXT    NOT NULL DEFAULT '',
+    status_code  INTEGER NOT NULL DEFAULT 0,
+    request_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_akacl_key_id     ON api_key_access_log(api_key_id, request_at);
+CREATE INDEX IF NOT EXISTS idx_akacl_request_at ON api_key_access_log(request_at);
 
 -- sessions: inference sessions for metrics/attribution.
 CREATE TABLE IF NOT EXISTS sessions (

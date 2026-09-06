@@ -624,6 +624,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // underlying ListenAndServeTLS so the management API is served over HTTPS.
 func (s *Server) ListenAndServe() error {
 	go s.cleanupLimiters()
+	go s.startKeyExpiryWatcher(context.Background())
 	if s.tlsEnabled {
 		s.log.Info("management API serving HTTPS", "addr", s.server.Addr)
 		// For file-path mode pass the paths; for in-memory mode the TLSConfig
@@ -646,6 +647,43 @@ func (s *Server) validateInternalToken(provided string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.internalToken)) == 1
+}
+
+// startKeyExpiryWatcher emits audit events for API keys that will expire within
+// the next 14 days. It ticks every 6 hours and runs until ctx is cancelled.
+// Each affected key produces one "apikey.expiry_warning" audit entry carrying
+// the key's name, RFC3339 expiry timestamp, and approximate days remaining.
+func (s *Server) startKeyExpiryWatcher(ctx context.Context) {
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			horizon := time.Now().Add(14 * 24 * time.Hour)
+			keys, err := s.reg.ListAPIKeysExpiringBefore(ctx, horizon)
+			if err != nil {
+				s.log.Warn("key expiry watcher: list failed", "err", err)
+				continue
+			}
+			for _, k := range keys {
+				if k.ExpiresAt == nil {
+					continue
+				}
+				days := int(time.Until(*k.ExpiresAt).Hours() / 24)
+				_ = s.reg.AppendAudit(ctx, &registry.AuditEntry{
+					Actor:  "system",
+					Action: "apikey.expiry_warning",
+					Target: k.ID,
+					Details: json.RawMessage(fmt.Sprintf(
+						`{"name":%q,"expires_at":%q,"days_remaining":%d}`,
+						k.Name, k.ExpiresAt.Format(time.RFC3339), days,
+					)),
+				})
+			}
+		}
+	}
 }
 
 // cleanupLimiters sweeps the IP and API-key rate-limiter maps every 5 minutes,
@@ -1075,6 +1113,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/apikeys", s.handleCreateAPIKey)
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
+	s.mux.HandleFunc("POST /api/v1/apikeys/{id}/rotate", s.handleRotateAPIKey)
+	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/access-log", s.handleListAPIKeyAccess)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
 
