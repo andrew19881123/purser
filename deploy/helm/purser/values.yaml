@@ -171,6 +171,29 @@ externalSecrets:
     internalToken: ""     # e.g. "secret/data/purser/internal-token"
     licenseKey: ""        # e.g. "secret/data/purser/license-key"
 
+# --- Security: encryption at rest ---
+# Options for encrypting the control plane's SQLite database at rest.
+# These are advisory — Purser itself does not implement page-level encryption
+# (requires CGO + SQLCipher which breaks the static binary). Instead, use
+# one of the Kubernetes-native approaches documented in
+# website/docs/operations/security-at-rest.md.
+security:
+  # integrityCheckOnStart: run PRAGMA integrity_check at startup.
+  # Adds ~1s to startup time for large databases. Recommended for production.
+  integrityCheckOnStart: false
+
+  # encryptedPVC: set to true to add annotations requesting encrypted storage.
+  # Requires a StorageClass with encryption support (e.g., AWS gp3 with KMS,
+  # GKE pd-ssd with CMEK, or a manual LUKS-backed StorageClass).
+  encryptedPVC: false
+
+  # encryptionAnnotations: annotations to add to the PVC when encryptedPVC=true.
+  # Adjust for your cloud provider. Examples:
+  #   AWS:   eks.amazonaws.com/encrypted: "true"
+  #   GKE:   nothing needed (use StorageClass with encryption)
+  #   Azure: nothing needed (use StorageClass with encryption)
+  encryptionAnnotations: {}
+
 # Pod-level security context for the Control Plane. The distroless image runs as
 # UID 65532; fsGroup makes the persistent volume group-writable for that user.
 podSecurityContext:

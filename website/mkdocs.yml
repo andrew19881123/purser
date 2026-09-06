@@ -95,6 +95,7 @@ nav:
     - TypeScript SDK: integrations/typescript-sdk.md
   - Operations:
     - Backup & Restore: operations/backup-restore.md
+    - Encryption at Rest: operations/security-at-rest.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Gateway (/v1 OpenAI): api/gateway.md

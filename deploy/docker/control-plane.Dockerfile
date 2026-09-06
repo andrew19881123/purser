@@ -46,6 +46,10 @@ EXPOSE 8080 9443
 # Persistent state (SQLite registry + internal PKI) lives under /data. The code
 # defaults are CWD-relative and would target "/" (not writable by nonroot), so
 # point them at the /data volume that the Helm chart mounts as a PVC.
+# Security: set PURSER_DB_INTEGRITY_CHECK=1 to run SQLite PRAGMA integrity_check
+# at startup. Recommended in production for early corruption detection.
+# Set PURSER_PKI_KEY_PASSPHRASE to encrypt the CA private key at rest.
+# See: website/docs/operations/security-at-rest.md
 ENV PURSER_DB=/data/purser-registry.db \
     PURSER_PKI_DIR=/data/pki-state \
     PURSER_ADDR=:8080 \

@@ -71,6 +71,10 @@ spec:
                   name: {{ include "purser.licenseSecretName" . }}
                   key: license-key
             {{- end }}
+            {{- if .Values.security.integrityCheckOnStart }}
+            - name: PURSER_DB_INTEGRITY_CHECK
+              value: "1"
+            {{- end }}
             {{- with .Values.controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
