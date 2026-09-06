@@ -28,17 +28,17 @@ interface NavItem {
 }
 
 const OPERATE: NavItem[] = [
-  { to: '/', labelKey: 'nav.onboarding', icon: <IconRocket />, end: true },
+  { to: '/', labelKey: 'nav.gettingStarted', icon: <IconRocket />, end: true },
   { to: '/fleet', labelKey: 'nav.fleet', icon: <IconServer /> },
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
   { to: '/model-studio', labelKey: 'nav.modelStudio', icon: <IconBox /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
+  { to: '/audit', labelKey: 'nav.audit', icon: <IconShield /> },
   { to: '/join-token', labelKey: 'nav.joinTokens', icon: <IconKey /> },
 ];
 const USE: NavItem[] = [
   { to: '/playground', labelKey: 'nav.playground', icon: <IconChat /> },
   { to: '/settings', labelKey: 'nav.settings', icon: <IconSettings /> },
-  { to: '/audit', labelKey: 'nav.audit', icon: <IconShield /> },
 ];
 
 function NavGroup({ titleKey, items }: { titleKey: StringKey; items: NavItem[] }) {

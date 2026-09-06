@@ -5,6 +5,7 @@ export const en = {
   'app.name': 'Purser',
   'app.tagline': 'Distributed LLM inference, under control.',
   'nav.onboarding': 'Get started',
+  'nav.gettingStarted': 'Get Started',
   'nav.fleet': 'Fleet',
   'nav.catalog': 'Model catalog',
   'nav.deployments': 'Deployments',
@@ -319,8 +320,8 @@ export const en = {
   'settings.confirm.revokeBody': 'Key {name} will be permanently revoked. Running applications using it will stop working.',
 
   // join token / enrollment bundle
-  'join.title': 'Node enrollment',
-  'join.subtitle': 'Generate a join token or download a pre-configured agent bundle to enroll nodes.',
+  'join.title': 'Add Node',
+  'join.subtitle': 'Generate a join token or download a pre-configured enrollment bundle. Returning user? Use this page to add more nodes to your existing cluster.',
   'join.token.label': 'Join token',
   'join.bundle.title': 'Download enrollment bundle',
   'join.bundle.desc': 'Download a ready-to-use .env file. Place it at /etc/purser/agent.env on each node and restart the agent — no manual token copy required.',

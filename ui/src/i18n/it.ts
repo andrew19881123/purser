@@ -5,6 +5,7 @@ export const it: Record<StringKey, string> = {
   'app.name': 'Purser',
   'app.tagline': 'Inferenza LLM distribuita, sotto controllo.',
   'nav.onboarding': 'Inizia',
+  'nav.gettingStarted': 'Introduzione',
   'nav.fleet': 'Flotta',
   'nav.catalog': 'Catalogo modelli',
   'nav.deployments': 'Deploy',
@@ -291,8 +292,8 @@ export const it: Record<StringKey, string> = {
   'settings.confirm.revokeBody': 'La key {name} verrà revocata definitivamente. Le applicazioni che la usano smetteranno di funzionare.',
 
   // join token / enrollment bundle
-  'join.title': 'Registrazione nodi',
-  'join.subtitle': 'Genera un token di join o scarica un bundle pre-configurato per registrare i nodi.',
+  'join.title': 'Aggiungi nodo',
+  'join.subtitle': 'Genera un token di join o scarica un bundle di enrollment pre-configurato. Utente di ritorno? Usa questa pagina per aggiungere altri nodi al tuo cluster esistente.',
   'join.token.label': 'Token di join',
   'join.bundle.title': 'Scarica il bundle di enrollment',
   'join.bundle.desc': "Scarica un file .env pronto all'uso. Posizionalo in /etc/purser/agent.env su ogni nodo e riavvia l'agent — nessuna copia manuale del token necessaria.",
