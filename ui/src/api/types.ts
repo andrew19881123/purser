@@ -450,3 +450,36 @@ export interface PlanPreviewResult {
   reason?: string;
   plan?: DeploymentPlan;
 }
+
+// ---------------------------------------------------------------------------
+// Enterprise audit log — GET /api/v1/enterprise/audit-log.
+// Gated on a valid license with the "audit" feature entitlement (402 without).
+// ---------------------------------------------------------------------------
+
+/** One entry in the tamper-evident audit chain. */
+export interface AuditEntry {
+  seq: number;
+  actor: string;
+  action: string;
+  target: string;
+  details?: Record<string, string>;
+  prevHash: string;
+  hash: string;
+  /** ISO-8601 timestamp, normalised from the wire's `time_unix_nano`. */
+  createdAt: string;
+}
+
+/** Chain integrity summary returned alongside entries. */
+export interface AuditChainVerification {
+  verified: boolean;
+  length: number;
+  break?: { index: number; seq: number; kind: string; msg: string };
+}
+
+/** Full response shape for GET /api/v1/enterprise/audit-log. */
+export interface AuditLog {
+  feature: string;
+  licensee: string;
+  entries: AuditEntry[];
+  chain: AuditChainVerification;
+}
