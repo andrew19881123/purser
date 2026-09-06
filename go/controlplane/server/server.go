@@ -1122,6 +1122,10 @@ func (s *Server) routes() {
 	// feature); GET /billing/summary is open for all viewer/admin roles.
 	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
 	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
+
+	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
+	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
+	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log

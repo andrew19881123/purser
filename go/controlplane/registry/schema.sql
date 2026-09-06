@@ -151,7 +151,12 @@ CREATE TABLE IF NOT EXISTS inference_audit_log (
     endpoint          TEXT     NOT NULL DEFAULT 'openai',
     client_ip_prefix  TEXT     NOT NULL DEFAULT '',
     latency_ms        REAL     NOT NULL DEFAULT 0,
-    finish_reason     TEXT     NOT NULL DEFAULT 'stop'
+    finish_reason     TEXT     NOT NULL DEFAULT 'stop',
+    -- AI Act Art.12(1)(a): version tracking. Empty for pre-feature events.
+    model_revision     TEXT     NOT NULL DEFAULT '',
+    model_quantization TEXT     NOT NULL DEFAULT '',
+    node_id            TEXT     NOT NULL DEFAULT '',
+    inference_engine   TEXT     NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);

@@ -71,6 +71,14 @@ struct InferenceEventPayload {
     latency_ms: f32,
     /// `"stop"`, `"length"`, or `"error"`.
     finish_reason: String,
+    /// AI Act Art.12(1)(a): HuggingFace commit hash or checkpoint digest.
+    /// Empty when not available (backward compat).
+    model_revision: String,
+    /// Quantization label of the served weights, e.g. `"q4_k_m"`, `"fp16"`.
+    /// Sourced from the route's quantization field when available.
+    model_quantization: String,
+    /// Opaque deployment id of the node that served the request.
+    node_id: String,
 }
 
 /// Format the current UTC instant as an RFC 3339 string (`YYYY-MM-DDTHH:MM:SSZ`).
@@ -542,6 +550,12 @@ fn stream_response(
                     client_ip_prefix: String::new(),
                     latency_ms: start.elapsed().as_secs_f32() * 1000.0,
                     finish_reason: finish_reason.to_string(),
+                    // Version tracking fields (AI Act Art.12(1)(a)).
+                    // Populated as empty strings until the gateway has a
+                    // per-request route reference inside the stream closure.
+                    model_revision: String::new(),
+                    model_quantization: String::new(),
+                    node_id: String::new(),
                 },
             );
         }
@@ -650,6 +664,10 @@ async fn buffered_response(
                 client_ip_prefix: String::new(),
                 latency_ms: start.elapsed().as_secs_f32() * 1000.0,
                 finish_reason: finish_reason.to_string(),
+                // Version tracking fields (AI Act Art.12(1)(a)).
+                model_revision: String::new(),
+                model_quantization: String::new(),
+                node_id: String::new(),
             },
         );
     }

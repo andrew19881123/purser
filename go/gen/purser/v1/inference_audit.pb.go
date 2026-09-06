@@ -38,8 +38,14 @@ type InferenceEvent struct {
 	ClientIpPrefix   string                 `protobuf:"bytes,9,opt,name=client_ip_prefix,json=clientIpPrefix,proto3" json:"client_ip_prefix,omitempty"` // CIDR /24 prefix only — no full IP (GDPR minimisation)
 	LatencyMs        float32                `protobuf:"fixed32,10,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`               // end-to-end latency
 	FinishReason     string                 `protobuf:"bytes,11,opt,name=finish_reason,json=finishReason,proto3" json:"finish_reason,omitempty"`        // "stop" | "length" | "error"
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// AI Act Art.12(1)(a): version tracking — which exact model checkpoint
+	// served this request. Empty for pre-feature events (backward compat).
+	ModelRevision     string `protobuf:"bytes,12,opt,name=model_revision,json=modelRevision,proto3" json:"model_revision,omitempty"`             // HuggingFace commit hash or checkpoint digest
+	ModelQuantization string `protobuf:"bytes,13,opt,name=model_quantization,json=modelQuantization,proto3" json:"model_quantization,omitempty"` // "q4_k_m", "fp16", "awq", etc.
+	NodeId            string `protobuf:"bytes,14,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`                                  // which agent node served the request
+	InferenceEngine   string `protobuf:"bytes,15,opt,name=inference_engine,json=inferenceEngine,proto3" json:"inference_engine,omitempty"`       // e.g. "llama.cpp/b3497" or "vllm/0.4.2"
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *InferenceEvent) Reset() {
@@ -145,6 +151,34 @@ func (x *InferenceEvent) GetLatencyMs() float32 {
 func (x *InferenceEvent) GetFinishReason() string {
 	if x != nil {
 		return x.FinishReason
+	}
+	return ""
+}
+
+func (x *InferenceEvent) GetModelRevision() string {
+	if x != nil {
+		return x.ModelRevision
+	}
+	return ""
+}
+
+func (x *InferenceEvent) GetModelQuantization() string {
+	if x != nil {
+		return x.ModelQuantization
+	}
+	return ""
+}
+
+func (x *InferenceEvent) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *InferenceEvent) GetInferenceEngine() string {
+	if x != nil {
+		return x.InferenceEngine
 	}
 	return ""
 }
@@ -297,7 +331,7 @@ var File_purser_v1_inference_audit_proto protoreflect.FileDescriptor
 
 const file_purser_v1_inference_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpurser/v1/inference_audit.proto\x12\tpurser.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9f\x03\n" +
+	"\x1fpurser/v1/inference_audit.proto\x12\tpurser.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb9\x04\n" +
 	"\x0eInferenceEvent\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12 \n" +
@@ -313,7 +347,11 @@ const file_purser_v1_inference_audit_proto_rawDesc = "" +
 	"\n" +
 	"latency_ms\x18\n" +
 	" \x01(\x02R\tlatencyMs\x12#\n" +
-	"\rfinish_reason\x18\v \x01(\tR\ffinishReason\"\x91\x02\n" +
+	"\rfinish_reason\x18\v \x01(\tR\ffinishReason\x12%\n" +
+	"\x0emodel_revision\x18\f \x01(\tR\rmodelRevision\x12-\n" +
+	"\x12model_quantization\x18\r \x01(\tR\x11modelQuantization\x12\x17\n" +
+	"\anode_id\x18\x0e \x01(\tR\x06nodeId\x12)\n" +
+	"\x10inference_engine\x18\x0f \x01(\tR\x0finferenceEngine\"\x91\x02\n" +
 	"\x1aListInferenceEventsRequest\x12 \n" +
 	"\fapi_key_hash\x18\x01 \x01(\tR\n" +
 	"apiKeyHash\x12\x19\n" +

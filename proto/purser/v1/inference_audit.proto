@@ -22,6 +22,13 @@ message InferenceEvent {
   string  client_ip_prefix  = 9;  // CIDR /24 prefix only — no full IP (GDPR minimisation)
   float   latency_ms        = 10; // end-to-end latency
   string  finish_reason     = 11; // "stop" | "length" | "error"
+
+  // AI Act Art.12(1)(a): version tracking — which exact model checkpoint
+  // served this request. Empty for pre-feature events (backward compat).
+  string model_revision     = 12; // HuggingFace commit hash or checkpoint digest
+  string model_quantization = 13; // "q4_k_m", "fp16", "awq", etc.
+  string node_id            = 14; // which agent node served the request
+  string inference_engine   = 15; // e.g. "llama.cpp/b3497" or "vllm/0.4.2"
 }
 
 message ListInferenceEventsRequest {

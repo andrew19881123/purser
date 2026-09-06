@@ -79,6 +79,7 @@ nav:
     - Licensing & Key Management: enterprise/licensing.md
     - Tamper-Evident Audit Log: enterprise/audit-log.md
     - Inference Audit Log (AI Act): enterprise/inference-audit.md
+    - AI Act & GDPR Compliance: enterprise/ai-act-compliance.md
     - Deployment Approval Gates: enterprise/deployment-approvals.md
     - Usage Accounting (Chargeback): enterprise/usage-accounting.md
     - Chargeback Reports (Multi-Tenant): enterprise/chargeback.md

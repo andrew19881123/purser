@@ -78,6 +78,12 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		// RBAC role for API keys. Default "admin" preserves full access for
 		// any key created before this column existed.
 		{"api_keys", "role", "TEXT NOT NULL DEFAULT 'admin'"},
+		// AI Act Art.12(1)(a): version tracking for inference events. Default
+		// empty string preserves backward compat for pre-feature rows.
+		{"inference_audit_log", "model_revision", "TEXT NOT NULL DEFAULT ''"},
+		{"inference_audit_log", "model_quantization", "TEXT NOT NULL DEFAULT ''"},
+		{"inference_audit_log", "node_id", "TEXT NOT NULL DEFAULT ''"},
+		{"inference_audit_log", "inference_engine", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)

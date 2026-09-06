@@ -90,6 +90,10 @@ type EngineParams struct {
 	PipeFill      *float64               `protobuf:"fixed64,3,opt,name=pipe_fill,json=pipeFill,proto3,oneof" json:"pipe_fill,omitempty"`
 	Context       uint32                 `protobuf:"varint,4,opt,name=context,proto3" json:"context,omitempty"`
 	Extra         map[string]string      `protobuf:"bytes,5,rep,name=extra,proto3" json:"extra,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Enable flash attention (-fa in llama.cpp). Defaults to false (backward
+	// compatible). The extra["flash_attn"] key remains supported as a fallback
+	// for callers that have not yet migrated to this explicit field.
+	FlashAttn     bool `protobuf:"varint,6,opt,name=flash_attn,json=flashAttn,proto3" json:"flash_attn,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -159,6 +163,13 @@ func (x *EngineParams) GetExtra() map[string]string {
 	return nil
 }
 
+func (x *EngineParams) GetFlashAttn() bool {
+	if x != nil {
+		return x.FlashAttn
+	}
+	return false
+}
+
 // A single event streamed while an engine is starting up or running.
 type EngineEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -224,14 +235,16 @@ var File_purser_v1_engine_proto protoreflect.FileDescriptor
 
 const file_purser_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x16purser/v1/engine.proto\x12\tpurser.v1\x1a\x16purser/v1/common.proto\"\xc0\x02\n" +
+	"\x16purser/v1/engine.proto\x12\tpurser.v1\x1a\x16purser/v1/common.proto\"\xdf\x02\n" +
 	"\fEngineParams\x12+\n" +
 	"\x0fdraft_block_len\x18\x01 \x01(\rH\x00R\rdraftBlockLen\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"pipe_depth\x18\x02 \x01(\rH\x01R\tpipeDepth\x88\x01\x01\x12 \n" +
 	"\tpipe_fill\x18\x03 \x01(\x01H\x02R\bpipeFill\x88\x01\x01\x12\x18\n" +
 	"\acontext\x18\x04 \x01(\rR\acontext\x128\n" +
-	"\x05extra\x18\x05 \x03(\v2\".purser.v1.EngineParams.ExtraEntryR\x05extra\x1a8\n" +
+	"\x05extra\x18\x05 \x03(\v2\".purser.v1.EngineParams.ExtraEntryR\x05extra\x12\x1d\n" +
+	"\n" +
+	"flash_attn\x18\x06 \x01(\bR\tflashAttn\x1a8\n" +
 	"\n" +
 	"ExtraEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
