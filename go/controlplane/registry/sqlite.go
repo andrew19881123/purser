@@ -683,6 +683,16 @@ func (r *SQLiteRegistry) DeleteAPIKey(ctx context.Context, id string) error {
 	return mustAffect(res, "api_key", id)
 }
 
+// HasAnyAPIKey reports whether at least one enabled API key exists in the
+// store. The query is O(1) via the primary index and stops at the first match.
+func (r *SQLiteRegistry) HasAnyAPIKey(ctx context.Context) (bool, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM api_keys WHERE enabled = 1 LIMIT 1`,
+	).Scan(&count)
+	return count > 0, err
+}
+
 // --- Certs (internal PKI) --------------------------------------------------
 
 func (r *SQLiteRegistry) CreateCert(ctx context.Context, c *Cert) error {

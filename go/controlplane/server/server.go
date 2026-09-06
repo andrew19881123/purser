@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -404,10 +405,16 @@ type Server struct {
 	policyMu     sync.RWMutex
 	policyEngine *policy.Engine // nil when feature is off or no policies are loaded
 
-	// handler is the mux wrapped with OTEL (outer), OIDC (middle), rate-limit,
+	// handler is the mux wrapped with CORS (outermost), OTEL, OIDC, rate-limit,
 	// and RBAC (inner) middleware. Returned by Handler() and used as
 	// http.Server.Handler so all test paths go through the same middleware chain.
 	handler http.Handler
+
+	// hasAnyAPIKeyCache caches whether at least one enabled API key exists in
+	// the registry. It is loaded lazily on the first unauthenticated request to
+	// an /api/v1/* endpoint and never invalidated (API key creation only ever
+	// transitions false→true, never the reverse within a process lifetime).
+	hasAnyAPIKeyCache atomic.Bool
 
 	// OTEL infrastructure gauge instruments. All three are no-ops unless a real
 	// MeterProvider was installed by telemetry.Init before New() is called.
@@ -581,11 +588,11 @@ func New(reg registry.Registry, cfg Config) *Server {
 		metric.WithDescription("1 if the node's inference HTTP port is responding, 0 otherwise"),
 		metric.WithUnit("{bool}"))
 
-	// Wrap the mux: OTEL (outermost, for distributed tracing) →
-	// OIDC (human-user authentication) → rate-limit → RBAC (API key role
-	// enforcement) → mux. When no TracerProvider/OIDCVerifier is configured
-	// those layers are transparent no-ops.
-	s.handler = otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux))))
+	// Wrap the mux: CORS (outermost, handles preflight OPTIONS before any other
+	// processing) → OTEL (distributed tracing) → OIDC (human-user auth) →
+	// rate-limit → RBAC (API key role enforcement) → mux. CORS and OTEL are
+	// transparent no-ops when not configured; OIDC is a no-op when unconfigured.
+	s.handler = s.corsMiddleware(otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux)))))
 
 	// Build the underlying http.Server. For in-memory TLS (auto mode) the PEM
 	// bytes are pre-parsed into a tls.Certificate and attached via TLSConfig so
@@ -594,6 +601,10 @@ func New(reg registry.Registry, cfg Config) *Server {
 		Addr:              cfg.Addr,
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,  // total time to read request including body
+		WriteTimeout:      180 * time.Second, // allows SSE streams to run for minutes
+		IdleTimeout:       120 * time.Second, // keep-alive connections
+		MaxHeaderBytes:    1 << 20,           // 1 MB header limit
 	}
 	if len(cfg.TLSCertPEM) > 0 && len(cfg.TLSKeyPEM) > 0 {
 		cert, err := tls.X509KeyPair(cfg.TLSCertPEM, cfg.TLSKeyPEM)
@@ -867,8 +878,52 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 3. No token → pass through (anonymous; handler decides if auth is needed).
+		// 3. No token → fail-closed for /api/v1/* when auth is configured.
+		// Non-management paths (/auth/login, /auth/callback, etc.) always pass
+		// through. For management paths: reject with 401 when OIDC is configured
+		// or at least one API key exists (bootstrapped deployment). Only allow
+		// unauthenticated access when nothing is configured (pure dev mode).
 		if token == "" {
+			if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Requests carrying a valid X-Purser-Internal-Token always pass through
+			// even without a Bearer token — oidcMiddleware already exempts them
+			// from OIDC verification; rbacMiddleware must do the same so internal
+			// calls (gateway → /api/v1/usage, /api/v1/inference-events, etc.) are
+			// not blocked when API keys are configured.
+			if s.validateInternalToken(r.Header.Get("X-Purser-Internal-Token")) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if s.oidcVerifier != nil {
+				s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error":   "unauthorized",
+					"message": "authentication required: provide a valid API key or OIDC token",
+				})
+				return
+			}
+			// Cached check: once we know API keys exist, skip the DB on every request.
+			if s.hasAnyAPIKeyCache.Load() {
+				s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error":   "unauthorized",
+					"message": "authentication required",
+				})
+				return
+			}
+			// One-time DB check: if a key exists, cache true and reject.
+			if s.reg != nil {
+				if has, err := s.reg.HasAnyAPIKey(r.Context()); err == nil && has {
+					s.hasAnyAPIKeyCache.Store(true)
+					s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+						"error":   "unauthorized",
+						"message": "authentication required",
+					})
+					return
+				}
+			}
+			// No API keys, no OIDC → dev/bootstrap mode, pass-through.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -920,6 +975,46 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		}
+	})
+}
+
+// corsMiddleware sets CORS response headers based on the PURSER_ALLOWED_ORIGINS
+// environment variable (comma-separated list of allowed origin values, e.g.
+// "https://app.example.com,https://admin.example.com"). The wildcard "*" is
+// also accepted. When the variable is empty or unset, all cross-origin requests
+// are silently allowed through without any ACAO header (same-origin only policy
+// — browsers will block them). Preflight OPTIONS requests are answered
+// immediately with 204 No Content when the origin is in the allowed list.
+// The allowed list is read once at middleware creation time for performance.
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	allowedRaw := os.Getenv("PURSER_ALLOWED_ORIGINS")
+	allowed := make(map[string]bool)
+	if allowedRaw != "" {
+		for _, o := range strings.Split(allowedRaw, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				allowed[o] = true
+			}
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && (allowed[origin] || allowed["*"]) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			if origin != "" && (allowed[origin] || allowed["*"]) {
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers",
+					"Authorization, Content-Type, X-Purser-Internal-Token")
+				w.Header().Set("Access-Control-Max-Age", "3600")
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1594,9 +1689,11 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 // promoted columns (family/architecture/params/engine) are derived from the
 // spec for cheap listing/querying.
 func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB body limit
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "bad_request", "read body: "+err.Error())
+		s.writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+			"request body exceeds 1 MB limit")
 		return
 	}
 	if len(raw) == 0 {

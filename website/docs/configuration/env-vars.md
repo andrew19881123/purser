@@ -42,6 +42,18 @@ The management REST API (`/api/v1`) can be served over HTTPS. Three modes are su
 | `PURSER_TLS_KEY` | (empty) | Path to a PEM-encoded TLS private key file. Required when `PURSER_TLS_CERT` is set. |
 | `PURSER_TLS_AUTO` | `false` | When `true`, `1`, or `yes`, the Control Plane issues a self-signed certificate from the internal PKI CA for `localhost` and the machine hostname. The certificate is held in memory — no disk files are written. Takes precedence over `PURSER_TLS_CERT`/`PURSER_TLS_KEY`. Suitable for development and air-gapped environments where cert-manager is not available. |
 
+### CORS for the management API
+
+Cross-Origin Resource Sharing (CORS) is opt-in. When `PURSER_ALLOWED_ORIGINS` is
+unset, no `Access-Control-Allow-Origin` header is emitted and browsers will block
+cross-origin requests (same-origin policy). Set it to a comma-separated list of
+allowed origins (or `*` for open access) to allow the operator dashboard or other
+web clients hosted on a different origin to reach the management API.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PURSER_ALLOWED_ORIGINS` | (empty — same-origin only) | Comma-separated list of allowed CORS origins for the management REST API, e.g. `https://dashboard.example.com,https://ops.example.com`. Set to `*` to allow all origins (not recommended in production). When empty or unset, no `Access-Control-Allow-Origin` header is emitted and browsers enforce same-origin policy. Preflight `OPTIONS` requests from unlisted origins receive `204 No Content` without CORS headers, which browsers treat as a failed preflight. |
+
 ### Rate limiting for the management API
 
 Two independent token-bucket rate limiters protect the management REST API against accidental CI/CD hammering and per-key abuse. Both are per-process (not distributed) and are lazily initialised per source IP or per API-key hash.
@@ -209,9 +221,9 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ## Complete list by component
 
-### Control Plane env vars (28)
+### Control Plane env vars (29)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_OIDC_CLIENT_SECRET`, `PURSER_OIDC_REDIRECT_URI`, `PURSER_SESSION_SECRET`, `PURSER_OIDC_GROUP_MAPPINGS`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_OIDC_CLIENT_SECRET`, `PURSER_OIDC_REDIRECT_URI`, `PURSER_SESSION_SECRET`, `PURSER_OIDC_GROUP_MAPPINGS`, `PURSER_ALLOWED_ORIGINS`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
 
 ### Agent env vars (22)
 
