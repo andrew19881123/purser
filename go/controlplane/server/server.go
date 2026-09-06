@@ -369,9 +369,9 @@ type Server struct {
 	clusterID         string
 	publicAddr        string
 	license           *license.License
-	oidcVerifier      TokenVerifier     // nil = OIDC disabled
-	oidcConfig        *OIDCConfig       // nil when OIDC not configured
-	sessionSecret     []byte            // HMAC-SHA256 key for session cookie signing
+	oidcVerifier      TokenVerifier // nil = OIDC disabled
+	oidcConfig        *OIDCConfig   // nil when OIDC not configured
+	sessionSecret     []byte        // HMAC-SHA256 key for session cookie signing
 	pkceStore         *pkceStateStore
 	oidcGroupMappings map[string]string // group/role claim → Purser role; nil = no mapping
 	internalToken     string            // gateway exemption secret
@@ -790,9 +790,9 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 // rbacPublicPaths are the paths that bypass RBAC regardless of the key
 // presented. These are always accessible (e.g. health check, API schema).
 var rbacPublicPaths = map[string]bool{
-	"/api/v1/cluster/health":  true,
-	"/api/v1/cluster/status":  true,
-	"/api/v1/openapi.json":    true,
+	"/api/v1/cluster/health": true,
+	"/api/v1/cluster/status": true,
+	"/api/v1/openapi.json":   true,
 }
 
 // rbacMiddleware enforces role-based access control on every request based on

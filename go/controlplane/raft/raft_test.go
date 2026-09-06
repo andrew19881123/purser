@@ -55,7 +55,7 @@ func TestFSM_Apply_CreateModel(t *testing.T) {
 	fsm := raftcp.NewFSM(reg, nil)
 
 	model := &registry.Model{
-		ID:   "m-test-001",
+		ID:     "m-test-001",
 		Family: "llama-3-8b",
 	}
 	data, err := raftcp.MarshalCommand(raftcp.CmdCreateModel, model)

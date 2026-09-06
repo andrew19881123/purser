@@ -67,9 +67,9 @@ func (l *registryLister) CurrentDeploymentModelIDs(ctx context.Context) ([]strin
 
 // ApplyResult summarises the mutations made by ApplyClusterConfig.
 type ApplyResult struct {
-	ModelsAdded       int `json:"models_added"`
-	DeploymentsAdded  int `json:"deployments_added"`
-	QuotasUpserted    int `json:"quotas_upserted"`
+	ModelsAdded      int `json:"models_added"`
+	DeploymentsAdded int `json:"deployments_added"`
+	QuotasUpserted   int `json:"quotas_upserted"`
 }
 
 // ApplyClusterConfig reconciles the live cluster state towards cfg.

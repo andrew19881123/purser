@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
@@ -205,7 +206,7 @@ func BenchmarkPlanSmallFleet(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = Plan(nodes, links, model, Constraints{})
+		_, _ = Plan(context.Background(), nodes, links, model, Constraints{})
 	}
 }
 
@@ -216,7 +217,7 @@ func BenchmarkPlanMediumFleet(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = Plan(nodes, links, model, Constraints{})
+		_, _ = Plan(context.Background(), nodes, links, model, Constraints{})
 	}
 }
 
@@ -227,7 +228,7 @@ func BenchmarkPlanLargeFleet(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = Plan(nodes, links, model, Constraints{})
+		_, _ = Plan(context.Background(), nodes, links, model, Constraints{})
 	}
 }
 
@@ -253,7 +254,7 @@ func BenchmarkPlanNoFit(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = Plan(nodes, links, model, Constraints{})
+		_, _ = Plan(context.Background(), nodes, links, model, Constraints{})
 	}
 }
 
@@ -267,7 +268,7 @@ func BenchmarkPlanForceNodeCount(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _ = Plan(nodes, links, model, c)
+		_, _ = Plan(context.Background(), nodes, links, model, c)
 	}
 }
 
@@ -281,7 +282,7 @@ func BenchmarkFitAll(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		for _, m := range catalog {
-			_, _ = Plan(nodes, links, m, Constraints{})
+			_, _ = Plan(context.Background(), nodes, links, m, Constraints{})
 		}
 	}
 }
@@ -295,7 +296,7 @@ func BenchmarkFitAll(b *testing.B) {
 func TestBenchmarkScenariosAreRealistic(t *testing.T) {
 	t.Run("SmallFleet/fits-on-1", func(t *testing.T) {
 		nodes, links := buildFleet(4)
-		dp, err := Plan(nodes, links, bench7BModel(), Constraints{})
+		dp, err := Plan(context.Background(), nodes, links, bench7BModel(), Constraints{})
 		if err != nil {
 			t.Fatalf("small fleet: unexpected error: %v", err)
 		}
@@ -309,7 +310,7 @@ func TestBenchmarkScenariosAreRealistic(t *testing.T) {
 
 	t.Run("MediumFleet/splits-across-3", func(t *testing.T) {
 		nodes, links := buildFleet(20)
-		dp, err := Plan(nodes, links, bench100BModel(), Constraints{})
+		dp, err := Plan(context.Background(), nodes, links, bench100BModel(), Constraints{})
 		if err != nil {
 			t.Fatalf("medium fleet: unexpected error: %v", err)
 		}
@@ -321,7 +322,7 @@ func TestBenchmarkScenariosAreRealistic(t *testing.T) {
 
 	t.Run("LargeFleet/splits-across-8", func(t *testing.T) {
 		nodes, links := buildFleet(100)
-		dp, err := Plan(nodes, links, bench80BModel(), Constraints{})
+		dp, err := Plan(context.Background(), nodes, links, bench80BModel(), Constraints{})
 		if err != nil {
 			t.Fatalf("large fleet: unexpected error: %v", err)
 		}
@@ -347,7 +348,7 @@ func TestBenchmarkScenariosAreRealistic(t *testing.T) {
 				{Name: "q4", SizeGB: 250, Quality: 0.90},
 			},
 		}
-		dp, err := Plan(nodes, links, model, Constraints{})
+		dp, err := Plan(context.Background(), nodes, links, model, Constraints{})
 		if dp != nil {
 			t.Fatalf("no-fit: expected nil plan, got %+v", dp)
 		}
@@ -366,7 +367,7 @@ func TestBenchmarkScenariosAreRealistic(t *testing.T) {
 	t.Run("ForceNodeCount/1-valid", func(t *testing.T) {
 		nodes, links := buildFleet(4)
 		one := 1
-		dp, err := Plan(nodes, links, bench7BModel(), Constraints{ForceNodeCount: &one})
+		dp, err := Plan(context.Background(), nodes, links, bench7BModel(), Constraints{ForceNodeCount: &one})
 		if err != nil {
 			t.Fatalf("force-count=1: unexpected error: %v", err)
 		}
@@ -380,7 +381,7 @@ func TestBenchmarkScenariosAreRealistic(t *testing.T) {
 		catalog := benchCatalog()
 		feasible := 0
 		for _, m := range catalog {
-			dp, err := Plan(nodes, links, m, Constraints{})
+			dp, err := Plan(context.Background(), nodes, links, m, Constraints{})
 			if err == nil {
 				feasible++
 				if dp == nil {

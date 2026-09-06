@@ -30,33 +30,33 @@ import (
 type CommandType uint8
 
 const (
-	CmdCreateModel            CommandType = iota // 0
-	CmdDeleteModel                               // 1
-	CmdCreateDeployment                          // 2
-	CmdUpdateDeploymentState                     // 3
-	CmdCreateAPIKey                              // 4
-	CmdRevokeAPIKey                              // 5
-	CmdRecordInferenceEvent                      // 6
-	CmdUpsertPolicy                              // 7
-	CmdDeletePolicy                              // 8
-	CmdRequestApproval                           // 9
-	CmdUpdateApprovalStatus                      // 10
-	CmdCreateNode                                // 11
-	CmdUpdateNode                                // 12
-	CmdDeleteNode                                // 13
-	CmdUpsertLink                                // 14
-	CmdUpdateModel                               // 15
-	CmdCreatePlan                                // 16
-	CmdDeletePlan                                // 17
-	CmdUpdateDeployment                          // 18
-	CmdDeleteDeployment                          // 19
-	CmdUpdateAPIKey                              // 20
-	CmdDeleteAPIKey                              // 21
-	CmdCreateCert                                // 22
-	CmdUpdateCert                                // 23
-	CmdDeleteCert                                // 24
-	CmdAppendAudit                               // 25
-	CmdRecordUsage                               // 26
+	CmdCreateModel           CommandType = iota // 0
+	CmdDeleteModel                              // 1
+	CmdCreateDeployment                         // 2
+	CmdUpdateDeploymentState                    // 3
+	CmdCreateAPIKey                             // 4
+	CmdRevokeAPIKey                             // 5
+	CmdRecordInferenceEvent                     // 6
+	CmdUpsertPolicy                             // 7
+	CmdDeletePolicy                             // 8
+	CmdRequestApproval                          // 9
+	CmdUpdateApprovalStatus                     // 10
+	CmdCreateNode                               // 11
+	CmdUpdateNode                               // 12
+	CmdDeleteNode                               // 13
+	CmdUpsertLink                               // 14
+	CmdUpdateModel                              // 15
+	CmdCreatePlan                               // 16
+	CmdDeletePlan                               // 17
+	CmdUpdateDeployment                         // 18
+	CmdDeleteDeployment                         // 19
+	CmdUpdateAPIKey                             // 20
+	CmdDeleteAPIKey                             // 21
+	CmdCreateCert                               // 22
+	CmdUpdateCert                               // 23
+	CmdDeleteCert                               // 24
+	CmdAppendAudit                              // 25
+	CmdRecordUsage                              // 26
 )
 
 // Command is the payload of a single Raft log entry.  Type selects the
