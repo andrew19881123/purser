@@ -545,6 +545,9 @@ func (s *Server) routes() {
 	// valid, offline-verified license key (see enterprise/license).
 	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
 	s.mux.HandleFunc("GET /api/v1/enterprise/audit-log", s.handleEnterpriseAuditLog)
+
+	// Fleet capacity headroom — viewer-accessible.
+	s.mux.HandleFunc("GET /api/v1/fleet/capacity", s.handleFleetCapacity)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -2554,6 +2557,166 @@ func (s *Server) StartInfraMetrics(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// FleetCapacity is the response body of GET /api/v1/fleet/capacity.
+type FleetCapacity struct {
+	VRAMTotalGB             float64  `json:"vram_total_gb"`
+	VRAMUsedGB              float64  `json:"vram_used_gb"`
+	VRAMHeadroomGB          float64  `json:"vram_headroom_gb"`
+	RAMTotalGB              float64  `json:"ram_total_gb"`
+	RAMHeadroomGB           float64  `json:"ram_headroom_gb"`
+	MemBandwidthTotalGBs    float64  `json:"mem_bandwidth_total_gbs"`
+	MemBandwidthHeadroomGBs float64  `json:"mem_bandwidth_headroom_gbs"`
+	ReadyNodes              int      `json:"ready_nodes"`
+	Bottleneck              string   `json:"bottleneck"`
+	CanFitModels            []string `json:"can_fit_models"`
+}
+
+// handleFleetCapacity aggregates resource totals and headroom across all READY
+// nodes and reports which catalog models can be deployed right now.
+//
+//   - vram/ram/bandwidth totals are summed from the hardware profiles of all READY nodes.
+//   - "used" is computed by finding which nodes host active deployments and
+//     treating their full VRAM contribution as consumed.
+//   - bottleneck is the resource with the lowest headroom-to-total ratio.
+//   - can_fit_models calls the Planner's FitAll (if configured).
+//
+// RBAC: viewer-accessible (GET only; no mutation).
+func (s *Server) handleFleetCapacity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_nodes_failed", err.Error())
+		return
+	}
+	deps, err := s.reg.ListDeployments(ctx)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "list_deployments_failed", err.Error())
+		return
+	}
+
+	// Build a map of node resources for quick lookup.
+	type nodeResources struct {
+		vramGB float64
+		ramGB  float64
+		bwGBs  float64
+	}
+	nodeByID := make(map[string]*nodeResources, len(nodes))
+	var cap FleetCapacity
+
+	for _, n := range nodes {
+		if n.State != "NODE_STATE_READY" && n.State != "NODE_STATE_RUNNING" {
+			continue
+		}
+		cap.ReadyNodes++
+
+		res := &nodeResources{
+			vramGB: n.VRAMGB,
+			ramGB:  n.RAMGB,
+		}
+		// Decode hardware profile for bandwidth and more accurate RAM figures.
+		if len(n.HardwareProfile) > 0 && string(n.HardwareProfile) != "{}" {
+			hw := &purserv1.HardwareProfile{}
+			if err := protojson.Unmarshal(n.HardwareProfile, hw); err == nil {
+				res.bwGBs = hw.GetMemBandwidthGbs()
+				if hw.GetRamTotalGb() > 0 {
+					res.ramGB = hw.GetRamTotalGb()
+				}
+			}
+		}
+		nodeByID[n.ID] = res
+		cap.VRAMTotalGB += res.vramGB
+		cap.RAMTotalGB += res.ramGB
+		cap.MemBandwidthTotalGBs += res.bwGBs
+	}
+
+	// Compute "used" from nodes occupied by ACTIVE deployments.
+	activeState := purserv1.DeploymentState_DEPLOYMENT_STATE_ACTIVE.String()
+	usedNodes := make(map[string]bool)
+	for _, d := range deps {
+		if d.State != activeState {
+			continue
+		}
+		if len(d.Detail) == 0 {
+			continue
+		}
+		var refs deploymentNodeRefs
+		if err := json.Unmarshal(d.Detail, &refs); err != nil {
+			continue
+		}
+		if refs.HostNodeID != "" {
+			usedNodes[refs.HostNodeID] = true
+		}
+		for _, e := range refs.Engines {
+			if e.NodeID != "" {
+				usedNodes[e.NodeID] = true
+			}
+		}
+	}
+
+	var vramUsed, ramUsed, bwUsed float64
+	for nodeID := range usedNodes {
+		if res, ok := nodeByID[nodeID]; ok {
+			vramUsed += res.vramGB
+			ramUsed += res.ramGB
+			bwUsed += res.bwGBs
+		}
+	}
+	cap.VRAMUsedGB = vramUsed
+	cap.VRAMHeadroomGB = cap.VRAMTotalGB - vramUsed
+	cap.RAMHeadroomGB = cap.RAMTotalGB - ramUsed
+	cap.MemBandwidthHeadroomGBs = cap.MemBandwidthTotalGBs - bwUsed
+
+	// Determine bottleneck: the resource with the lowest headroom/total ratio.
+	cap.Bottleneck = fleetBottleneck(
+		cap.VRAMTotalGB, cap.VRAMHeadroomGB,
+		cap.RAMTotalGB, cap.RAMHeadroomGB,
+		cap.MemBandwidthTotalGBs, cap.MemBandwidthHeadroomGBs,
+	)
+
+	// Which models can be placed on the current fleet?
+	cap.CanFitModels = []string{}
+	if s.planner != nil {
+		if fits, err := s.planner.FitAll(ctx); err == nil {
+			for _, f := range fits {
+				if f.Deployable {
+					cap.CanFitModels = append(cap.CanFitModels, f.ModelID)
+				}
+			}
+		} else {
+			s.log.Warn("fleet capacity: FitAll failed", "err", err)
+		}
+	}
+
+	s.writeJSON(w, http.StatusOK, cap)
+}
+
+// fleetBottleneck returns the label of the most constrained resource based on
+// the headroom-to-total ratio. When all totals are zero it returns "none".
+func fleetBottleneck(vramTotal, vramHeadroom, ramTotal, ramHeadroom, bwTotal, bwHeadroom float64) string {
+	ratio := func(headroom, total float64) float64 {
+		if total <= 0 {
+			return 1 // unavailable resource: treat as unconstrained
+		}
+		return headroom / total
+	}
+	vramR := ratio(vramHeadroom, vramTotal)
+	ramR := ratio(ramHeadroom, ramTotal)
+	bwR := ratio(bwHeadroom, bwTotal)
+
+	if vramTotal <= 0 && ramTotal <= 0 && bwTotal <= 0 {
+		return "none"
+	}
+	switch {
+	case vramR <= ramR && vramR <= bwR:
+		return "vram"
+	case ramR <= bwR:
+		return "ram"
+	default:
+		return "mem_bandwidth"
+	}
 }
 
 // collectInfraMetrics queries the registry for deployment and node counts and

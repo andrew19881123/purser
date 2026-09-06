@@ -714,6 +714,62 @@ Returns usage grouped by tenant. Accepts optional `?since=<RFC3339>` query param
 
 ---
 
+## Fleet
+
+### `GET /api/v1/fleet/capacity`
+
+Returns an aggregate view of available hardware resources across all READY and
+RUNNING nodes, minus what is already consumed by active deployments. Use this
+to quickly answer "do I have room to deploy another model?" without running the
+full planner.
+
+**RBAC:** viewer-accessible (GET).
+
+**Response `200`:**
+
+```json
+{
+  "vram_total_gb": 48.0,
+  "vram_used_gb": 20.0,
+  "vram_headroom_gb": 28.0,
+  "ram_total_gb": 256.0,
+  "ram_headroom_gb": 180.0,
+  "mem_bandwidth_total_gbs": 800.0,
+  "mem_bandwidth_headroom_gbs": 600.0,
+  "ready_nodes": 4,
+  "bottleneck": "vram",
+  "can_fit_models": ["llama-3.1-8b:Q4_K_M", "mistral-7b:Q4_K_M"]
+}
+```
+
+| Field | Type | Unit | Description |
+|---|---|---|---|
+| `vram_total_gb` | number | GB | Sum of VRAM across all READY/RUNNING nodes. |
+| `vram_used_gb` | number | GB | VRAM on nodes currently hosting active deployments. |
+| `vram_headroom_gb` | number | GB | `vram_total_gb − vram_used_gb`. |
+| `ram_total_gb` | number | GB | Sum of system RAM across all READY/RUNNING nodes. |
+| `ram_headroom_gb` | number | GB | RAM on nodes not currently occupied by active deployments. |
+| `mem_bandwidth_total_gbs` | number | GB/s | Sum of memory bandwidth from hardware profiles. |
+| `mem_bandwidth_headroom_gbs` | number | GB/s | Bandwidth on unoccupied nodes. |
+| `ready_nodes` | integer | — | Number of nodes in READY or RUNNING state. |
+| `bottleneck` | string | — | Most-constrained resource: `"vram"`, `"ram"`, `"mem_bandwidth"`, or `"none"`. Determined by the lowest headroom-to-total ratio. |
+| `can_fit_models` | array of strings | — | Model IDs from the catalog that the Planner can currently deploy on the fleet. Empty when no Planner is configured or no models fit. |
+
+**Notes:**
+
+- *Used* is computed at node granularity: when a deployment's engines occupy
+  a node, that node's full resource contribution is counted as used. This is a
+  conservative estimate — partial consumption is not yet tracked at layer
+  granularity.
+- `can_fit_models` calls the same Planner pipeline as `POST /api/v1/models/{id}/deploy`.
+  If the Planner is not configured (no `Config.Planner`), the field is always
+  an empty array.
+- With zero nodes the response is `{"ready_nodes":0,...,"bottleneck":"none","can_fit_models":[]}`.
+
+**Response `500`:** Registry unreachable.
+
+---
+
 ## Enterprise
 
 ### `GET /api/v1/enterprise/status`

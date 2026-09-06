@@ -19,13 +19,18 @@
 package reconciler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
+	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -109,6 +114,13 @@ type Config struct {
 	// Levels is the automation policy per event type; missing entries fall back
 	// to DefaultLevels.
 	Levels map[EventType]AutomationLevel
+	// WebhookURL, when non-empty, is the HTTP(S) endpoint that receives a POST
+	// request whenever the reconciler raises an approval_required event. The
+	// delivery is fire-and-forget (goroutine) and does not block the control loop.
+	WebhookURL string
+	// WebhookRetries is the maximum number of POST attempts before giving up.
+	// Defaults to 3 when 0 or negative.
+	WebhookRetries int
 }
 
 // DefaultConfig returns conservative defaults suitable for the MVP.
@@ -148,6 +160,14 @@ func ConfigFromEnv() Config {
 	}
 	if d := envDuration("PURSER_RECONCILER_ACTION_COOLDOWN"); d > 0 {
 		cfg.ActionCooldown = d
+	}
+	if v := os.Getenv("PURSER_RECONCILER_WEBHOOK_URL"); v != "" {
+		cfg.WebhookURL = v
+	}
+	if v := os.Getenv("PURSER_RECONCILER_WEBHOOK_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WebhookRetries = n
+		}
 	}
 	return cfg
 }
@@ -427,6 +447,11 @@ func (rc *Reconciler) dispatch(ctx context.Context, ev Event) bool {
 	case AutomationApprovalRequired:
 		rc.log.Warn("reconciler action pending approval", "type", ev.Type, "deployment", ev.DeploymentID, "node", ev.NodeID)
 		rc.audit(ctx, "reconciler.pending_approval", ev)
+		if rc.cfg.WebhookURL != "" {
+			// Fire-and-forget: use context.Background() so the delivery is not
+			// cancelled when the reconciler's request context expires.
+			go rc.sendWebhook(context.Background(), ev)
+		}
 		return false
 	case AutomationAuto:
 		if rc.act == nil {
@@ -590,6 +615,69 @@ func (rc *Reconciler) audit(ctx context.Context, action string, ev Event) {
 		Action: action,
 		Target: ev.DeploymentID,
 	})
+}
+
+// webhookPayload is the JSON body sent to the configured webhook URL when the
+// reconciler raises an approval_required event.
+type webhookPayload struct {
+	Event        string `json:"event"`
+	EventType    string `json:"event_type"`
+	NodeID       string `json:"node_id"`
+	DeploymentID string `json:"deployment_id"`
+	Timestamp    string `json:"timestamp"`
+	Version      string `json:"purser_version"`
+	Message      string `json:"message"`
+}
+
+// sendWebhook delivers the approval_required payload to rc.cfg.WebhookURL with
+// exponential-backoff retries. It is always called in a goroutine
+// (fire-and-forget) and logs failures at WARN level without blocking the loop.
+func (rc *Reconciler) sendWebhook(ctx context.Context, ev Event) {
+	maxTries := rc.cfg.WebhookRetries
+	if maxTries <= 0 {
+		maxTries = 3
+	}
+	payload := webhookPayload{
+		Event:        "approval_required",
+		EventType:    string(ev.Type),
+		NodeID:       ev.NodeID,
+		DeploymentID: ev.DeploymentID,
+		Timestamp:    rc.now().UTC().Format(time.RFC3339),
+		Version:      "0.3.0",
+		Message: fmt.Sprintf(
+			"Node %s went down; deployment %s requires manual approval to failover",
+			ev.NodeID, ev.DeploymentID,
+		),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		rc.log.Warn("webhook: marshal payload failed", "err", err)
+		return
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	for attempt := 0; attempt < maxTries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 500ms, 1s, 2s, …
+			sleep := time.Duration(math.Pow(2, float64(attempt-1))*500) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(sleep):
+			}
+		}
+		resp, postErr := client.Post(rc.cfg.WebhookURL, "application/json", bytes.NewReader(body))
+		if postErr != nil {
+			rc.log.Warn("webhook: delivery failed", "attempt", attempt+1, "url", rc.cfg.WebhookURL, "err", postErr)
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			rc.log.Info("webhook: delivered", "url", rc.cfg.WebhookURL, "status", resp.StatusCode)
+			return
+		}
+		rc.log.Warn("webhook: non-2xx response", "attempt", attempt+1, "status", resp.StatusCode, "url", rc.cfg.WebhookURL)
+	}
+	rc.log.Warn("webhook: all attempts exhausted", "url", rc.cfg.WebhookURL, "max_tries", maxTries)
 }
 
 // Node state string constants (mirror the NodeState proto enum values used
