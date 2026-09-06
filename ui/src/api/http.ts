@@ -29,6 +29,7 @@ import type {
   ClusterCapacity,
   DeployOverrides,
   Deployment,
+  DeploymentApproval,
   DeploymentPlan,
   DeploymentState,
   EnterpriseStatus,
@@ -438,6 +439,21 @@ function normalizeAuditLog(raw: unknown): AuditLog {
 
 const enc = encodeURIComponent;
 
+function normalizeApproval(raw: unknown): DeploymentApproval {
+  const a = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: typeof a.id === 'number' ? a.id : 0,
+    deploymentId: str(a.deploymentId),
+    modelId: str(a.modelId),
+    requester: str(a.requester),
+    requestedAt: str(a.requestedAt, new Date().toISOString()),
+    status: (str(a.status, 'pending') as DeploymentApproval['status']) || 'pending',
+    reviewer: a.reviewer ? str(a.reviewer) : undefined,
+    reviewedAt: a.reviewedAt ? str(a.reviewedAt) : undefined,
+    notes: a.notes ? str(a.notes) : undefined,
+  };
+}
+
 export function createHttpApi(baseUrl: string): PurserApi {
   const { request } = createClient(baseUrl);
 
@@ -614,6 +630,31 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // GET /api/v1/enterprise/audit-log -> AuditLog (402 without valid license)
     getAuditLog: (limit = 100) =>
       request<unknown>(`/enterprise/audit-log?limit=${limit}`).then(normalizeAuditLog),
+
+    // --- deployment approvals (AI Act Art.14) ---
+    listDeploymentApprovals: (status?: string, limit = 50) => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      params.set('limit', String(limit));
+      return request<{ approvals: DeploymentApproval[] }>(`/approvals?${params.toString()}`).then(
+        (r) => (r.approvals ?? []).map(normalizeApproval),
+      );
+    },
+
+    getDeploymentApproval: (deploymentId: string) =>
+      request<DeploymentApproval>(`/approvals/${enc(deploymentId)}`).then(normalizeApproval),
+
+    approveDeployment: (deploymentId: string, notes?: string) =>
+      request<DeploymentApproval>(`/approvals/${enc(deploymentId)}/approve`, {
+        method: 'POST',
+        body: { notes: notes ?? '' },
+      }).then(normalizeApproval),
+
+    rejectDeployment: (deploymentId: string, notes?: string) =>
+      request<DeploymentApproval>(`/approvals/${enc(deploymentId)}/reject`, {
+        method: 'POST',
+        body: { notes: notes ?? '' },
+      }).then(normalizeApproval),
 
     // --- live metrics (SSE) ---
     // GET /api/v1/metrics -> text/event-stream of MetricsSnapshot frames.

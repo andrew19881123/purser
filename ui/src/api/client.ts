@@ -23,6 +23,7 @@ import type {
   ClusterCapacity,
   DeployOverrides,
   Deployment,
+  DeploymentApproval,
   DeploymentPlan,
   EnterpriseStatus,
   ImportSource,
@@ -110,6 +111,16 @@ export interface PurserApi {
   // --- reconciler ---
   /** GET /api/v1/reconciler/status — live reconciler config + pending event tracker. */
   getReconcilerStatus(): Promise<ReconcilerStatus>;
+
+  // --- deployment approvals (AI Act Art.14) ---
+  /** GET /api/v1/approvals — 402 without deployment_approvals feature. */
+  listDeploymentApprovals(status?: string, limit?: number): Promise<DeploymentApproval[]>;
+  /** GET /api/v1/approvals/{id} — single approval record. */
+  getDeploymentApproval(deploymentId: string): Promise<DeploymentApproval>;
+  /** POST /api/v1/approvals/{id}/approve — admin-only. */
+  approveDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
+  /** POST /api/v1/approvals/{id}/reject — admin-only. */
+  rejectDeployment(deploymentId: string, notes?: string): Promise<DeploymentApproval>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

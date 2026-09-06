@@ -461,6 +461,29 @@ export const mockBackend: PurserApi = {
     }, 150);
   },
 
+  // --- deployment approvals (mock: no enterprise license in mock mode) ---
+  listDeploymentApprovals(): Promise<import('../api/types').DeploymentApproval[]> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+  getDeploymentApproval(): Promise<import('../api/types').DeploymentApproval> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+  approveDeployment(): Promise<import('../api/types').DeploymentApproval> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+  rejectDeployment(): Promise<import('../api/types').DeploymentApproval> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
+
   streamMetrics(handlers: MetricsStreamHandlers): () => void {
     const emit = () => {
       const samples = nodes

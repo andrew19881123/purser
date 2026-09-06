@@ -168,3 +168,21 @@ CREATE TABLE IF NOT EXISTS policies (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- deployment_approvals: human-oversight gate for AI Act Art.14 compliance.
+-- When the "deployment_approvals" enterprise feature is active, every deploy
+-- request creates a "pending" row here; the actual rollout is held until an
+-- admin approves via POST /api/v1/approvals/{deploymentId}/approve.
+CREATE TABLE IF NOT EXISTS deployment_approvals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deployment_id TEXT NOT NULL,
+    model_id      TEXT NOT NULL,
+    requester     TEXT NOT NULL,   -- api_key_hash of the deploy requester
+    requested_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status        TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
+    reviewer      TEXT,            -- api_key_hash of the admin who approved/rejected
+    reviewed_at   TEXT,
+    notes         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON deployment_approvals(status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_approvals_model  ON deployment_approvals(model_id);
