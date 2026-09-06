@@ -1,0 +1,20 @@
+---
+# install_purser_agents.yml — Install and configure the Purser agent on all GPU nodes.
+#
+# Usage:
+#   export PURSER_CP_ADDR=http://cp.internal:8080
+#   export PURSER_JOIN_TOKEN=psk_your-token-here
+#   ansible-playbook -i inventory/ playbooks/install_purser_agents.yml
+#
+# For automated token generation run enroll_nodes.yml instead.
+
+- name: Install and enroll Purser Fleet Agent
+  hosts: gpu_nodes
+  become: true
+
+  roles:
+    - purser_agent
+
+  vars:
+    purser_control_plane_addr: "{{ lookup('env', 'PURSER_CP_ADDR') }}"
+    purser_join_token: "{{ lookup('env', 'PURSER_JOIN_TOKEN') }}"
