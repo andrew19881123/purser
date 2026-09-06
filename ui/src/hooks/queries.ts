@@ -235,6 +235,21 @@ export function useGatewayModels(chatClient: ChatClient) {
   });
 }
 
+// --- reconciler -------------------------------------------------------------
+
+/**
+ * Poll GET /api/v1/reconciler/status every 15 seconds for the reconciler's
+ * active config and pending-approval event tracker. Used by the Fleet page's
+ * Reconciler Status widget.
+ */
+export function useReconcilerStatus() {
+  return useQuery({
+    queryKey: ['reconcilerStatus'],
+    queryFn: () => api.getReconcilerStatus(),
+    refetchInterval: 15_000,
+  });
+}
+
 // --- live metrics (SSE) -----------------------------------------------------
 
 /**

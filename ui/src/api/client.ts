@@ -30,6 +30,7 @@ import type {
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -82,6 +83,10 @@ export interface PurserApi {
   // --- live metrics (SSE) ---
   /** Subscribe to GET /api/v1/metrics; returns an unsubscribe/close function. */
   streamMetrics(handlers: MetricsStreamHandlers): () => void;
+
+  // --- reconciler ---
+  /** GET /api/v1/reconciler/status — live reconciler config + pending event tracker. */
+  getReconcilerStatus(): Promise<ReconcilerStatus>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

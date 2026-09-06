@@ -94,6 +94,12 @@ export const it: Record<StringKey, string> = {
   'fleet.empty': 'Nessun nodo registrato. Aggiungine uno da Inizia.',
   'fleet.link.label': 'Qualità rete',
 
+  // widget stato reconciler
+  'fleet.reconciler.title': 'Reconciler',
+  'fleet.reconciler.config': 'Intervallo: {intervalS}s · Timeout: {nodeTimeoutS}s · Cooldown: {cooldownS}s',
+  'fleet.reconciler.healthy': 'Healthy',
+  'fleet.reconciler.event_detail': '{tracked} eventi, più vecchio {oldestAgeS}s fa',
+
   'state.provisioning': 'Provisioning',
   'state.enrolled': 'Registrato',
   'state.ready': 'Pronto',

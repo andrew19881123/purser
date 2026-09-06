@@ -41,6 +41,7 @@ import type {
   NodeView,
   PerfEstimate,
   PlanPreviewResult,
+  ReconcilerStatus,
   Role,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
@@ -550,5 +551,10 @@ export function createHttpApi(baseUrl: string): PurserApi {
       handlers.signal?.addEventListener('abort', stop, { once: true });
       return stop;
     },
+
+    // --- reconciler ---
+    // GET /api/v1/reconciler/status -> ReconcilerStatus (config + pending tracker).
+    getReconcilerStatus: () =>
+      request<unknown>('/reconciler/status').then((raw) => raw as ReconcilerStatus),
   };
 }

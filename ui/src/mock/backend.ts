@@ -20,6 +20,7 @@ import type {
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
 import { clamp } from '../lib/format';
@@ -294,6 +295,13 @@ export const mockBackend: PurserApi = {
     if (!key) throw new NotFoundError(`API key ${id} was not found.`);
     key.revoked = true;
     return delay(structuredClone(key), 350);
+  },
+
+  getReconcilerStatus(): Promise<ReconcilerStatus> {
+    return delay<ReconcilerStatus>({
+      config: { intervalS: 10, nodeTimeoutS: 45, hysteresisS: 30, actionCooldownS: 120 },
+      tracker: {},
+    }, 150);
   },
 
   streamMetrics(handlers: MetricsStreamHandlers): () => void {

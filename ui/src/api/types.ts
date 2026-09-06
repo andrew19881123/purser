@@ -450,3 +450,27 @@ export interface PlanPreviewResult {
   reason?: string;
   plan?: DeploymentPlan;
 }
+
+// --- reconciler ---
+
+/** Per-event-type summary inside ReconcilerStatus.tracker. */
+export interface ReconcilerEventSummary {
+  tracked: number;
+  oldestAgeS: number;
+}
+
+/** Snapshot of the reconciler's active config knobs. */
+export interface ReconcilerConfigSnapshot {
+  intervalS: number;
+  nodeTimeoutS: number;
+  hysteresisS: number;
+  actionCooldownS: number;
+}
+
+/** GET /api/v1/reconciler/status response shape. */
+export interface ReconcilerStatus {
+  config: ReconcilerConfigSnapshot;
+  /** Keyed by event type (e.g. "node_down", "engine_down"). Only entries with
+   *  tracked > 0 represent pending approval events. */
+  tracker: Record<string, ReconcilerEventSummary>;
+}

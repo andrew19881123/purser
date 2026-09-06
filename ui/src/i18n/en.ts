@@ -100,6 +100,12 @@ export const en = {
   'fleet.empty': 'No nodes enrolled yet. Add one from Get started.',
   'fleet.link.label': 'Network link',
 
+  // reconciler status widget
+  'fleet.reconciler.title': 'Reconciler',
+  'fleet.reconciler.config': 'Interval: {intervalS}s · Timeout: {nodeTimeoutS}s · Cooldown: {cooldownS}s',
+  'fleet.reconciler.healthy': 'Healthy',
+  'fleet.reconciler.event_detail': '{tracked} events, oldest {oldestAgeS}s ago',
+
   // node states
   'state.provisioning': 'Provisioning',
   'state.enrolled': 'Enrolled',
