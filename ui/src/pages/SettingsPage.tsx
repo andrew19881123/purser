@@ -222,6 +222,42 @@ function KeyRow({ apiKey, t }: { apiKey: ApiKey; t: TFunc }) {
   );
 }
 
+/** Above-the-fold quick stats: edition, active key count, total requests this month. */
+function QuickStatsBar() {
+  const { data: keys } = useApiKeys();
+  const { data: enterprise } = useEnterpriseStatus();
+  const { data: usage } = useUsageSummary();
+
+  const activeKeys = (keys ?? []).filter((k) => !k.revoked).length;
+  const edition = enterprise?.edition ?? null;
+  const totalRequests =
+    usage && usage.tenants.length > 0
+      ? usage.tenants.reduce((sum, row) => sum + row.totalRequests, 0)
+      : null;
+
+  return (
+    <div className="stat-grid" style={{ marginBottom: '1rem' }}>
+      {edition !== null && (
+        <div className="stat">
+          <span className="stat__value">{edition === 'enterprise' ? 'Enterprise' : 'Community'}</span>
+          <span className="stat__label">Edition</span>
+        </div>
+      )}
+      <div className="stat">
+        <span className="stat__value">{activeKeys}</span>
+        <span className="stat__label">Active API keys</span>
+      </div>
+      {totalRequests !== null && (
+        <div className="stat">
+          <span className="stat__value">{totalRequests.toLocaleString()}</span>
+          <span className="stat__label">Requests this month</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function UsageSummaryCard({ t }: { t: TFunc }) {
   const { data, isLoading, isError, error, refetch } = useUsageSummary();
 
@@ -347,6 +383,8 @@ export function SettingsPage() {
   return (
     <div className="page">
       <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle')} />
+
+      <QuickStatsBar />
 
       <Card
         title={t('settings.keys.title')}

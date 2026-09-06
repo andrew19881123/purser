@@ -121,7 +121,10 @@ export function DeploymentsPage() {
 
   return (
     <div className="page">
-      <PageHeader title={t('nav.deployments')} />
+      <PageHeader
+        title={t('nav.deployments')}
+        subtitle="Active and provisioning model deployments across your fleet."
+      />
       {isLoading && <LoadingBlock />}
       {isError && (
         <ErrorState message={errorMessage(error, t, 'error.deployments')} onRetry={() => refetch()} />
