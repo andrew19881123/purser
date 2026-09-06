@@ -42,8 +42,7 @@ The `content` field of each message may be:
 
 - A plain string: `"content": "Hello"`
 - An array of typed content blocks: `"content": [{"type": "text", "text": "Hello"}]`
-
-Only `text` blocks are extracted; `tool_use` and `image` blocks are silently dropped in this version (see [Feature support](#feature-support) below).
+- An array containing `tool_use`, `tool_result`, and `text` blocks (see [Tool use](#tool-use--function-calling) below)
 
 ## Response format — non-streaming
 
@@ -119,6 +118,94 @@ Errors follow the Anthropic error envelope — **not** the OpenAI envelope:
 | 529 | `overloaded_error` | Deployment host unavailable |
 | 504 | `api_error` | Upstream response timeout |
 
+## Tool use / Function calling
+
+The gateway fully supports Anthropic-style tool use. Define tools in the request, receive `tool_use` blocks in the response, and pass `tool_result` blocks back in the next turn.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    api_key="sk-mykey",
+    base_url="http://purser-gateway:8080",
+)
+
+tools = [
+    {
+        "name": "get_weather",
+        "description": "Get the current weather for a location.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "City name"},
+            },
+            "required": ["location"],
+        },
+    }
+]
+
+# First turn: model may call a tool
+response = client.messages.create(
+    model="qwen3-moe-235b",
+    max_tokens=1024,
+    tools=tools,
+    messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+)
+
+# response.stop_reason == "tool_use" when the model called a tool
+tool_use_block = next(b for b in response.content if b.type == "tool_use")
+tool_result = call_my_weather_api(tool_use_block.input["location"])
+
+# Second turn: pass the tool result back
+final = client.messages.create(
+    model="qwen3-moe-235b",
+    max_tokens=1024,
+    tools=tools,
+    messages=[
+        {"role": "user", "content": "What's the weather in Paris?"},
+        {"role": "assistant", "content": response.content},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_block.id,
+                    "content": tool_result,
+                }
+            ],
+        },
+    ],
+)
+print(final.content[0].text)
+```
+
+### Tool choice
+
+Pass `tool_choice` to control which tool (if any) the model calls:
+
+```python
+# Force the model to call any available tool
+tool_choice={"type": "any"}
+
+# Force a specific tool
+tool_choice={"type": "tool", "name": "get_weather"}
+
+# Let the model decide (default)
+tool_choice={"type": "auto"}
+```
+
+### Streaming with tool use
+
+Tool use works transparently with `stream=True`. The gateway emits the standard Anthropic SSE sequence:
+
+```
+content_block_start  (type="tool_use", index=1, id="...", name="...")
+content_block_delta  (type="input_json_delta", partial_json="...")
+content_block_stop
+message_delta        (stop_reason="tool_use")
+message_stop
+```
+
 ## SDK configuration
 
 ### Python (`anthropic` SDK)
@@ -189,9 +276,12 @@ In Cursor settings, set:
 | Text content blocks (`{"type":"text","text":"..."}`) | Supported |
 | Multi-turn conversations | Supported |
 | `max_tokens`, `temperature` | Supported |
-| Tool use (`tool_use`, `tool_result` blocks) | Coming in a future release |
-| Image input (`{"type":"image",...}`) | Coming in a future release |
-| `top_p`, `top_k`, `stop_sequences` | Not forwarded (use OpenAI endpoint for full param passthrough) |
+| Tool use (`tools[]`, `tool_use`/`tool_result` blocks) | **Supported** (v0.3+) |
+| `tool_choice` (`auto` / `any` / `tool`) | **Supported** (v0.3+) |
+| Tool use streaming (`input_json_delta` SSE) | **Supported** (v0.3+) |
+| `stop_sequences`, `top_p`, `top_k` | **Supported** (v0.3+) |
+| Image input (`{"type":"image",...}`) | Accepted (parsed, not forwarded) — coming in a future release |
+| Extended thinking (`thinking` content blocks) | Coming in a future release |
 | Batches API (`/v1/messages/batches`) | Not supported |
 
 ## How it works internally
@@ -199,8 +289,13 @@ In Cursor settings, set:
 The gateway translates requests at the edge; the inference backend always receives OpenAI-format JSON:
 
 1. The `system` field becomes the first `{"role":"system","content":"..."}` message.
-2. Content block arrays are flattened: only `text` blocks are kept; their text is concatenated.
-3. The resulting `messages` array (plus `model`, `stream`, `max_tokens`, `temperature`) is forwarded as a standard `POST /v1/chat/completions` request to the deployment host.
-4. On the response path: non-streaming JSON is re-shaped into the Anthropic `message` envelope; streaming chunks are translated token-by-token from OpenAI `content_block_delta` to Anthropic `content_block_delta` events.
+2. `text` content block arrays are concatenated into a plain string.
+3. Assistant messages with `tool_use` blocks are translated to OpenAI `tool_calls` arrays.
+4. User messages with `tool_result` blocks are exploded: each block becomes a separate `{"role":"tool","tool_call_id":"...","content":"..."}` message.
+5. `tools[]` definitions are translated to OpenAI `tools[].function` objects (JSON Schema passthrough).
+6. `tool_choice`, `stop_sequences`, `top_p`, and `top_k` are forwarded to the upstream.
+7. On the response path:
+   - Non-streaming: `finish_reason: "tool_calls"` → `stop_reason: "tool_use"`; `tool_calls` array → Anthropic `tool_use` content blocks.
+   - Streaming: `delta.tool_calls` fragments are emitted as `content_block_start` + `content_block_delta(input_json_delta)` SSE events, with one numbered block per tool call.
 
 Because the translation is stateless and happens in the gateway process, there is no added latency beyond a few microseconds of JSON parsing per request.
