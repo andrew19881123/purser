@@ -1411,6 +1411,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
 	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
 
+	// v0.4 org/team billing — enterprise-gated ("billing" feature).
+	// Teams are identified by tenant_id (naming convention: "<orgId>/<teamSlug>").
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/billing", s.handleOrgBillingReport)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/billing", s.handleTeamBillingReport)
+
 	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
 	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)

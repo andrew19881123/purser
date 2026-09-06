@@ -155,6 +155,14 @@ type Registry interface {
 	// GetBillingReport returns a chargeback report for the given time window,
 	// optionally filtered to a single tenant. An empty tenantID means all tenants.
 	GetBillingReport(ctx context.Context, start, end time.Time, tenantID string) (*BillingReport, error)
+	// GetTeamBillingReport aggregates inference_audit_log for a specific team
+	// (identified by its tenant_id). Cost is calculated from model_pricing when
+	// available; zero otherwise.
+	GetTeamBillingReport(ctx context.Context, teamID string, start, end time.Time) (*TeamBillingReport, error)
+	// GetOrgBillingReport aggregates billing for all teams belonging to orgID.
+	// Teams are discovered using the naming convention "<orgID>/<teamSlug>" for
+	// tenant_id values in the inference_audit_log.
+	GetOrgBillingReport(ctx context.Context, orgID string, start, end time.Time) (*OrgBillingReport, error)
 
 	// --- Inference audit log (AI Act Art.12) --------------------------------
 	// RecordInferenceEvent appends an inference event to the audit log.
