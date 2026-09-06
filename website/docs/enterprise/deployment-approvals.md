@@ -153,9 +153,9 @@ with live status badges:
 Admins can filter by status and approve or reject directly from the table via a
 confirm dialog that accepts optional notes.
 
-![Approvals page placeholder — shows table with pending approvals and Approve/Reject buttons](../assets/approvals-page-screenshot.png)
-
-> Screenshot placeholder. The actual page renders a filterable table.
+!!! note "UI screenshot"
+    The Approvals page renders a filterable table with status tabs (Pending / Approved / Rejected),
+    approve/reject buttons with a confirm dialog for optional notes, and color-coded status badges.
 
 ## AI Act Art.14 compliance note
 

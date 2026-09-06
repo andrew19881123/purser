@@ -55,18 +55,22 @@ mod tests {
 
     #[test]
     fn builds_client_with_invalid_proxy_url_returns_error() {
-        let mut cfg = AgentConfig::default();
         // An empty string is always an invalid proxy URL and reliably causes
         // reqwest to return an error regardless of version-specific leniency.
-        cfg.https_proxy = Some(String::new());
+        let cfg = AgentConfig {
+            https_proxy: Some(String::new()),
+            ..AgentConfig::default()
+        };
         let client = build_http_client(&cfg);
         assert!(client.is_err(), "empty proxy URL must produce an error");
     }
 
     #[test]
     fn builds_client_with_nonexistent_ca_bundle_returns_error() {
-        let mut cfg = AgentConfig::default();
-        cfg.ca_bundle_path = Some("/nonexistent/ca.pem".to_string());
+        let cfg = AgentConfig {
+            ca_bundle_path: Some("/nonexistent/ca.pem".to_string()),
+            ..AgentConfig::default()
+        };
         let client = build_http_client(&cfg);
         assert!(
             client.is_err(),
@@ -76,17 +80,21 @@ mod tests {
 
     #[test]
     fn builds_client_with_http_proxy_fallback() {
-        let mut cfg = AgentConfig::default();
-        cfg.http_proxy = Some("http://proxy.internal:3128".to_string());
+        let cfg = AgentConfig {
+            http_proxy: Some("http://proxy.internal:3128".to_string()),
+            ..AgentConfig::default()
+        };
         let client = build_http_client(&cfg);
         assert!(client.is_ok(), "valid HTTP proxy URL must produce a valid client");
     }
 
     #[test]
     fn https_proxy_takes_precedence_over_http_proxy() {
-        let mut cfg = AgentConfig::default();
-        cfg.http_proxy = Some("http://http-proxy.internal:3128".to_string());
-        cfg.https_proxy = Some("http://https-proxy.internal:3128".to_string());
+        let cfg = AgentConfig {
+            http_proxy: Some("http://http-proxy.internal:3128".to_string()),
+            https_proxy: Some("http://https-proxy.internal:3128".to_string()),
+            ..AgentConfig::default()
+        };
         let client = build_http_client(&cfg);
         assert!(
             client.is_ok(),
