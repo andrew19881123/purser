@@ -1,0 +1,11 @@
+/* Widen the content area — Material default is 1220px which feels narrow
+   on modern widescreen monitors. 1440px keeps comfortable line lengths
+   while making better use of the available space. */
+:root {
+  --md-grid-max-width: 1440px;
+}
+
+/* Give the content column itself more room when the sidebar is open */
+.md-content {
+  max-width: 100%;
+}
