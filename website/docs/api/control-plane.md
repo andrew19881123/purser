@@ -720,6 +720,53 @@ source.onmessage = (ev) => {
 
 ---
 
+## Reconciler Status
+
+### `GET /api/v1/reconciler/status`
+
+Returns the current config snapshot and pending-approval event tracker for the
+self-healing control loop. The operator dashboard's **Reconciler Status** panel
+polls this endpoint every 15 seconds.
+
+**Response `200`:**
+
+```json
+{
+  "config": {
+    "interval_s": 10,
+    "node_timeout_s": 45,
+    "hysteresis_s": 30,
+    "action_cooldown_s": 120
+  },
+  "tracker": {
+    "node_down": {
+      "tracked": 1,
+      "oldest_age_s": 38
+    }
+  }
+}
+```
+
+`tracker` is keyed by event type (see table below). An empty `tracker` object
+means the reconciler has detected no discrepancies.
+
+**Event types:**
+
+| Key | Meaning | Default automation level |
+|-----|---------|--------------------------|
+| `engine_down` | Node is alive but its engine is not running | `auto` — restarted immediately |
+| `node_down` | Node hosting an engine is unreachable | `approval_required` |
+| `new_node` | A ready node is not part of any deployment | `notify_only` |
+| `orphan_deployment` | Deployment references missing model/nodes | `approval_required` |
+
+`approval_required` events accumulate in `tracker` (with `tracked > 0` and a
+growing `oldest_age_s`) until an operator approves the corrective action via
+the dashboard or a future `POST /api/v1/reconciler/approve` endpoint.
+
+**Response `503`:** Database or reconciler not reachable.
+
+---
+
 ## Usage Accounting
 
 These endpoints are used by the gateway to record token usage and by operators to query chargeback data. See [Usage Accounting](../enterprise/usage-accounting.md) for the full guide.

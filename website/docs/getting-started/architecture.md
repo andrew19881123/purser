@@ -87,7 +87,7 @@ The control plane runs in Kubernetes as three container images:
 
 - **Control Plane** (`ghcr.io/andrew19881123/purser-control-plane`) — the brain. Hosts the SQLite Registry, internal PKI (CA that issues mTLS certificates to agents), the REST `/api/v1` management API, and the gRPC `RegistrationService` (agent enrollment and heartbeat).
 - **API Gateway** (`ghcr.io/andrew19881123/purser-gateway`) — the front door. Exposes the OpenAI-compatible `/v1` endpoint. The Control Plane pushes route updates to it over HTTP, authenticated by a shared internal token.
-- **Dashboard UI** (`ghcr.io/andrew19881123/purser-ui`) — the operator interface. A React SPA served by nginx.
+- **Dashboard UI** (`ghcr.io/andrew19881123/purser-ui`) — the operator interface. A React SPA served by nginx. The **Fleet** page includes a **Reconciler Status** panel that polls `GET /api/v1/reconciler/status` and surfaces pending approval events (e.g. `node_down`) and the active control-loop config (interval, node timeout, cooldown).
 
 Control-plane traffic is low-volume: enrollment, heartbeats, plan delivery, `StartEngine` RPCs.
 

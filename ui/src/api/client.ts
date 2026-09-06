@@ -32,6 +32,7 @@ import type {
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -92,6 +93,10 @@ export interface PurserApi {
   // --- enterprise ---
   /** GET /api/v1/enterprise/audit-log — 402 without a valid license. */
   getAuditLog(limit?: number): Promise<AuditLog>;
+
+  // --- reconciler ---
+  /** GET /api/v1/reconciler/status — live reconciler config + pending event tracker. */
+  getReconcilerStatus(): Promise<ReconcilerStatus>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

@@ -10,12 +10,12 @@ import {
   StatusPill,
   type Tone,
 } from '../components/ui';
-import { IconServer } from '../components/icons';
-import { useCapacity, useMetricsStream, useNodes, useNodeAction } from '../hooks/queries';
+import { IconRefresh, IconServer } from '../components/icons';
+import { useCapacity, useMetricsStream, useNodes, useNodeAction, useReconcilerStatus } from '../hooks/queries';
 import { useT, type TFunc } from '../i18n';
 import { gb, tokS } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView } from '../api/types';
+import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView, ReconcilerStatus } from '../api/types';
 
 const LINK_TONE: Record<LinkQuality, Tone> = {
   excellent: 'success',
@@ -151,10 +151,55 @@ function NodeRow({
   );
 }
 
+/** Reconciler Status card — shows active config knobs and any pending-approval
+ *  events detected by the control-loop. Exported for unit testing. */
+export function ReconcilerStatusCard({ status }: { status: ReconcilerStatus }) {
+  const t = useT();
+  const pendingEntries = Object.entries(status.tracker).filter(([, v]) => v.tracked > 0);
+  const isHealthy = pendingEntries.length === 0;
+
+  return (
+    <Card
+      title={
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+          <IconRefresh />
+          {t('fleet.reconciler.title')}
+        </span>
+      }
+    >
+      <p className="muted">
+        {t('fleet.reconciler.config', {
+          intervalS: status.config.intervalS,
+          nodeTimeoutS: status.config.nodeTimeoutS,
+          cooldownS: status.config.actionCooldownS,
+        })}
+      </p>
+      {isHealthy ? (
+        <Badge tone="success">{t('fleet.reconciler.healthy')}</Badge>
+      ) : (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          {pendingEntries.map(([type, summary]) => (
+            <li key={type} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Badge tone="warning">{type}</Badge>
+              <span className="muted">
+                {t('fleet.reconciler.event_detail', {
+                  tracked: summary.tracked,
+                  oldestAgeS: summary.oldestAgeS,
+                })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
 export function FleetPage() {
   const t = useT();
   const capacity = useCapacity();
   const nodes = useNodes();
+  const reconcilerStatus = useReconcilerStatus();
   // Live hardware metrics via GET /api/v1/metrics (SSE). null until the first
   // frame arrives; each frame carries per-node engine metrics from heartbeats.
   const live = useMetricsStream();
@@ -188,6 +233,10 @@ export function FleetPage() {
       )}
       {capacity.data && (
         <CapacityCard cap={capacity.data} liveDecodeTokS={live?.aggregateDecodeTokS} t={t} />
+      )}
+
+      {reconcilerStatus.data && (
+        <ReconcilerStatusCard status={reconcilerStatus.data} />
       )}
 
       <Card title={t('fleet.title')}>

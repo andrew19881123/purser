@@ -24,6 +24,7 @@ import type {
   ModelSpec,
   NodeView,
   PlanPreviewResult,
+  ReconcilerStatus,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
 import { ApiError } from '../api/http';
@@ -406,6 +407,15 @@ export const mockBackend: PurserApi = {
       entries,
       chain: { verified: true, length: entries.length },
     };
+  },
+
+  // --- reconciler ---
+
+  getReconcilerStatus(): Promise<ReconcilerStatus> {
+    return delay<ReconcilerStatus>({
+      config: { intervalS: 10, nodeTimeoutS: 45, hysteresisS: 30, actionCooldownS: 120 },
+      tracker: {},
+    }, 150);
   },
 
   streamMetrics(handlers: MetricsStreamHandlers): () => void {
