@@ -1099,9 +1099,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/config/diff", s.handleConfigDiff)
 	s.mux.HandleFunc("GET /api/v1/config/export", s.handleConfigExport)
 	// Inference audit log (AI Act Art. 12).
-	// GET is enterprise-gated ("inference_audit" feature) and viewer-accessible.
+	// GET list and verify are enterprise-gated ("inference_audit" feature) and viewer-accessible.
 	// POST is internal-only (gateway→CP) and never enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/inference-audit", s.handleListInferenceAudit)
+	s.mux.HandleFunc("GET /api/v1/inference-audit/verify", s.handleVerifyInferenceChain)
 	s.mux.HandleFunc("POST /api/v1/inference-events", s.handleRecordInferenceEvent)
 
 	// Policy-as-code (OPA/Rego) — enterprise-gated ("policy_engine" feature).

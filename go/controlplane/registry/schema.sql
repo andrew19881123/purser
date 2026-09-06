@@ -151,7 +151,11 @@ CREATE TABLE IF NOT EXISTS inference_audit_log (
     endpoint          TEXT     NOT NULL DEFAULT 'openai',
     client_ip_prefix  TEXT     NOT NULL DEFAULT '',
     latency_ms        REAL     NOT NULL DEFAULT 0,
-    finish_reason     TEXT     NOT NULL DEFAULT 'stop'
+    finish_reason     TEXT     NOT NULL DEFAULT 'stop',
+    -- tamper-evident hash chain (nullable so rows pre-chain remain valid)
+    seq               INTEGER,
+    prev_hash         TEXT,
+    hash              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);

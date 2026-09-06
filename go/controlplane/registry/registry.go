@@ -118,6 +118,13 @@ type Registry interface {
 	// the filter described in req. Unset filter fields are ignored. The
 	// default limit is 100; the maximum is 1000.
 	ListInferenceEvents(ctx context.Context, req *ListInferenceEventsRequest) (*ListInferenceEventsResponse, error)
+	// VerifyInferenceChain walks the inference_audit_log in seq order and
+	// checks that every entry's hash is consistent with its content and the
+	// preceding entry's hash. It returns the number of chained rows examined
+	// (length), whether the chain is intact (verified), and the seq of the
+	// first broken entry (breakSeq — -1 when verified=true). A non-nil error
+	// indicates a database or scan failure rather than a chain integrity problem.
+	VerifyInferenceChain(ctx context.Context) (length int64, verified bool, breakSeq int64, err error)
 
 	// --- Policies (OPA/Rego) -----------------------------------------------
 	// UpsertPolicy inserts or replaces a policy by name. The updated_at

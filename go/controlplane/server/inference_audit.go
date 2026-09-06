@@ -78,6 +78,42 @@ func (s *Server) handleListInferenceAudit(w http.ResponseWriter, r *http.Request
 	s.writeJSON(w, http.StatusOK, out)
 }
 
+// handleVerifyInferenceChain verifies the integrity of the inference audit log
+// hash chain. It walks every chained row (seq IS NOT NULL) in order and
+// recomputes each entry's hash, reporting the first inconsistency found.
+//
+// Enterprise gate: the "inference_audit" feature must be enabled on the active
+// license; returns 402 Payment Required otherwise.
+//
+// Response body (always 200 when the gate passes and no DB error):
+//
+//	{"verified": true,  "length": 1234, "break_seq": null}
+//	{"verified": false, "length": 567,  "break_seq": 568}
+func (s *Server) handleVerifyInferenceChain(w http.ResponseWriter, r *http.Request) {
+	if !s.licenseAllows(featureInferenceAudit) {
+		s.writeLicenseRequired(w, featureInferenceAudit)
+		return
+	}
+
+	length, verified, breakSeq, err := s.reg.VerifyInferenceChain(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "verify_inference_chain_failed", err.Error())
+		return
+	}
+
+	var breakSeqPtr *int64
+	if breakSeq >= 0 {
+		v := breakSeq
+		breakSeqPtr = &v
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"verified":  verified,
+		"length":    length,
+		"break_seq": breakSeqPtr,
+	})
+}
+
 // handleRecordInferenceEvent is the internal endpoint the gateway calls after
 // each completed inference to record an audit event. Authentication is via the
 // X-Purser-Internal-Token header (same shared secret used for route-sync). When
