@@ -1399,6 +1399,32 @@ func (s *Server) routes() {
 	// GDPR Art.17 right-to-erasure — admin only, enterprise-gated ("gdpr" feature).
 	s.mux.HandleFunc("POST /api/v1/gdpr/erasure", s.handleGDPRErasure)
 	s.mux.HandleFunc("GET /api/v1/gdpr/erasure-log", s.handleGDPRErasureLog)
+
+	// Platform: Organizations
+	s.mux.HandleFunc("POST /api/v1/platform/orgs", s.handleCreateOrg)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs", s.handleListOrgs)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{id}", s.handleGetOrg)
+	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{id}", s.handleUpdateOrg)
+	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{id}", s.handleDeleteOrg)
+
+	// Platform: Teams
+	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/teams", s.handleCreateTeam)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/teams", s.handleListTeams)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{id}", s.handleGetTeam)
+	s.mux.HandleFunc("PUT /api/v1/platform/teams/{id}", s.handleUpdateTeam)
+	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{id}", s.handleDeleteTeam)
+
+	// Platform: Org members
+	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/members", s.handleAddOrgMember)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/members", s.handleListOrgMembers)
+	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/members/{userId}", s.handleUpdateOrgMember)
+	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/members/{userId}", s.handleRemoveOrgMember)
+
+	// Platform: Team members
+	s.mux.HandleFunc("POST /api/v1/platform/teams/{teamId}/members", s.handleAddTeamMember)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/members", s.handleListTeamMembers)
+	s.mux.HandleFunc("PUT /api/v1/platform/teams/{teamId}/members/{userId}", s.handleUpdateTeamMember)
+	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{teamId}/members/{userId}", s.handleRemoveTeamMember)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
