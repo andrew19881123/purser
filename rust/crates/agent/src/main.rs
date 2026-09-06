@@ -279,19 +279,38 @@ async fn main() -> anyhow::Result<()> {
                     let _ = secret_store.put("client_cert", &enrollment.client_cert);
                     let _ = secret_store.put("ca_cert", &enrollment.ca_cert);
                     {
-                        let mut sm = machine_for_task.lock().unwrap();
+                        let mut sm =
+                            machine_for_task.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = sm.enrolled();
                         let _ = sm.ready();
                     }
-                    if let Err(e) = discovery::run_heartbeat(
-                        &cp_addr,
-                        enrollment.node_id,
-                        hb_source,
-                        health_interval,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "heartbeat stream ended");
+                    // H6: reconnect loop with exponential backoff so a transient
+                    // control-plane outage does not permanently sever heartbeating.
+                    let node_id_for_hb = enrollment.node_id;
+                    let mut hb_delay = Duration::from_secs(1);
+                    loop {
+                        match discovery::run_heartbeat(
+                            &cp_addr,
+                            node_id_for_hb.clone(),
+                            Arc::clone(&hb_source),
+                            health_interval,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                tracing::info!("heartbeat stream ended gracefully");
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    retry_in = ?hb_delay,
+                                    "heartbeat disconnected, retrying"
+                                );
+                                tokio::time::sleep(hb_delay).await;
+                                hb_delay = (hb_delay * 2).min(Duration::from_secs(60));
+                            }
+                        }
                     }
                 }
                 Err(e) => {

@@ -10,7 +10,7 @@
 //! implemented Linux/CPU baseline built on the `sysinfo` crate.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use purser_proto::v1::{Arch, Backend, GpuInfo, HardwareProfile, NodeState, Os};
@@ -20,10 +20,16 @@ use sysinfo::{Disks, System};
 /// are reported in these units.
 const BYTES_PER_GB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// Cached memory bandwidth in GB/s, measured once at first probe.
-/// Subsequent calls to [`DefaultProbe::probe`] return the stored value without
-/// re-running the benchmark.
-static CACHED_MEM_BW_GBS: OnceLock<f32> = OnceLock::new();
+/// Cache TTL for the memory-bandwidth measurement.
+/// After this window expires, the next call to [`get_mem_bandwidth_gbs`]
+/// re-runs the benchmark.
+const MEM_BW_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Cached memory bandwidth in GB/s plus the timestamp of the last measurement.
+/// `None` before the first probe. The benchmark runs **outside** this lock
+/// (see [`get_mem_bandwidth_gbs`]) so concurrent callers never serialize on
+/// the ~100 ms benchmark window.
+static CACHED_MEM_BW_GBS: Mutex<Option<(f32, Instant)>> = Mutex::new(None);
 
 /// Abstracts "look at this machine and describe it".
 ///
@@ -95,8 +101,9 @@ impl HardwareProbe for DefaultProbe {
         let disk_free_gb = probe_disk_free_gb();
         let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
 
-        // Memory bandwidth: measured once at startup; subsequent probes are free.
-        let mem_bandwidth_gbs = *CACHED_MEM_BW_GBS.get_or_init(measure_mem_bandwidth_gbs) as f64;
+        // Memory bandwidth: measured once (then refreshed every MEM_BW_CACHE_TTL).
+        // The benchmark runs outside the lock — see `get_mem_bandwidth_gbs`.
+        let mem_bandwidth_gbs = get_mem_bandwidth_gbs() as f64;
 
         // Accelerator discovery: each backend enumerates independently so we can
         // emit precise backend tags (CUDA / ROCm / Metal) per GPU vendor.
@@ -142,6 +149,50 @@ impl HardwareProbe for DefaultProbe {
             state: NodeState::Ready as i32,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Memory bandwidth — cached measurement with lock-free benchmark
+// ---------------------------------------------------------------------------
+
+/// Return the host memory bandwidth in GB/s, re-measuring when the cached
+/// value is stale (older than [`MEM_BW_CACHE_TTL`]) or absent.
+///
+/// **Design (H5 fix):** The ~100 ms benchmark runs **outside** the lock so
+/// concurrent callers never block each other. The critical sections are only
+/// the two short lock grabs: one to check staleness and one to store the
+/// result. Two threads that both find the cache empty will each run the
+/// benchmark in parallel and store their results independently — a harmless
+/// double-measure that avoids any serialization.
+fn get_mem_bandwidth_gbs() -> f32 {
+    // 1. Check whether a (re-)measurement is needed — brief lock.
+    let needs_measure = {
+        let cache = CACHED_MEM_BW_GBS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match &*cache {
+            None => true,
+            Some((_, t)) => t.elapsed() >= MEM_BW_CACHE_TTL,
+        }
+    }; // lock released here
+
+    if needs_measure {
+        // 2. Run the ~100 ms benchmark WITHOUT holding the lock so concurrent
+        //    callers are not serialized.
+        let new_val = measure_mem_bandwidth_gbs();
+        // 3. Store the fresh result — brief lock.
+        let mut cache = CACHED_MEM_BW_GBS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *cache = Some((new_val, Instant::now()));
+        return new_val;
+    }
+
+    // 4. Return the valid cached value — brief lock.
+    CACHED_MEM_BW_GBS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .map_or(0.0, |(v, _)| v)
 }
 
 // ---------------------------------------------------------------------------
@@ -755,6 +806,47 @@ mod tests {
         // Older architectures also false.
         assert!(!fp4_native_from_compute_cap(8, 6));
         assert!(!fp4_native_from_compute_cap(7, 5));
+    }
+
+    // ---- H5: concurrent probe does not hold lock during benchmark ----------
+
+    /// Two threads calling `probe()` concurrently must not panic, deadlock, or
+    /// block each other.  The bandwidth cache lock is held only for brief
+    /// staleness checks and result writes — the ~100 ms benchmark itself runs
+    /// outside the lock.
+    #[test]
+    fn concurrent_probe_no_long_lock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let probe1 = Arc::new(DefaultProbe::new("concurrent-test-a"));
+        let probe2 = Arc::clone(&probe1);
+
+        let t1 = thread::spawn(move || probe1.probe());
+        let t2 = thread::spawn(move || probe2.probe());
+
+        let p1 = t1.join().expect("thread 1 must not panic");
+        let p2 = t2.join().expect("thread 2 must not panic");
+
+        // Both results must report valid hardware data.
+        assert!(
+            p1.ram_total_gb > 0.0,
+            "thread 1: ram_total_gb must be > 0, got {}",
+            p1.ram_total_gb
+        );
+        assert!(
+            p2.ram_total_gb > 0.0,
+            "thread 2: ram_total_gb must be > 0, got {}",
+            p2.ram_total_gb
+        );
+        assert!(
+            p1.mem_bandwidth_gbs >= 0.0,
+            "thread 1: mem_bandwidth_gbs must be non-negative"
+        );
+        assert!(
+            p2.mem_bandwidth_gbs >= 0.0,
+            "thread 2: mem_bandwidth_gbs must be non-negative"
+        );
     }
 
     /// P4: no GPU in CI/no-nvml builds → all gpu entries have fp4_native = false.

@@ -33,7 +33,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use purser_proto::v1::registration_service_client::RegistrationServiceClient;
-use purser_proto::v1::{EngineMetrics, HardwareProfile, Heartbeat, JoinRequest, NodeState};
+use purser_proto::v1::{EngineMetrics, HardwareProfile, Heartbeat, JoinRequest, NodeMetrics, NodeState};
 use tokio_stream::Stream;
 
 /// DNS-SD service type advertised & browsed by Purser agents.
@@ -143,14 +143,34 @@ pub fn heartbeat_messages<S: HeartbeatSource + 'static>(
     async_stream::stream! {
         let mut ticker = tokio::time::interval(interval);
         let mut count = 0usize;
+        // H9: create a persistent sysinfo System so CPU delta measurements
+        // improve across ticks (first measurement is still a reasonable
+        // snapshot; subsequent ones refine with the elapsed-CPU delta).
+        let mut sys = sysinfo::System::new();
+        sys.refresh_cpu_all(); // establish a reference before the first tick
         loop {
             ticker.tick().await;
+            // Refresh system metrics for this heartbeat tick.
+            sys.refresh_memory();
+            sys.refresh_cpu_all();
             let (state, metrics) = source.snapshot();
+            // H9: populate NodeMetrics from live sysinfo data.
+            let node_metrics = Some(NodeMetrics {
+                cpu_utilization_pct: sys.global_cpu_usage(),
+                gpu_utilization_pct: 0.0, // GPU telemetry live is v0.4
+                memory_used_gb: (sys
+                    .total_memory()
+                    .saturating_sub(sys.available_memory()) as f64
+                    / 1_073_741_824.0) as f32,
+                mem_bandwidth_util_pct: 0.0,
+                tokens_per_second: 0.0,
+                inference_port_alive: false, // supervisor can update this in future
+            });
             yield Heartbeat {
                 node_id: node_id.clone(),
                 state: state as i32,
                 metrics,
-                node_metrics: None,
+                node_metrics,
                 ts: Some(prost_types::Timestamp::from(SystemTime::now())),
             };
             count += 1;
@@ -363,7 +383,7 @@ impl Membership {
     /// Record (or refresh) a peer as seen just now.
     pub fn observe(&self, peer: Peer) {
         let key = Self::key(&peer);
-        let mut members = self.members.lock().unwrap();
+        let mut members = self.members.lock().unwrap_or_else(|p| p.into_inner());
         let entry = members.entry(key).or_insert_with(|| Member {
             peer: peer.clone(),
             last_seen: Instant::now(),
@@ -375,7 +395,12 @@ impl Membership {
 
     /// Refresh liveness + state for a known member (e.g. on heartbeat).
     pub fn mark_seen(&self, node_id: &str, state: NodeState) {
-        if let Some(m) = self.members.lock().unwrap().get_mut(node_id) {
+        if let Some(m) = self
+            .members
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(node_id)
+        {
             m.last_seen = Instant::now();
             m.state = state;
         }
@@ -383,14 +408,17 @@ impl Membership {
 
     /// Forget a member (e.g. graceful departure / gossip removal).
     pub fn remove(&self, node_id: &str) {
-        self.members.lock().unwrap().remove(node_id);
+        self.members
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(node_id);
     }
 
     /// Members seen within the failure window.
     pub fn alive(&self) -> Vec<Peer> {
         self.members
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .values()
             .filter(|m| m.last_seen.elapsed() < self.failure_after)
             .map(|m| m.peer.clone())
@@ -401,7 +429,7 @@ impl Membership {
     pub fn suspect(&self) -> Vec<Peer> {
         self.members
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .values()
             .filter(|m| m.last_seen.elapsed() >= self.failure_after)
             .map(|m| m.peer.clone())
@@ -410,7 +438,7 @@ impl Membership {
 
     /// Total number of known members.
     pub fn len(&self) -> usize {
-        self.members.lock().unwrap().len()
+        self.members.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
     /// Whether no members are known.
@@ -555,5 +583,44 @@ mod tests {
         assert!(seen.iter().all(|h| h.node_id == "node-7"));
         assert!(seen.iter().all(|h| h.state == NodeState::Running as i32));
         assert!(seen.iter().all(|h| h.ts.is_some()));
+    }
+
+    // ---- H9: NodeMetrics populated in Heartbeat ----------------------------
+
+    /// Every Heartbeat emitted by `heartbeat_messages` must carry a populated
+    /// `node_metrics` field (not `None`).
+    #[tokio::test]
+    async fn heartbeat_includes_node_metrics() {
+        use tokio_stream::StreamExt;
+
+        let source = Arc::new(FixedSource(NodeState::Running));
+        let stream = heartbeat_messages(
+            "node-metrics-test".to_string(),
+            source,
+            Duration::from_millis(5),
+            Some(1),
+        );
+        tokio::pin!(stream);
+
+        let hb = stream
+            .next()
+            .await
+            .expect("stream must emit at least one heartbeat");
+
+        assert!(
+            hb.node_metrics.is_some(),
+            "Heartbeat.node_metrics must not be None"
+        );
+        let nm = hb.node_metrics.unwrap();
+        assert!(
+            nm.memory_used_gb >= 0.0,
+            "memory_used_gb must be non-negative, got {}",
+            nm.memory_used_gb
+        );
+        assert!(
+            nm.cpu_utilization_pct >= 0.0,
+            "cpu_utilization_pct must be non-negative, got {}",
+            nm.cpu_utilization_pct
+        );
     }
 }

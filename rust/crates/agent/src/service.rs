@@ -77,7 +77,7 @@ pub fn composed_node_state(
     machine: &Arc<Mutex<NodeStateMachine>>,
     supervisor: &Arc<Supervisor>,
 ) -> NodeState {
-    let base = machine.lock().unwrap().current();
+    let base = machine.lock().unwrap_or_else(|p| p.into_inner()).current();
     match base {
         NodeState::Provisioning
         | NodeState::Enrolled
@@ -173,7 +173,7 @@ impl AgentService for AgentSvc {
         // Fast-forward the lifecycle to READY for a locally-driven start so the
         // supervisor's LOADING/RUNNING transitions are valid.
         {
-            let mut sm = self.machine.lock().unwrap();
+            let mut sm = self.machine.lock().unwrap_or_else(|p| p.into_inner());
             if sm.current() == NodeState::Provisioning {
                 let _ = sm.enrolled();
             }
@@ -260,7 +260,7 @@ impl AgentService for AgentSvc {
     async fn drain(&self, _request: Request<DrainRequest>) -> Result<Response<DrainReply>, Status> {
         tracing::info!("drain requested");
         {
-            let mut sm = self.machine.lock().unwrap();
+            let mut sm = self.machine.lock().unwrap_or_else(|p| p.into_inner());
             if let Err(e) = sm.draining() {
                 tracing::warn!(%e, "drain transition rejected");
             }
