@@ -5,7 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![CI](https://github.com/andrew19881123/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/andrew19881123/purser/actions/workflows/ci.yml)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](PROJECT_STATUS.md)
+[![Release](https://img.shields.io/github/v/release/andrew19881123/purser)](https://github.com/andrew19881123/purser/releases/latest)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://andrew19881123.github.io/purser/)
 
 📖 **[Full documentation → andrew19881123.github.io/purser](https://andrew19881123.github.io/purser/)**
@@ -42,7 +42,7 @@ If you know Kubernetes, the mental model is familiar:
 
 ## Install
 
-Purser ships **prebuilt artifacts** for v0.1.0 — you do **not** need to compile
+Purser ships **prebuilt artifacts** for v0.3.0 — you do **not** need to compile
 anything to run it. It comes as **two kinds of workload**, matching its two
 planes:
 
@@ -55,7 +55,7 @@ planes:
 
 Everything is published: the container images live on **GHCR** and the
 packages/tarballs (`+ SHA256SUMS`) are attached to the
-[**v0.1.0 release**](https://github.com/andrew19881123/purser/releases/tag/v0.1.0).
+[**latest release**](https://github.com/andrew19881123/purser/releases/latest).
 
 ### Kubernetes (Helm) — Control Plane, Gateway, UI
 
@@ -67,7 +67,7 @@ already points at the published GHCR images
 secret**:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.0 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer   # so out-of-cluster LAN Agents can reach it
 ```
 
@@ -107,12 +107,12 @@ enterprise (source-available, key-gated) feature.
 ### Linux fleet (native `.deb` / `.rpm` packages) — the Agent
 
 Download the package for your distro from the
-[**v0.1.0 release**](https://github.com/andrew19881123/purser/releases/tag/v0.1.0)
+[**latest release**](https://github.com/andrew19881123/purser/releases/latest)
 and install it with your package manager — **no build required**:
 
 ```bash
-sudo apt install ./purser-agent_0.1.0_amd64.deb        # Debian / Ubuntu
-sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm     # RHEL / Fedora / openSUSE
+sudo apt install ./purser-agent_0.3.0_amd64.deb        # Debian / Ubuntu
+sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm     # RHEL / Fedora / openSUSE
 ```
 
 The package installs the `purser-agent` **systemd** service and a config file at
@@ -129,11 +129,11 @@ same release — one tarball per component — and verify them against the publi
 
 ```bash
 # Release assets (linux-amd64):
-#   purser-agent-0.1.0-linux-amd64.tar.gz
-#   purser-control-plane-0.1.0-linux-amd64.tar.gz
-#   purser-gateway-0.1.0-linux-amd64.tar.gz
+#   purser-agent-0.3.0-linux-amd64.tar.gz
+#   purser-control-plane-0.3.0-linux-amd64.tar.gz
+#   purser-gateway-0.3.0-linux-amd64.tar.gz
 sha256sum -c SHA256SUMS                                 # verify against the release checksums
-tar -xzf purser-agent-0.1.0-linux-amd64.tar.gz
+tar -xzf purser-agent-0.3.0-linux-amd64.tar.gz
 ```
 
 ### macOS / Windows — the Agent
@@ -216,16 +216,29 @@ spread across machines.
   curl -X POST http://<control-plane>:8080/api/v1/models/<id>/deploy -d '{}'
   ```
 
-- **Point any OpenAI client at the Gateway.** Use the gateway as your base URL
-  and one of its API keys as the bearer token:
+- **Point any OpenAI client at the Gateway:**
 
   ```python
   from openai import OpenAI
   client = OpenAI(base_url="http://<gateway-host>:<port>/v1",
-                  api_key="<your-api-key>")   # -> Authorization: Bearer <api-key>
+                  api_key="<your-api-key>")
   client.chat.completions.create(model="<id>",
       messages=[{"role": "user", "content": "Hello"}], stream=True)
   ```
+
+- **Point the Anthropic SDK at the Gateway** (v0.3+):
+
+  ```python
+  import anthropic
+  client = anthropic.Anthropic(
+      api_key="<your-api-key>",
+      base_url="http://<gateway-host>:<port>",
+  )
+  client.messages.create(model="<id>", max_tokens=1024,
+      messages=[{"role": "user", "content": "Hello"}])
+  ```
+
+  Claude Code, Cursor, and any tool using `@anthropic-ai/sdk` work the same way — just set the base URL.
 
 > **Gateway API keys**: If `PURSER_GATEWAY_API_KEYS` is not set, the gateway
 > runs in **open dev mode** and accepts any non-empty bearer token. Always set
@@ -352,16 +365,14 @@ See [LICENSING.md](LICENSING.md) for details.
 
 ## Status & roadmap
 
-**Alpha — v0.1.0** (first Community Edition release). The complete zero-config
-vertical — *enroll → deploy → chat* — is implemented and demonstrated end-to-end,
-**single-node and split across a multi-node pipeline**, driven by the built-in
-**mock engine**. CI is green across all four jobs (proto, Rust, Go, UI).
+**v0.3.0** — Enterprise-Ready. The complete zero-config vertical (*enroll → deploy → chat*) is stable. v0.3 adds:
 
-Being honest about the edges: the full flow is proven with the **mock engine**.
-The **live llama.cpp** path (adapter implemented and unit-tested) and validation
-on **real GPU hardware** are still work in progress, as are the enterprise
-capabilities behind the license gate.
+- **Anthropic SDK compatibility** — `POST /v1/messages` for Claude Code, Cursor, `@anthropic-ai/sdk`
+- **Configuration-as-code** — `purser.yaml` with GitOps reconciler (30s polling, K8s ConfigMap-ready)
+- **AI Act compliance** — inference audit log (Art.12), deployment approval gates (Art.14)
+- **Policy-as-code** — embedded OPA/Rego engine; versionable governance rules
+- **HA Raft foundation** — `hashicorp/raft` layer; single-node preserved when `PURSER_RAFT_NODE_ID` unset
+- **Multi-tenancy chargeback** — billing reports (JSON + CSV) aggregated by team/model
+- **Enterprise network** — HTTP proxy, custom CA bundle, backup/restore CLI
 
-For the detailed, honest state and the prioritized backlog, see
-[PROJECT_STATUS.md](PROJECT_STATUS.md); for release history, see
-[CHANGELOG.md](CHANGELOG.md).
+CI is green across all jobs (proto, Rust, Go, UI). See [CHANGELOG.md](CHANGELOG.md) for the full history and [PROJECT_STATUS.md](PROJECT_STATUS.md) for the backlog.
