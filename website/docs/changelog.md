@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-06
+
+> **v0.3 — "Enterprise-Ready"** — major feature release.
+
+### Added
+- **Anthropic Messages API** (`POST /v1/messages`) — Claude Code, Cursor, and `@anthropic-ai/sdk` now work with Purser without modification; `x-api-key` auth; Anthropic SSE streaming
+- **HTTP proxy + custom CA bundle** — `PURSER_AGENT_HTTP(S)_PROXY` / `NO_PROXY` / `CA_BUNDLE` for agent, gateway, and control-plane; enables deployment behind corporate proxies and private PKI
+- **`purser.yaml` config-as-code** — declarative desired state; `POST /api/v1/config/apply` (idempotent), `/config/diff` (dry-run), `GET /config/export`; `--config` flag for K8s ConfigMap workflows
+- **GitOps watcher** — SHA-256 polling loop (30s) re-applies `purser.yaml` on change; non-fatal on missing file
+- **Inference audit log** — `inference_audit_log` table; records who/what/when without prompt content (GDPR minimisation); `GET /api/v1/inference-audit` (enterprise); AI Act Art.12
+- **Deployment approval gates** — admin approval required before model goes live; `ApprovalsPage` UI; AI Act Art.14 human oversight; enterprise feature `deployment_approvals`
+- **Embedded OPA policy engine** — Rego policies in SQLite; `GET/PUT/DELETE /api/v1/policies`; `POST /api/v1/policies/eval` dry-run; enterprise feature `policy_engine`
+- **HA Raft foundation** — `hashicorp/raft` + BoltDB; `PurserFSM` on SQLiteRegistry; single-node mode preserved; `GET /api/v1/cluster/status`
+- **Chargeback reports** — `GET /api/v1/billing/report` (JSON + CSV); `ChargebackPage` UI with period picker; FOCUS spec; enterprise feature `billing`
+- **Backup/restore CLI** — `purser backup/restore` via SQLite `VACUUM INTO`; DORA Art.12
+- **Security hardening** — AES key zeroize, constant-time auth, O(1) RBAC, OOM guard in planner, nginx non-root, CI timeouts, dependabot
+- **UI UX audit** — history routing (bookmarkable URLs), Model Studio stepper, Catalog empty state, Settings QuickStatsBar, 17 UX improvements
+
+## [0.2.0] - 2026-09-05
+
+> **v0.2 — "Production-Grade Enterprise"** — major feature release.
+>
+> Highlights: real-time hardware metrics SSE, RBAC for API keys (admin/viewer/inference),
+> model import from HuggingFace Hub / S3 / GCS / Azure Blob / AWS SageMaker /
+> GCP VertexAI / Azure ML, Model Studio UI with fleet-split preview, /v1/embeddings
+> endpoint, node auto-enrollment bundle, Python management SDK, cosign-signed
+> container images + SBOM, automated release pipeline, mTLS on
+> orchestrator→agent gRPC, AES-256-GCM encrypted agent secret store,
+> OpenAPI 3.0 spec at /api/v1/openapi.json.
+
 ## [0.1.1] - 2026-09-05
 
 > Patch release. All three GHCR images and the Helm chart are updated to `0.1.1`.
