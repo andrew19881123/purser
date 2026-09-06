@@ -37,6 +37,10 @@ func newRegSQLite(t *testing.T) *registry.SQLiteRegistry {
 	return reg
 }
 
+const adminKeyPlain = "psk_admin_test_key_for_lifecycle"
+
+var adminKeyHash = hashForTest(adminKeyPlain)
+
 // TestRotateAPIKey_Happy verifies the golden path:
 //   - POST /api/v1/apikeys/{id}/rotate returns 201 with old_id, new_id, key
 //   - the old key is disabled after rotation
@@ -58,10 +62,24 @@ func TestRotateAPIKey_Happy(t *testing.T) {
 		t.Fatalf("seed key: %v", err)
 	}
 
+	// Seed an admin key so auth fail-closed allows the request.
+	if err := reg.CreateAPIKey(ctx, &registry.APIKey{
+		ID:      "admin-for-rotate",
+		Name:    "admin",
+		KeyHash: adminKeyHash,
+		Tenant:  "acme",
+		Role:    "admin",
+		Quota:   0,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("seed admin key: %v", err)
+	}
+
 	srv := server.New(reg, server.Config{})
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec,
-		httptest.NewRequest(http.MethodPost, "/api/v1/apikeys/key-rotate-src/rotate", nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/apikeys/key-rotate-src/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+adminKeyPlain)
+	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("rotate: status = %d, want 201; body=%s", rec.Code, rec.Body.String())

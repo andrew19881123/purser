@@ -187,9 +187,7 @@ type Registry interface {
 	ListAPIKeysExpiringBefore(ctx context.Context, before time.Time) ([]*APIKey, error)
 	// RecordAPIKeyAccess appends one row to api_key_access_log.
 	RecordAPIKeyAccess(ctx context.Context, entry *APIKeyAccessEntry) error
-	// HasAnyAPIKey returns true when at least one enabled API key exists (used
-	// to detect a first-run / bootstrap state).
-	HasAnyAPIKey(ctx context.Context) (bool, error)
+	// HasAnyAPIKey: see declaration above (deduped).
 
 	// --- Model Pricing ---------------------------------------------------------
 	// UpsertModelPricing inserts or replaces the pricing row for
