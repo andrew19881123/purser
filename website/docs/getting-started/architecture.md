@@ -2,6 +2,9 @@
 
 Purser has two clearly separated planes: a low-volume **control plane** (gRPC + mTLS) and a high-volume **data plane** (engine-to-engine activations across the trusted subnet).
 
+![Purser Dashboard](../assets/screenshots/dashboard-home.png)
+*The operator dashboard — fleet overview, deployed models, and live cluster metrics.*
+
 ## Component overview
 
 ```mermaid

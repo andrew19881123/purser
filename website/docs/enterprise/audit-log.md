@@ -180,7 +180,7 @@ Set `PURSER_LICENSE_KEY` to a key with the `"audit"` feature entitlement:
 export PURSER_LICENSE_KEY=<your-enterprise-key>
 
 # Helm
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set license.key="<your-enterprise-key>"
 ```
 

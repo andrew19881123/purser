@@ -48,7 +48,7 @@ Get from zero to a working OpenAI-compatible inference endpoint in about 5 minut
 The chart and images are published as public OCI artifacts on GHCR — no registry login needed.
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
@@ -80,14 +80,14 @@ kubectl get svc purser-control-plane
 
 ## Step 2: Install an Agent on a fleet node
 
-On the fleet node (Linux), download the package from the [v0.1.0 release](https://github.com/andrew19881123/purser/releases/tag/v0.1.0) and install it:
+On the fleet node (Linux), download the package from the [latest release](https://github.com/andrew19881123/purser/releases/latest) and install it:
 
 ```bash
-# Debian / Ubuntu
-sudo apt install ./purser-agent_0.1.0_amd64.deb
+# Debian / Ubuntu (amd64 or arm64)
+sudo apt install ./purser-agent_0.3.0_amd64.deb
 
 # RHEL / Fedora / openSUSE
-sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm
+sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm
 ```
 
 ---
@@ -247,8 +247,8 @@ for chunk in response:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
-!!! note "Mock engine"
-    The default engine is the built-in mock engine. It responds with generated tokens to demonstrate the pipeline but does not run real model inference. To use a real engine, set `PURSER_ENGINE_BACKEND=llamacpp` in the agent's environment file. Real GPU validation is still in progress as of v0.1.1.
+!!! note "Engine backends"
+    The default engine is the built-in mock engine — it responds with generated tokens to demonstrate the pipeline without a GPU. To enable real inference, set `PURSER_ENGINE_BACKEND=llamacpp` in the agent's environment file and install the agent built with `--features llamacpp` (available in the v0.3 release packages). See [Architecture: Engine backends](architecture.md#engine-backends) for details.
 
 ---
 

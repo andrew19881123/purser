@@ -50,7 +50,7 @@ graph TD
 The chart is published as an OCI artifact on GHCR. The images are public — no pull secret needed:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
@@ -107,11 +107,11 @@ helm install purser deploy/helm/purser \
 | `ingress.host` | `""` | Required when `ingress.enabled=true`. |
 | `license.key` | `""` | Enterprise license key (`PURSER_LICENSE_KEY`). Empty = community edition. |
 | `image.controlPlane.repository` | `ghcr.io/andrew19881123/purser-control-plane` | Control Plane image repository. |
-| `image.controlPlane.tag` | `0.1.1` | Control Plane image tag. |
+| `image.controlPlane.tag` | `0.3.0` | Control Plane image tag. |
 | `image.gateway.repository` | `ghcr.io/andrew19881123/purser-gateway` | Gateway image repository. |
-| `image.gateway.tag` | `0.1.1` | Gateway image tag. |
+| `image.gateway.tag` | `0.3.0` | Gateway image tag. |
 | `image.ui.repository` | `ghcr.io/andrew19881123/purser-ui` | UI image repository. |
-| `image.ui.tag` | `0.1.1` | UI image tag. |
+| `image.ui.tag` | `0.3.0` | UI image tag. |
 | `imagePullSecrets` | `[]` | Pull secrets for a private registry (not needed for GHCR public images). |
 | `podSecurityContext.fsGroup` | `65532` | Distroless image runs as UID 65532; fsGroup makes the PVC group-writable. |
 
@@ -122,14 +122,14 @@ helm install purser deploy/helm/purser \
 Each component gets its own Service. Set the Control Plane to `LoadBalancer` so out-of-cluster Agents can register:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
 Agents on the LAN reach the Control Plane's external IP directly. Expose the Gateway and UI separately if needed:
 
 ```bash
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=LoadBalancer \
   --set gateway.service.type=LoadBalancer \
   --set ui.service.type=LoadBalancer
@@ -140,7 +140,7 @@ helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
 Use NodePort with pinned ports:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set controlPlane.service.type=NodePort \
   --set controlPlane.service.httpNodePort=30080 \
   --set controlPlane.service.grpcNodePort=30443
@@ -157,7 +157,7 @@ All three components served from one hostname via a Kubernetes Ingress. Path rou
 | `/` | ui (nginx) | 80 |
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.example.com \
   --set ingress.className=nginx
@@ -168,7 +168,7 @@ With the Ingress in place, the UI's same-origin defaults (`/api/v1` and `/v1`) w
 TLS with cert-manager:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.example.com \
   --set ingress.className=nginx \
@@ -185,9 +185,9 @@ helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
 The official images are **public** on GHCR. No authentication required:
 
 ```
-ghcr.io/andrew19881123/purser-control-plane:0.1.1
-ghcr.io/andrew19881123/purser-gateway:0.1.1
-ghcr.io/andrew19881123/purser-ui:0.1.1
+ghcr.io/andrew19881123/purser-control-plane:0.3.0
+ghcr.io/andrew19881123/purser-gateway:0.3.0
+ghcr.io/andrew19881123/purser-ui:0.3.0
 ```
 
 If you mirror images to your own private registry, create a pull secret and reference it:
@@ -198,7 +198,7 @@ kubectl create secret docker-registry regcred \
   --docker-username=<user> \
   --docker-password=<token>
 
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set imagePullSecrets[0].name=regcred \
   --set image.controlPlane.repository=registry.example.com/purser/control-plane \
   --set image.gateway.repository=registry.example.com/purser/gateway \
@@ -219,7 +219,7 @@ The chart creates a PVC with the configured StorageClass (`controlPlane.persiste
 ## Upgrade
 
 ```bash
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0
 ```
 
 The chart uses `--reuse-values` semantics for the gateway internal token (auto-generated at install time and reused on upgrade) to avoid breaking the Control Plane → Gateway route sync.
@@ -241,7 +241,7 @@ The management REST API (`/api/v1`) and the operator dashboard can be secured wi
 Let the Ingress controller terminate TLS. The Control Plane pod itself stays on plain HTTP and is only reachable cluster-internally:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.example.com \
   --set ingress.className=nginx \

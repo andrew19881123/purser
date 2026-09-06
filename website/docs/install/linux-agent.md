@@ -29,25 +29,25 @@ Download the package for your distribution from the [latest release](https://git
 === "Debian / Ubuntu (amd64)"
 
     ```bash
-    sudo apt install ./purser-agent_0.1.0_amd64.deb
+    sudo apt install ./purser-agent_0.3.0_amd64.deb
     ```
 
 === "Debian / Ubuntu (arm64 — Graviton / Ampere)"
 
     ```bash
-    sudo apt install ./purser-agent_0.1.0_arm64.deb
+    sudo apt install ./purser-agent_0.3.0_arm64.deb
     ```
 
 === "RHEL / Fedora / openSUSE (amd64)"
 
     ```bash
-    sudo yum install ./purser-agent-0.1.0-1.x86_64.rpm
+    sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm
     ```
 
 === "RHEL / Fedora / openSUSE (arm64)"
 
     ```bash
-    sudo yum install ./purser-agent-0.1.0-1.aarch64.rpm
+    sudo yum install ./purser-agent-0.3.0-1.aarch64.rpm
     ```
 
 The package installs:
@@ -167,7 +167,7 @@ The hosted Cloudsmith repository is the recommended distribution channel. Config
 
 ```bash
 # Example: reprepro for an internal apt mirror
-reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.1.0_amd64.deb
+reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.3.0_amd64.deb
 ```
 
 ### Fleet enrollment with Ansible

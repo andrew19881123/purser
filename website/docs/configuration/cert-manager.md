@@ -1,7 +1,7 @@
 # Certificate Management (cert-manager)
 
 !!! note "cert-manager support status"
-    As of v0.1.1, the Purser Helm chart ships a standard Kubernetes `Ingress` resource with support for `cert-manager.io/cluster-issuer` annotations. A dedicated `tls.certManager.enabled` values key is not yet present in the chart — TLS certificates are managed via Ingress TLS annotations.
+    As of v0.3.0, the Purser Helm chart ships a standard Kubernetes `Ingress` resource with support for `cert-manager.io/cluster-issuer` annotations. The chart supports `tls.certManager.enabled` to auto-provision certificates via cert-manager.
 
     This page documents how to use cert-manager with the Ingress networking model and what gRPC port considerations apply.
 
@@ -66,7 +66,7 @@ kubectl apply -f letsencrypt-prod.yaml
 Install Purser with TLS:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.example.com \
   --set ingress.className=nginx \
@@ -95,7 +95,7 @@ spec:
 ```
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
   --set ingress.enabled=true \
   --set ingress.host=purser.internal.example.com \
   --set ingress.className=nginx \
