@@ -93,6 +93,10 @@ export const it: Record<StringKey, string> = {
   'fleet.role.worker': 'Worker',
   'fleet.empty': 'Nessun nodo registrato. Aggiungine uno da Inizia.',
   'fleet.link.label': 'Qualità rete',
+  'fleet.confirm.drain': 'Svuotare il nodo {node}? Nessun nuovo lavoro verrà assegnato.',
+  'fleet.confirm.removeTitle': 'Rimuovere il nodo dalla flotta?',
+  'fleet.confirm.removeBody': 'Il nodo {node} verrà dismesso. Questa operazione non può essere annullata.',
+  'fleet.metrics.stale': 'Metriche live non disponibili — mostrati ultimi valori noti',
 
   // widget stato reconciler
   'fleet.reconciler.title': 'Reconciler',
@@ -283,6 +287,8 @@ export const it: Record<StringKey, string> = {
   'settings.created.title': 'Key creata',
   'settings.created.warning': 'Copiala ora — il segreto completo è mostrato una sola volta.',
   'settings.keys.empty': 'Nessuna API key. Creane una per far raggiungere il Gateway alle app.',
+  'settings.confirm.revokeTitle': 'Revocare la API key?',
+  'settings.confirm.revokeBody': 'La key {name} verrà revocata definitivamente. Le applicazioni che la usano smetteranno di funzionare.',
 
   // join token / enrollment bundle
   'join.title': 'Registrazione nodi',

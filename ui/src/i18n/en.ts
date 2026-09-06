@@ -99,6 +99,10 @@ export const en = {
   'fleet.role.worker': 'Worker',
   'fleet.empty': 'No nodes enrolled yet. Add one from Get started.',
   'fleet.link.label': 'Network link',
+  'fleet.confirm.drain': 'Drain node {node}? No new work will be scheduled to it.',
+  'fleet.confirm.removeTitle': 'Remove node from fleet?',
+  'fleet.confirm.removeBody': 'Node {node} will be decommissioned. This cannot be undone.',
+  'fleet.metrics.stale': 'Live metrics unavailable — showing last known values',
 
   // reconciler status widget
   'fleet.reconciler.title': 'Reconciler',
@@ -311,6 +315,8 @@ export const en = {
   'settings.created.title': 'Key created',
   'settings.created.warning': "Copy it now — the full secret is shown only once.",
   'settings.keys.empty': 'No API keys yet. Create one to let apps reach the Gateway.',
+  'settings.confirm.revokeTitle': 'Revoke API key?',
+  'settings.confirm.revokeBody': 'Key {name} will be permanently revoked. Running applications using it will stop working.',
 
   // join token / enrollment bundle
   'join.title': 'Node enrollment',

@@ -289,6 +289,12 @@ Ports forwarded by the devcontainer:
 
 ---
 
+## Security note — Gateway API key storage
+
+The Playground stores the Gateway API key in **`sessionStorage`**, not `localStorage`. The key is automatically cleared when you close the browser tab, so it does not persist between sessions. This is intentional: inference keys are short-lived credentials that should not outlive the browser window.
+
+---
+
 ## Next steps
 
 - [Full Kubernetes install guide](../install/kubernetes.md) — values, networking models, persistence
