@@ -47,6 +47,11 @@ pub struct DefaultProbe {
     /// Always contains at least `"mock"` (the built-in GPU-free backend).
     /// Used to populate [`HardwareProfile::engine_versions`] at probe time.
     backends: Vec<String>,
+    /// Expected fraction of inference tokens that hit the KV cache (0.0–1.0).
+    /// Forwarded verbatim into [`HardwareProfile::prefix_caching_factor`].
+    /// Loaded from `AgentConfig::prefix_caching_factor` (env var
+    /// `PURSER_AGENT_PREFIX_CACHING_FACTOR`). Zero disables the field.
+    prefix_caching_factor: f32,
 }
 
 impl DefaultProbe {
@@ -59,6 +64,7 @@ impl DefaultProbe {
         Self {
             node_id: node_id.into(),
             backends: vec!["mock".to_string()],
+            prefix_caching_factor: 0.0,
         }
     }
 
@@ -82,7 +88,17 @@ impl DefaultProbe {
         Self {
             node_id: node_id.into(),
             backends: b,
+            prefix_caching_factor: 0.0,
         }
+    }
+
+    /// As [`DefaultProbe::with_backends`], additionally setting
+    /// [`prefix_caching_factor`](Self::prefix_caching_factor) from the agent
+    /// configuration.  Called from `main` when
+    /// `AgentConfig::prefix_caching_factor` is non-zero.
+    pub fn with_prefix_caching_factor(mut self, factor: f32) -> Self {
+        self.prefix_caching_factor = factor.clamp(0.0, 1.0);
+        self
     }
 }
 
@@ -143,6 +159,11 @@ impl HardwareProbe for DefaultProbe {
             last_seen: Some(prost_types::Timestamp::from(SystemTime::now())),
             // A node that can answer Probe is up and ready to be scheduled.
             state: NodeState::Ready as i32,
+            // Engine-capability fields (I4, I6) — forwarded from AgentConfig.
+            // kv_ssd_offload is detected automatically per-engine; not yet
+            // wired here (follow-up when engine adapters expose the capability).
+            prefix_caching_factor: self.prefix_caching_factor,
+            kv_ssd_offload: false,
         }
     }
 }
