@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Card,
+  EmptyState,
   ErrorState,
   LoadingBlock,
   Modal,
@@ -189,19 +190,19 @@ function ModelCard({
 
       <dl className="spec-list">
         <div>
-          <dt>Params</dt>
+          <dt title="Total model parameters — higher = more capable but slower">Params</dt>
           <dd>{t('catalog.params', { active: billions(model.paramsActiveB), total: billions(model.paramsTotalB) })}</dd>
         </div>
         <div>
-          <dt>Layers</dt>
+          <dt title="Transformer layers — determines how the model is split across nodes">Layers</dt>
           <dd>{model.layers}</dd>
         </div>
         <div>
-          <dt>Context</dt>
+          <dt title="Maximum conversation length in tokens">Context</dt>
           <dd>{(model.contextMax / 1024).toFixed(0)}K</dd>
         </div>
         <div>
-          <dt>Quant</dt>
+          <dt title="Quantization — Q4 is smallest/fastest, Q8 is most accurate">Quant</dt>
           <dd>{model.quantizations.map((q) => q.name).join(', ')}</dd>
         </div>
       </dl>
@@ -297,7 +298,13 @@ export function CatalogPage() {
       {isError && (
         <ErrorState message={errorMessage(error, t, 'error.catalog')} onRetry={() => refetch()} />
       )}
-      {data && (
+      {data && data.length === 0 && (
+        <EmptyState
+          message="No models in catalog yet. Import one from Model Studio."
+          action={<Link to="/model-studio">Go to Model Studio</Link>}
+        />
+      )}
+      {data && data.length > 0 && (
         <div className="grid grid--cards">
           {data.map((entry) => (
             <ModelCard
