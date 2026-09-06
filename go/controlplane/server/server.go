@@ -1064,6 +1064,24 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 		// before the role switch so all code paths see the key.
 		r = r.WithContext(context.WithValue(r.Context(), ctxKeyAPIKey, matched))
 
+		// v0.4: fine-grained permission check for routes registered in routePermission.
+		// When the route is mapped and the check passes, bypass the legacy role switch
+		// below. When the check fails, reject with 403 immediately. Routes not in
+		// routePermission fall through to the legacy role switch (safe degradation for
+		// backward compatibility with pre-v0.4 clients and keys).
+		if required := matchRoutePermission(r.Method, r.URL.Path); required != "" {
+			if !s.checkPermission(r, required) {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":    "forbidden",
+					"message":  "insufficient permissions",
+					"required": required,
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// 5–7. Enforce role.
 		switch matched.Role {
 		case "admin":
