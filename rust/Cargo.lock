@@ -2006,7 +2006,7 @@ dependencies = [
  "purser-adapter-llamacpp",
  "purser-engine-adapter",
  "purser-proto",
- "rand 0.8.8",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
