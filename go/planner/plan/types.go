@@ -217,6 +217,10 @@ type Constraints struct {
 	ForceHost         *string               // nil = planner chooses the host
 	QualityWeightBias float64               // shifts W4 in the cost function
 	Mode              Mode
+
+	// ReplicaCount, when > 1, triggers multi-replica planning via PlanReplicaSet.
+	// Zero and 1 both mean "single replica" (standard Plan behaviour).
+	ReplicaCount int
 }
 
 // Assignment places a contiguous shard of layers [LayerStart, LayerEnd]
