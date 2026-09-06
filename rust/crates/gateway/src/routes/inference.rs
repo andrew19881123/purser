@@ -363,12 +363,9 @@ async fn proxy_inference(
     tracing::Span::current().record("model.id", model.as_str());
 
     // Resolve the host (404 if unknown, 503 if draining).
-    let route = state
-        .resolve_active(&model)
-        .await
-        .inspect_err(|_| {
-            crate::metrics::record_error(&model, &api_key.tenant, "node_unavailable");
-        })?;
+    let route = state.resolve_active(&model).await.inspect_err(|_| {
+        crate::metrics::record_error(&model, &api_key.tenant, "node_unavailable");
+    })?;
 
     // Per-model concurrency gate: reject immediately if the model's in-flight
     // slot limit is reached (429 Too Many Requests + Retry-After: 5).
