@@ -33,6 +33,10 @@ type SQLiteRegistry struct {
 	// sequence is atomic in-process and concurrent writers receive a strictly
 	// monotonic, gap-free seq and the correct prev_hash for the chain.
 	auditMu sync.Mutex
+	// inferenceAuditMu serializes RecordInferenceEvent for the same reason:
+	// the read-tail / compute-hash / INSERT OR IGNORE sequence must be atomic
+	// so concurrent writers receive a gap-free seq and the correct prev_hash.
+	inferenceAuditMu sync.Mutex
 }
 
 // compile-time assertion that SQLiteRegistry satisfies Registry.
@@ -78,6 +82,11 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		// RBAC role for API keys. Default "admin" preserves full access for
 		// any key created before this column existed.
 		{"api_keys", "role", "TEXT NOT NULL DEFAULT 'admin'"},
+		// Tamper-evident hash-chain columns for the inference audit log.
+		// Nullable so rows written before the chain existed remain valid.
+		{"inference_audit_log", "seq", "INTEGER"},
+		{"inference_audit_log", "prev_hash", "TEXT"},
+		{"inference_audit_log", "hash", "TEXT"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -88,6 +97,12 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 	// pre-existing databases). SQLite permits multiple NULLs in a UNIQUE index,
 	// so legacy rows with a NULL seq do not collide.
 	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_seq ON audit_log (seq)`); err != nil {
+		return fmt.Errorf("registry: migrate: %w", err)
+	}
+	// Same uniqueness enforcement for the inference audit log chain seq column.
+	// SQLite permits multiple NULLs in a UNIQUE index, so pre-chain rows with a
+	// NULL seq do not collide.
+	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_audit_log_seq ON inference_audit_log (seq)`); err != nil {
 		return fmt.Errorf("registry: migrate: %w", err)
 	}
 	// Unique index on key_hash so GetAPIKeyByHash is an O(1) point lookup.

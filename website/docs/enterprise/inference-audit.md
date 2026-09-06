@@ -35,28 +35,38 @@ CREATE TABLE IF NOT EXISTS inference_audit_log (
     id                INTEGER  PRIMARY KEY AUTOINCREMENT,
     request_id        TEXT     NOT NULL UNIQUE,
     ...
+    -- tamper-evident hash chain (nullable so rows pre-chain remain valid)
+    seq       INTEGER,
+    prev_hash TEXT,
+    hash      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_inference_audit_tenant_ts ON inference_audit_log(tenant_id, timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_audit_log_seq ON inference_audit_log (seq);
 ```
 
-The `UNIQUE` constraint on `request_id` makes recording idempotent: a gateway retry or at-least-once delivery will produce one row, never duplicates.
+The `UNIQUE` constraint on `request_id` makes recording idempotent: a gateway retry or at-least-once delivery will produce one row, never duplicates. Rows written before the hash chain existed carry `NULL` seq and are excluded from chain verification.
 
 ---
 
 ## Registry interface
 
-The data layer is exposed through two methods on the `Registry` interface:
+The data layer is exposed through three methods on the `Registry` interface:
 
 ```go
-// RecordInferenceEvent appends one event. Duplicate request_id is silently
-// ignored (idempotent). A nil event is a no-op.
+// RecordInferenceEvent appends one event and extends the tamper-evident hash
+// chain. Duplicate request_id is silently ignored (idempotent). A nil event
+// is a no-op.
 RecordInferenceEvent(ctx context.Context, event *InferenceEvent) error
 
 // ListInferenceEvents returns paginated events matching the filter.
 // All filter fields are optional. Default limit 100, max 1000.
 ListInferenceEvents(ctx context.Context, req *ListInferenceEventsRequest) (*ListInferenceEventsResponse, error)
+
+// VerifyInferenceChain walks the log in seq order and recomputes each entry's
+// hash. Returns (length, verified, breakSeq) where breakSeq=-1 when intact.
+VerifyInferenceChain(ctx context.Context) (length int64, verified bool, breakSeq int64, err error)
 ```
 
 Filtering is supported by `api_key_hash`, `model_id`, `tenant_id`, time range (`After`/`Before`). Pagination uses an opaque cursor (`PageToken` / `NextPageToken`).
@@ -100,6 +110,85 @@ Go bindings are generated into `go/gen/purser/v1/inference_audit.pb.go` via `mak
 
 ---
 
+## Tamper-evident hash chain
+
+Every new inference event extends a SHA-256 hash chain stored directly in the
+`inference_audit_log` table. This provides cryptographic evidence that the log
+has not been modified after the fact — any content change, row deletion or row
+insertion breaks the chain and is detected by `VerifyInferenceChain`.
+
+### How it works
+
+Each row in the chain carries three extra columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `seq` | `INTEGER` | 1-based, gap-free position in the chain (NULL for pre-chain rows). |
+| `prev_hash` | `TEXT` | Hex SHA-256 of the preceding entry's hash (64 zeros for the genesis entry). |
+| `hash` | `TEXT` | Hex SHA-256 of `rawBytes(prev_hash) \|\| canonicalBytes(event)`. |
+
+The **canonical bytes** for an entry are a deterministic, length-prefixed encoding of:
+
+- The 32 raw bytes decoded from `prev_hash` (all-zeros for genesis).
+- `seq` as a big-endian `int64`.
+- `request_id`, `api_key_hash`, `model_id`, `tenant_id`, `timestamp` (RFC3339), `endpoint`, `finish_reason` — each 4-byte length-prefixed.
+
+`latency_ms` and `client_ip_prefix` are **deliberately excluded** from the canonical bytes:
+`latency_ms` can legitimately differ across retries, and `client_ip_prefix` is GDPR-sensitive.
+Their absence does not reduce tamper-detection: the fields that uniquely identify the logical event are all covered.
+
+The read-tail / compute / insert sequence runs under an in-process mutex and a
+database transaction, guaranteeing a gap-free `seq` with the correct `prev_hash`
+even under concurrent writes.
+
+### Verifying the chain via API
+
+```
+GET /api/v1/inference-audit/verify
+Authorization: Bearer <admin-or-viewer-key>
+```
+
+Requires an enterprise license with the `inference_audit` feature.
+The endpoint walks every chained row (`seq IS NOT NULL`) in `seq` order and
+recomputes the hash for each entry.
+
+**Response** (`200 OK`):
+
+```json
+{ "verified": true,  "length": 1234, "break_seq": null }
+```
+
+or, if tampering is detected:
+
+```json
+{ "verified": false, "length": 567,  "break_seq": 568 }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `verified` | boolean | `true` when every entry is consistent. |
+| `length` | integer | Number of chained rows examined. |
+| `break_seq` | integer or null | `seq` of the first broken entry; `null` when `verified=true`. |
+
+Returns `402 Payment Required` without a valid `inference_audit` license.
+
+### What verification detects
+
+| Tamper type | Detected? | How |
+|---|---|---|
+| Row content modified (any covered field) | Yes | Recomputed hash differs from stored hash. |
+| `hash` column overwritten | Yes | Hash recomputed from content doesn't match the stored (wrong) hash. |
+| Row deleted from the middle | Yes | Gap in `seq` sequence. |
+| Row inserted (new row with forged seq) | Yes | Prev-hash link is broken. |
+| Most-recent row rewritten + hash recomputed | **No** | Self-contained chain cannot detect tail rewriting — use an external anchor. |
+
+> **Tip:** To close the tail-rewriting gap, periodically copy the current head `hash`
+> to an external trusted store (immutable log, HSM, or a public blockchain anchor)
+> and compare it against `GET /api/v1/inference-audit/verify` before each compliance
+> review.
+
+---
+
 ## API Reference
 
 ### List inference events
@@ -136,6 +225,19 @@ paginated list of `InferenceEvent` rows in ascending timestamp order.
 Returns `402 Payment Required` when the license lacks the `inference_audit` feature.
 Returns `403 Forbidden` when the API key has the `inference` role (not allowed to
 call control-plane management endpoints).
+
+---
+
+### Verify the hash chain
+
+```
+GET /api/v1/inference-audit/verify
+Authorization: Bearer <admin-or-viewer-key>
+```
+
+Requires an enterprise license with the `inference_audit` feature.
+See the [Tamper-evident hash chain](#tamper-evident-hash-chain) section above for the
+full response schema and what each failure mode means.
 
 ---
 
