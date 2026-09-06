@@ -63,6 +63,8 @@ unparseable values fall back to the compiled defaults shown below.
 | `PURSER_RECONCILER_NODE_OFFLINE_AFTER` | `45s` | How long since the last heartbeat before a node is considered offline (NodeTimeout). |
 | `PURSER_RECONCILER_HYSTERESIS` | `30s` | Minimum dwell time a discrepancy must persist before the loop acts (time-based anti-churn). |
 | `PURSER_RECONCILER_ACTION_COOLDOWN` | `2m` | Minimum time between re-issuing the same corrective action (prevents hammering while a prior action takes effect). |
+| `PURSER_RECONCILER_WEBHOOK_URL` | (empty) | HTTP(S) endpoint that receives a `POST` request whenever the reconciler raises an `approval_required` event (e.g. a node going down that requires operator sign-off before failover). See [Webhook Notifications](./webhook.md) for payload format and retry behaviour. When empty, no webhook is sent. |
+| `PURSER_RECONCILER_WEBHOOK_RETRIES` | `3` | Maximum number of POST attempts before the webhook delivery is abandoned. Each retry uses exponential backoff (500 ms, 1 s, 2 s, …). Must be a positive integer; values ≤ 0 fall back to 3. |
 
 ### Control Plane: Helm wiring
 
@@ -203,9 +205,9 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ## Complete list by component
 
-### Control Plane env vars (22)
+### Control Plane env vars (24)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
 
 ### Agent env vars (22)
 
