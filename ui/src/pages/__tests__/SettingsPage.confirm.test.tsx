@@ -36,6 +36,26 @@ vi.mock('../../hooks/queries', () => ({
     mutate: revokeMutate,
     isPending: false,
   }),
+  useKeyUsage: () => ({
+    data: null,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+  useUsageSummary: () => ({
+    data: { tenants: [] },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
+  useEnterpriseStatus: () => ({
+    data: { edition: 'community', licensee: 'community', features: [] },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
 }));
 
 // ---- helpers ----------------------------------------------------------------
