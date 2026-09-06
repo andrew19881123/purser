@@ -13,6 +13,7 @@ import {
   IconLayers,
   IconChat,
   IconSettings,
+  IconShield,
   IconMoon,
   IconSun,
 } from './icons';
@@ -37,6 +38,7 @@ const OPERATE: NavItem[] = [
 const USE: NavItem[] = [
   { to: '/playground', labelKey: 'nav.playground', icon: <IconChat /> },
   { to: '/settings', labelKey: 'nav.settings', icon: <IconSettings /> },
+  { to: '/audit', labelKey: 'nav.audit', icon: <IconShield /> },
 ];
 
 function NavGroup({ titleKey, items }: { titleKey: StringKey; items: NavItem[] }) {

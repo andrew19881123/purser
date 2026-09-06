@@ -15,6 +15,7 @@ import { JoinTokenPage } from './pages/JoinTokenPage';
 import { ModelStudioPage } from './pages/ModelStudioPage';
 import { PlaygroundPage } from './pages/PlaygroundPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AuditPage } from './pages/AuditPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 export const router = createHashRouter([
@@ -31,6 +32,7 @@ export const router = createHashRouter([
       { path: 'join-token', element: <JoinTokenPage /> },
       { path: 'playground', element: <PlaygroundPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'audit', element: <AuditPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

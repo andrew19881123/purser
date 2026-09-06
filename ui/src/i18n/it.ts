@@ -303,4 +303,22 @@ export const it: Record<StringKey, string> = {
   'settings.role.admin.hint': 'Accesso completo al piano di controllo',
   'settings.role.viewer.hint': 'Accesso in sola lettura al piano di controllo',
   'settings.role.inference.hint': 'Solo inferenza gateway — non può gestire il cluster',
+
+  // audit log enterprise
+  'nav.audit': 'Audit Log',
+  'audit.title': 'Audit Log',
+  'audit.chain.verified': 'Catena verificata',
+  'audit.chain.broken': 'Integrità catena compromessa al seq {seq}',
+  'audit.empty': 'Nessuna voce di audit ancora',
+  'audit.enterprise.required': 'Licenza Enterprise richiesta per visualizzare il log',
+  'audit.refresh': 'Aggiorna',
+  'audit.limit': 'Mostra',
+  'audit.col.seq': '#',
+  'audit.col.timestamp': 'Timestamp',
+  'audit.col.actor': 'Attore',
+  'audit.col.action': 'Azione',
+  'audit.col.target': 'Destinatario',
+  'audit.col.details': 'Dettagli',
+  'audit.docs.link': 'Scopri di più sul log di audit enterprise',
+  'error.audit': 'Impossibile caricare il log di audit.',
 };

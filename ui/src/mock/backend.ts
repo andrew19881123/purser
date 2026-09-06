@@ -8,6 +8,8 @@
 import type {
   ApiKey,
   ApiKeyWithSecret,
+  AuditEntry,
+  AuditLog,
   CatalogEntry,
   ClusterCapacity,
   Deployment,
@@ -351,6 +353,59 @@ export const mockBackend: PurserApi = {
     if (!key) throw new NotFoundError(`API key ${id} was not found.`);
     key.revoked = true;
     return delay(structuredClone(key), 350);
+  },
+
+  // --- enterprise ---
+
+  getAuditLog: async (limit = 100): Promise<AuditLog> => {
+    const now = Date.now();
+    const mockEntries: AuditEntry[] = [
+      {
+        seq: 1,
+        actor: 'api',
+        action: 'join_token.minted',
+        target: 'default',
+        prevHash: '0'.repeat(64),
+        hash: 'a3f8c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9',
+        createdAt: new Date(now - 7_200_000).toISOString(),
+      },
+      {
+        seq: 2,
+        actor: 'api',
+        action: 'model.created',
+        target: 'llama-3.1-8b',
+        details: { source: 'huggingface' },
+        prevHash: 'a3f8c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9c2d1e5b4a7f9',
+        hash: '9c21b3a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5',
+        createdAt: new Date(now - 3_600_000).toISOString(),
+      },
+      {
+        seq: 3,
+        actor: 'api',
+        action: 'apikey.created',
+        target: 'dev-key-1',
+        details: { team: 'engineering' },
+        prevHash: '9c21b3a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5b1a4d7f2e8c5',
+        hash: '7b44e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8',
+        createdAt: new Date(now - 1_800_000).toISOString(),
+      },
+      {
+        seq: 4,
+        actor: 'api',
+        action: 'fleet.node.draining',
+        target: 'node-02',
+        prevHash: '7b44e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8e2a5f9c3d6a8',
+        hash: '2e99c1a3b8f4d7e2c1a3b8f4d7e2c1a3b8f4d7e2c1a3b8f4d7e2c1a3b8f4d7e2',
+        createdAt: new Date(now - 600_000).toISOString(),
+      },
+    ];
+    const entries = mockEntries.slice(0, limit);
+    return {
+      feature: 'audit',
+      licensee: 'Demo Corp (Mock Mode)',
+      entries,
+      chain: { verified: true, length: entries.length },
+    };
   },
 
   streamMetrics(handlers: MetricsStreamHandlers): () => void {

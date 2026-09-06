@@ -18,6 +18,7 @@
 import type {
   ApiKey,
   ApiKeyWithSecret,
+  AuditLog,
   CatalogEntry,
   ClusterCapacity,
   DeployOverrides,
@@ -87,6 +88,10 @@ export interface PurserApi {
   // --- live metrics (SSE) ---
   /** Subscribe to GET /api/v1/metrics; returns an unsubscribe/close function. */
   streamMetrics(handlers: MetricsStreamHandlers): () => void;
+
+  // --- enterprise ---
+  /** GET /api/v1/enterprise/audit-log — 402 without a valid license. */
+  getAuditLog(limit?: number): Promise<AuditLog>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

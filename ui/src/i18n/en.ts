@@ -331,6 +331,24 @@ export const en = {
   'settings.role.admin.hint': 'Full access to the control plane',
   'settings.role.viewer.hint': 'Read-only access to the control plane',
   'settings.role.inference.hint': 'Gateway inference only — cannot manage the cluster',
+
+  // enterprise audit log
+  'nav.audit': 'Audit Log',
+  'audit.title': 'Audit Log',
+  'audit.chain.verified': 'Chain verified',
+  'audit.chain.broken': 'Chain integrity broken at seq {seq}',
+  'audit.empty': 'No audit entries yet',
+  'audit.enterprise.required': 'Enterprise license required to view audit log',
+  'audit.refresh': 'Refresh',
+  'audit.limit': 'Show',
+  'audit.col.seq': '#',
+  'audit.col.timestamp': 'Timestamp',
+  'audit.col.actor': 'Actor',
+  'audit.col.action': 'Action',
+  'audit.col.target': 'Target',
+  'audit.col.details': 'Details',
+  'audit.docs.link': 'Learn about enterprise audit log',
+  'error.audit': 'Could not load the audit log.',
 } as const;
 
 export type StringKey = keyof typeof en;

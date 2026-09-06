@@ -246,6 +246,15 @@ export function useRevokeApiKey() {
   });
 }
 
+// --- enterprise -------------------------------------------------------------
+
+export function useAuditLog(limit = 100) {
+  return useQuery({
+    queryKey: ['auditLog', limit],
+    queryFn: () => api.getAuditLog(limit),
+  });
+}
+
 // --- gateway (playground) ---------------------------------------------------
 
 /** GET /v1/models on the Gateway (mock or real, per the chat client). */
