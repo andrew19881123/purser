@@ -12,7 +12,23 @@ The Purser Agent can run as a launchd daemon on macOS or a Windows service. Both
 ### Prerequisites
 
 - macOS with `launchctl`
-- The `purser-agent` binary from the [v0.1.0 release](https://github.com/andrew19881123/purser/releases/tag/v0.1.0)
+- The `purser-agent` binary from the [latest release](https://github.com/andrew19881123/purser/releases/latest)
+
+#### Apple Silicon (M1 / M2 / M3 — darwin/arm64)
+
+Starting with v0.3.0, a native `darwin/arm64` binary is published for Apple Silicon Macs. Download it directly from the release page:
+
+```bash
+TAG=v0.3.0
+curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/control-plane-darwin-arm64-${TAG}.tar.gz
+curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+
+tar -xzf control-plane-darwin-arm64-${TAG}.tar.gz
+```
+
+!!! note "darwin/arm64 purser-agent"
+    The `purser-agent` darwin/arm64 binary is published on a best-effort basis. If the release does not include it, the amd64 binary runs under Rosetta 2. The Linux agent (`.deb`/`.rpm`) is the primary and most tested path for fleet nodes.
 
 ### Install
 
