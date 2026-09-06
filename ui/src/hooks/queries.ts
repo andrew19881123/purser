@@ -14,6 +14,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { api, type CreateApiKeyInput } from '../api/client';
+import { config } from '../api/config';
 import type { ChatClient } from '../api/openai';
 import type { DeployOverrides, ImportSource, MetricsSnapshot } from '../api/types';
 
@@ -30,6 +31,7 @@ export const qk = {
   join: ['join'] as const,
   apiKeys: ['apiKeys'] as const,
   gatewayModels: (baseUrl: string) => ['gatewayModels', baseUrl] as const,
+  reconcilerStatus: ['reconcilerStatus'] as const,
 };
 
 // --- fleet ------------------------------------------------------------------
@@ -66,6 +68,35 @@ export function useNodeAction() {
   const restart = useMutation({ mutationFn: (id: string) => api.restartNode(id), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: (id: string) => api.removeNode(id), onSuccess: invalidate });
   return { drain, restart, remove };
+}
+
+// --- reconciler status ------------------------------------------------------
+
+/**
+ * Live reconciler health: state machine phase, last-sync timestamp, and pending
+ * / error counts. Backed by GET /api/v1/reconciler/status (v0.3+ endpoint).
+ * When the endpoint is absent (older control plane) the query enters the error
+ * state after one retry — FleetPage renders a "Status unknown" badge instead of
+ * crashing or hiding the card entirely.
+ */
+export interface ReconcilerStatus {
+  state: 'idle' | 'syncing' | 'error';
+  lastSyncAt: string | null;
+  pendingCount: number;
+  errorCount: number;
+}
+
+export function useReconcilerStatus() {
+  return useQuery({
+    queryKey: qk.reconcilerStatus,
+    queryFn: (): Promise<ReconcilerStatus> =>
+      fetch(`${config.apiBase}/reconciler/status`, { credentials: 'same-origin' }).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<ReconcilerStatus>;
+      }),
+    retry: 1,
+    retryDelay: 2000,
+  });
 }
 
 // --- catalog / model --------------------------------------------------------
@@ -284,21 +315,6 @@ export function useGatewayModels(chatClient: ChatClient) {
     // The Gateway may be unreachable / keyless; fail fast and let the UI fall back.
     retry: 0,
     staleTime: 30_000,
-  });
-}
-
-// --- reconciler -------------------------------------------------------------
-
-/**
- * Poll GET /api/v1/reconciler/status every 15 seconds for the reconciler's
- * active config and pending-approval event tracker. Used by the Fleet page's
- * Reconciler Status widget.
- */
-export function useReconcilerStatus() {
-  return useQuery({
-    queryKey: ['reconcilerStatus'],
-    queryFn: () => api.getReconcilerStatus(),
-    refetchInterval: 15_000,
   });
 }
 

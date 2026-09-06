@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Badge,
   Button,
@@ -12,12 +13,19 @@ import {
   StatusPill,
   type Tone,
 } from '../components/ui';
-import { IconRefresh, IconServer } from '../components/icons';
-import { useCapacity, useMetricsStream, useNodes, useNodeAction, useReconcilerStatus } from '../hooks/queries';
+import { IconServer } from '../components/icons';
+import {
+  useCapacity,
+  useMetricsStream,
+  useNodes,
+  useNodeAction,
+  useReconcilerStatus,
+  type ReconcilerStatus,
+} from '../hooks/queries';
 import { useT, type TFunc } from '../i18n';
 import { gb, tokS } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView, ReconcilerStatus } from '../api/types';
+import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView } from '../api/types';
 
 const LINK_TONE: Record<LinkQuality, Tone> = {
   excellent: 'success',
@@ -60,7 +68,10 @@ function CapacityCard({
           <span className="stat__value" aria-live="polite">{tokS(decode)}</span>
           <span className="stat__label">{t('fleet.capacity.throughput')}</span>
         </div>
-        <div className="stat">
+        <div
+          className="stat"
+          title="FP4 (4-bit floating point) quantization acceleration. Reduces memory usage and increases throughput on compatible hardware."
+        >
           <span className="stat__value">
             <Badge tone={cap.fp4Capable ? 'success' : 'neutral'}>
               {cap.fp4Capable ? t('fleet.capacity.fp4.yes') : t('fleet.capacity.fp4.no')}
@@ -87,6 +98,72 @@ function hardwareSummary(n: NodeView): string {
       ? n.profile.gpus.map((g) => `${g.count}× ${g.name} (${g.vramGb}GB)`).join(', ')
       : 'CPU only';
   return `${gpu} · ${gb(n.profile.ramTotalGb)} RAM · ${n.profile.backends.join('/')}`;
+}
+
+/**
+ * Shows the control-plane reconciler health status. Handles three states:
+ *   - loading  → render nothing while the first fetch is in-flight (TODO: skeleton)
+ *   - error    → the endpoint is absent or returned an error; show a neutral
+ *                "Status unknown" badge so the operator knows the card is present
+ *                but unavailable, rather than silently disappearing.
+ *   - data     → normal rendering with state badge and last-sync timestamp.
+ *
+ * P-12: the previous `{reconcilerStatus.data && <ReconcilerStatusCard .../>}`
+ * guard hid the card entirely during loading and on API error, making it
+ * impossible for an operator to distinguish "reconciler not supported" from
+ * "dashboard bug". This version keeps the card visible in all states.
+ */
+export function ReconcilerStatusCard({
+  status,
+}: {
+  status: ReconcilerStatus | undefined;
+}) {
+  const STATE_TONE: Record<ReconcilerStatus['state'], Tone> = {
+    idle: 'success',
+    syncing: 'info',
+    error: 'danger',
+  };
+
+  if (!status) {
+    return (
+      <Card title="Reconciler">
+        <p>
+          <Badge tone="neutral">Status unknown</Badge>
+          {' '}
+          Reconciler status unknown
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card title="Reconciler">
+      <div className="stat-grid">
+        <div className="stat">
+          <span className="stat__value">
+            <Badge tone={STATE_TONE[status.state]}>{status.state}</Badge>
+          </span>
+          <span className="stat__label">State</span>
+        </div>
+        <div className="stat">
+          <span className="stat__value">{status.pendingCount}</span>
+          <span className="stat__label">Pending</span>
+        </div>
+        <div className="stat">
+          <span className="stat__value">{status.errorCount}</span>
+          <span className="stat__label">Errors</span>
+        </div>
+      </div>
+      {status.lastSyncAt && (
+        <p className="muted">
+          Last sync:{' '}
+          <time dateTime={status.lastSyncAt}>
+            {new Date(status.lastSyncAt).toLocaleString()}
+          </time>
+        </p>
+      )}
+    </Card>
+  );
 }
 
 function NodeRow({
@@ -136,7 +213,9 @@ function NodeRow({
           )}
         </td>
         <td>
-          <Badge tone={LINK_TONE[node.linkQuality]}>{node.linkQuality}</Badge>
+          <span title="Network link quality measured as round-trip latency to the control plane">
+            <Badge tone={LINK_TONE[node.linkQuality]}>{node.linkQuality}</Badge>
+          </span>
         </td>
         <td>
           <div className="row-actions">
@@ -189,50 +268,6 @@ function NodeRow({
   );
 }
 
-/** Reconciler Status card — shows active config knobs and any pending-approval
- *  events detected by the control-loop. Exported for unit testing. */
-export function ReconcilerStatusCard({ status }: { status: ReconcilerStatus }) {
-  const t = useT();
-  const pendingEntries = Object.entries(status.tracker).filter(([, v]) => v.tracked > 0);
-  const isHealthy = pendingEntries.length === 0;
-
-  return (
-    <Card
-      title={
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
-          <IconRefresh />
-          {t('fleet.reconciler.title')}
-        </span>
-      }
-    >
-      <p className="muted">
-        {t('fleet.reconciler.config', {
-          intervalS: status.config.intervalS,
-          nodeTimeoutS: status.config.nodeTimeoutS,
-          cooldownS: status.config.actionCooldownS,
-        })}
-      </p>
-      {isHealthy ? (
-        <Badge tone="success">{t('fleet.reconciler.healthy')}</Badge>
-      ) : (
-        <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-          {pendingEntries.map(([type, summary]) => (
-            <li key={type} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Badge tone="warning">{type}</Badge>
-              <span className="muted">
-                {t('fleet.reconciler.event_detail', {
-                  tracked: summary.tracked,
-                  oldestAgeS: summary.oldestAgeS,
-                })}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
 export function FleetPage() {
   const t = useT();
   const capacity = useCapacity();
@@ -276,7 +311,11 @@ export function FleetPage() {
         <CapacityCard cap={capacity.data} liveDecodeTokS={live?.aggregateDecodeTokS} t={t} />
       )}
 
-      {reconcilerStatus.data && (
+      {/* P-12: Reconciler card is always rendered (never conditionally hidden).
+          - isLoading: render nothing until the first response (TODO: skeleton)
+          - isError / no data: "Status unknown" badge — endpoint absent or unreachable
+          - data: full status card */}
+      {!reconcilerStatus.isLoading && (
         <ReconcilerStatusCard status={reconcilerStatus.data} />
       )}
 
@@ -289,7 +328,15 @@ export function FleetPage() {
           />
         )}
         {nodes.data && nodes.data.length === 0 && (
-          <EmptyState icon={<IconServer />} message={t('fleet.empty')} />
+          <EmptyState
+            icon={<IconServer />}
+            message={t('fleet.empty')}
+            action={
+              <Link to="/" className="btn btn--primary btn--sm link-btn">
+                {t('nav.onboarding')}
+              </Link>
+            }
+          />
         )}
         {nodes.data && nodes.data.length > 0 && (
           <div className="table-wrap">
