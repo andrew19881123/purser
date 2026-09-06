@@ -109,7 +109,7 @@ func (p *Planner) Plan(ctx context.Context, modelID string, c plan.Constraints) 
 	if err != nil {
 		return nil, err
 	}
-	dp, perr := plan.Plan(nodes, links, spec, c)
+	dp, perr := plan.Plan(ctx, nodes, links, spec, c)
 	if perr != nil {
 		return nil, toFitError(perr)
 	}
@@ -126,7 +126,7 @@ func (p *Planner) Fit(ctx context.Context, modelID string) (Fit, error) {
 	if err != nil {
 		return Fit{}, err
 	}
-	return p.fit(model, nodes, links), nil
+	return p.fit(ctx, model, nodes, links), nil
 }
 
 // FitAll computes the deployability verdict for every model in the catalog,
@@ -142,21 +142,21 @@ func (p *Planner) FitAll(ctx context.Context) ([]Fit, error) {
 	}
 	out := make([]Fit, 0, len(models))
 	for _, m := range models {
-		out = append(out, p.fit(m, nodes, links))
+		out = append(out, p.fit(ctx, m, nodes, links))
 	}
 	return out, nil
 }
 
 // fit runs the planner for one model against an already-loaded fleet snapshot
 // and projects the outcome into a Fit verdict.
-func (p *Planner) fit(model *registry.Model, nodes []plan.Node, links []plan.Link) Fit {
+func (p *Planner) fit(ctx context.Context, model *registry.Model, nodes []plan.Node, links []plan.Link) Fit {
 	f := Fit{ModelID: model.ID}
 	spec, err := modelSpec(model)
 	if err != nil {
 		f.Reason = err.Error()
 		return f
 	}
-	dp, perr := plan.Plan(nodes, links, spec, plan.Constraints{})
+	dp, perr := plan.Plan(ctx, nodes, links, spec, plan.Constraints{})
 	if perr != nil {
 		var pe *plan.PlanError
 		if errors.As(perr, &pe) {

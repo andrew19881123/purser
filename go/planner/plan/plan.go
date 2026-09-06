@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -108,8 +109,8 @@ const (
 // The public Plan drives failover; the alternatives are planned NON-recursively
 // (see planInternal's computeFailover guard), so the recursion is exactly one
 // level deep.
-func Plan(nodes []Node, links []Link, model ModelSpec, c Constraints) (*DeploymentPlan, error) {
-	return planInternal(nodes, links, model, c, true)
+func Plan(ctx context.Context, nodes []Node, links []Link, model ModelSpec, c Constraints) (*DeploymentPlan, error) {
+	return planInternal(ctx, nodes, links, model, c, true)
 }
 
 // planInternal is the shared orchestrator behind Plan. computeFailover is the
@@ -117,7 +118,11 @@ func Plan(nodes []Node, links []Link, model ModelSpec, c Constraints) (*Deployme
 // each per-node failover alternative (failover.go) is planned with false so the
 // alternatives do NOT themselves spawn failover plans — their FailoverAlt stays
 // empty. This bounds the failover recursion at a single level.
-func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, computeFailover bool) (*DeploymentPlan, error) {
+func planInternal(ctx context.Context, nodes []Node, links []Link, model ModelSpec, c Constraints, computeFailover bool) (*DeploymentPlan, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Operator include/exclude filter (design 08 §14: acts on `nodes` first).
 	nodes = applyNodeFilter(nodes, c)
 	if len(nodes) == 0 {
@@ -182,6 +187,9 @@ func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, co
 		// feasible plan (design 08 §5 selection loop, §6 partition DP).
 		var best *DeploymentPlan
 		for _, subset := range subsets {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if len(subset) < 2 {
 				continue
 			}
@@ -231,7 +239,7 @@ func planInternal(nodes []Node, links []Link, model ModelSpec, c Constraints, co
 	// Phase F — per-node failover alternatives (design 08 §9). Guarded so the
 	// alternatives are planned non-recursively (computeFailover == false).
 	if computeFailover {
-		computeFailoverPlans(plan, nodes, links, model, c)
+		computeFailoverPlans(ctx, plan, nodes, links, model, c)
 	}
 
 	return plan, nil
@@ -424,7 +432,7 @@ func validatePlanMemory(plan *DeploymentPlan, nodeByID map[string]Node, model Mo
 		nLayers := layersOn[id]
 		weight := quant.SizeGB * float64(nLayers) / float64(model.Layers)
 		required := weight + kvCachePerNode(model, nLayers, ctx) + overheadOSRuntimeGB
-		useful := usefulMemory(n)
+		useful := usefulMemoryForFit(n)
 
 		// Single-node plans (rule G3) do not reserve the HEADROOM margin; multi-node
 		// stages must, matching the phase-C DP's stage-fit check.
@@ -648,6 +656,44 @@ func usefulMemory(n Node) float64 {
 	default: // CPU-only: no discrete VRAM reported
 		return n.RAMAvailableGB
 	}
+}
+
+// usefulMemoryForFit extends usefulMemory with the KV-SSD offload contribution
+// for fit and feasibility checks (phase B aggregate, phase C DP stageFits, and
+// the validatePlanMemory backstop). When KVSSDOffload is enabled and DiskFreeGB
+// > 0, free SSD space can serve as overflow KV-cache storage (Tutti-style),
+// expanding the effective memory available to a shard.
+//
+// The SSD contribution is capped so that the SSD-augmented total never exceeds
+// kvSsdOffloadMaxMultiplier × (V)RAM — nodes with very large but slow SSDs
+// should not appear artificially over-capable. This mirrors the cap already
+// applied in estimatePerformance (where SSD raises the reported HeadroomGB).
+//
+// IMPORTANT: this function is intentionally separate from usefulMemory. The raw
+// usefulMemory figure is still used for headroom accounting in singleNodePlan
+// (where estimatePerformance then adds the SSD contribution a second time to
+// produce the final PerfEstimate.HeadroomGB). Merging the two would cause
+// double-counting in the performance estimate.
+func usefulMemoryForFit(n Node) float64 {
+	base := usefulMemory(n)
+	if !n.KVSSDOffload || n.DiskFreeGB <= 0 {
+		return base
+	}
+	// Cap base: use VRAM for discrete-GPU nodes; available RAM otherwise
+	// (unified-memory or CPU-only). Mirrors the same choice in estimatePerformance.
+	capBase := n.VRAMGB
+	if capBase <= 0 {
+		capBase = n.RAMAvailableGB
+	}
+	ssdContrib := kvSsdOffloadFactor * n.DiskFreeGB
+	// The SSD-augmented total must not exceed kvSsdOffloadMaxMultiplier × capBase.
+	if maxContrib := kvSsdOffloadMaxMultiplier*capBase - base; ssdContrib > maxContrib {
+		ssdContrib = maxContrib
+	}
+	if ssdContrib > 0 {
+		base += ssdContrib
+	}
+	return base
 }
 
 // usefulCapacity ranks nodes by useful memory weighted by memory bandwidth
