@@ -36,6 +36,7 @@ import (
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
+	"github.com/purser/purser/go/controlplane/ldapauth"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/policy"
 	"github.com/purser/purser/go/controlplane/reconciler"
@@ -123,6 +124,13 @@ const (
 	// to the key's own tenant for non-admin roles.
 	ctxKeyAPIKey
 )
+
+// LDAPAuthenticator is the authentication surface the LDAP login handlers need.
+// It is satisfied by *ldapauth.Connector and may be replaced with a test double
+// by passing a value via Config.LDAPConnector.
+type LDAPAuthenticator interface {
+	Authenticate(ctx context.Context, username, password string) (*ldapauth.UserInfo, error)
+}
 
 // OIDCConfig configures the optional OIDC authentication layer for the admin
 // UI and management REST API (/api/v1). When non-nil, every request must carry
@@ -350,6 +358,14 @@ type Config struct {
 	// expire when the process restarts). Set PURSER_SESSION_SECRET to a fixed
 	// 32-byte hex key for persistence across restarts.
 	SessionSecret []byte
+
+	// LDAPConfig, when non-nil, enables LDAP authentication (PURSER_LDAP_URL path).
+	// New() creates the connector automatically. Leave nil to disable LDAP.
+	LDAPConfig *ldapauth.Config
+	// LDAPConnector, when non-nil, overrides the connector built from LDAPConfig.
+	// Use in tests to inject a stub that does not require a real LDAP server;
+	// when set LDAPConfig is ignored.
+	LDAPConnector LDAPAuthenticator
 }
 
 // rateLimiterEntry tracks per-key sliding-window rate-limit state.
@@ -386,6 +402,8 @@ type Server struct {
 	vertexai          *importer.VertexAIClient
 	reconcilerStatus  ReconcilerStatusProvider // nil = endpoint disabled
 	raftNode          RaftNode                 // nil = standalone mode
+
+	ldapConnector LDAPAuthenticator // nil if LDAP not configured
 
 	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
 	tlsCert    string
@@ -557,6 +575,13 @@ func New(reg registry.Registry, cfg Config) *Server {
 
 	// PKCE state store: always initialised so the auth endpoints are ready.
 	s.pkceStore = newPKCEStateStore()
+
+	// LDAP connector: prefer an injected connector (tests) over building from config.
+	if cfg.LDAPConnector != nil {
+		s.ldapConnector = cfg.LDAPConnector
+	} else if cfg.LDAPConfig != nil {
+		s.ldapConnector = ldapauth.New(cfg.LDAPConfig)
+	}
 
 	s.routes()
 
@@ -781,8 +806,9 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		// 2. Auth endpoints are exempt: they ARE the login/logout flow.
 		// /auth/logout and /auth/backchannel-logout are reachable even with an
 		// already-revoked session so the browser can always clear its cookie.
+		// /auth/ldap-login is the LDAP form login — unauthenticated by definition.
 		switch r.URL.Path {
-		case "/auth/login", "/auth/callback", "/auth/logout", "/auth/backchannel-logout":
+		case "/auth/login", "/auth/callback", "/auth/logout", "/auth/backchannel-logout", "/auth/ldap-login":
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -890,6 +916,9 @@ var rbacPublicPaths = map[string]bool{
 	// /auth/token is the OAuth2 client_credentials token endpoint — it IS the
 	// authentication endpoint and must be reachable without a prior credential.
 	"/auth/token": true,
+	// /auth/ldap-login is the LDAP form login endpoint — it IS the
+	// authentication endpoint and must be reachable without a prior credential.
+	"/auth/ldap-login": true,
 }
 
 // rbacMiddleware enforces role-based access control on every request based on
@@ -1330,6 +1359,11 @@ func (s *Server) routes() {
 	// OAuth2 client_credentials token endpoint — no auth required (IS the auth).
 	// /auth/token is in rbacPublicPaths so it bypasses key/RBAC checks.
 	s.mux.HandleFunc("POST /auth/token", s.handleTokenEndpoint)
+
+	// LDAP authentication (enabled only when ldapConnector is configured).
+	// /auth/ldap-login is in rbacPublicPaths and exempted by oidcMiddleware.
+	s.mux.HandleFunc("GET /auth/ldap-login", s.handleLDAPLoginForm)
+	s.mux.HandleFunc("POST /auth/ldap-login", s.handleLDAPLogin)
 
 	// Service account management (admin only).
 	s.mux.HandleFunc("POST /api/v1/service-accounts", s.handleCreateServiceAccount)
