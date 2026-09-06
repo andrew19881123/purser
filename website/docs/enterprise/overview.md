@@ -32,6 +32,7 @@ Enterprise features:
 | **High Availability** | Leader election (Raft) + replicated registry; Gateway HA behind a VIP. Required for `replicaCount > 1` on the Control Plane. |
 | **Identity & Access** | RBAC, SSO/SAML/OIDC, LDAP/AD integration. See [OIDC configuration](../configuration/oidc.md). |
 | **Compliance** | **Tamper-evident audit log** (hash-chained, offline-verifiable), strong per-tenant isolation, chargeback/usage accounting. See [Audit Log](audit-log.md). |
+| **Policy-as-Code** | Embedded OPA/Rego engine — version-controlled governance rules for deploy gating, model allowlists, and team-based access control. See [Policy-as-Code](policy-as-code.md). |
 | **Fleet at Scale** | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, offline license validation. |
 
 ---

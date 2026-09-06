@@ -134,3 +134,15 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log (api_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_request_at ON usage_log (request_at);
+
+-- policies: Rego policy documents evaluated by the embedded OPA engine.
+-- The engine is reloaded on every PUT/DELETE so the `enabled` flag takes
+-- effect without a restart.
+CREATE TABLE IF NOT EXISTS policies (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    rego       TEXT NOT NULL,           -- Rego source code
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

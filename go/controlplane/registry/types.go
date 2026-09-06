@@ -190,3 +190,15 @@ type Cert struct {
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// Policy is a Rego policy document stored in the registry and evaluated by the
+// embedded OPA engine. Only enabled policies are loaded into the engine; the
+// `name` field serves as the human-readable identifier and upsert key.
+type Policy struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Rego      string    `json:"rego"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
