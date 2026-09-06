@@ -392,3 +392,72 @@ jobs:
 This gives you full audit history (every desired-state change is a git commit), easy
 rollback (`git revert`), and environment parity (prod and staging share the same file
 structure with only `cluster.id` and quota values differing).
+
+---
+
+## Applying configuration
+
+### Via startup flag (GitOps-friendly)
+
+Pass `--config` (or set `PURSER_CONFIG`) to apply a purser.yaml on every
+control-plane start. The desired state is reconciled against the live registry
+on boot — idempotent, safe to use in containers and Kubernetes deployments.
+
+```bash
+purser-control-plane --config purser.yaml
+# or
+PURSER_CONFIG=purser.yaml purser-control-plane
+```
+
+### Via REST API
+
+All three endpoints accept a raw `application/yaml` body and require a valid
+API key (`Authorization: Bearer $PURSER_ADMIN_KEY`).
+
+```bash
+# Dry-run — shows what would change, makes no mutations
+curl -X POST http://cp:8080/api/v1/config/diff \
+  -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @purser.yaml
+
+# Apply — reconciles desired state with live cluster
+curl -X POST http://cp:8080/api/v1/config/apply \
+  -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @purser.yaml
+
+# Export — download current cluster state as purser.yaml
+curl http://cp:8080/api/v1/config/export \
+  -H "Authorization: Bearer $PURSER_ADMIN_KEY" > current.yaml
+```
+
+#### Response shapes
+
+`POST /api/v1/config/diff` returns a JSON summary of pending changes:
+
+```json
+{
+  "models_to_add":         [{ "id": "qwen3-moe-235b", ... }],
+  "models_to_remove":      [],
+  "deployments_to_add":    [{ "model": "qwen3-moe-235b", "quantization": "Q4_K_M" }],
+  "deployments_to_remove": [],
+  "quotas_to_upsert":      [{ "team": "eng", "monthly_requests": 100000 }]
+}
+```
+
+`POST /api/v1/config/apply` returns a summary of what was changed:
+
+```json
+{
+  "applied": {
+    "models_added": 1,
+    "deployments_added": 0,
+    "quotas_upserted": 0
+  }
+}
+```
+
+`GET /api/v1/config/export` returns a `Content-Type: application/yaml` body in
+the same `ClusterConfig` format as the input, representing the current live
+state of the cluster (models + active deployments).

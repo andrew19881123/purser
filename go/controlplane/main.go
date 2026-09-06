@@ -34,6 +34,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/backup"
+	configpkg "github.com/purser/purser/go/controlplane/config"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/pki"
@@ -73,6 +74,12 @@ type config struct {
 	// Rate limiting for the management REST API.
 	rateLimitRPS    float64 // PURSER_RATE_LIMIT_RPS    (default 100)
 	rateLimitKeyRPS float64 // PURSER_RATE_LIMIT_KEY_RPS (default 50)
+
+	// configPath, when non-empty, names a purser.yaml to apply at startup
+	// (env PURSER_CONFIG). Enables GitOps-style reconciliation: the desired
+	// state is applied once on boot; the Wave 3 reconciler loop will generalise
+	// this to continuous drift correction.
+	configPath string
 }
 
 func loadConfig() config {
@@ -92,6 +99,7 @@ func loadConfig() config {
 		tlsAuto:         envBool("PURSER_TLS_AUTO"),
 		rateLimitRPS:    envFloat("PURSER_RATE_LIMIT_RPS", 0),
 		rateLimitKeyRPS: envFloat("PURSER_RATE_LIMIT_KEY_RPS", 0),
+		configPath:      envOr("PURSER_CONFIG", ""),
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -102,6 +110,7 @@ func loadConfig() config {
 	flag.StringVar(&c.clusterID, "cluster-id", c.clusterID, "cluster identifier echoed in join tokens (env PURSER_CLUSTER_ID)")
 	flag.IntVar(&c.agentPort, "agent-port", c.agentPort, "AgentService port the orchestrator dials on each node; 0 = default 50151 (env PURSER_AGENT_PORT)")
 	flag.StringVar(&c.internalToken, "internal-token", c.internalToken, "shared secret for gateway usage callbacks (env PURSER_INTERNAL_TOKEN)")
+	flag.StringVar(&c.configPath, "config", c.configPath, "path to purser.yaml applied at startup (env PURSER_CONFIG)")
 	flag.Parse()
 	return c
 }
@@ -430,6 +439,30 @@ func run(logger *slog.Logger) error {
 	// Start the background OTEL infrastructure metrics collector (nodes ready/
 	// total, active deployments). It exits when ctx is cancelled.
 	srv.StartInfraMetrics(ctx)
+
+	// --config / PURSER_CONFIG: apply desired state from a purser.yaml at startup.
+	// This is the GitOps-friendly path: store purser.yaml in version control and
+	// let the control plane converge to the declared state on every restart.
+	if cfg.configPath != "" {
+		cc, err := configpkg.LoadFile(cfg.configPath)
+		if err != nil {
+			logger.Error("startup config: load failed", "path", cfg.configPath, "err", err)
+		} else {
+			applyCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			result, err := srv.ApplyClusterConfig(applyCtx, cc)
+			cancel()
+			if err != nil {
+				logger.Error("startup config: apply failed", "path", cfg.configPath, "err", err)
+			} else {
+				logger.Info("startup config: applied",
+					"path", cfg.configPath,
+					"models_added", result.ModelsAdded,
+					"deployments_added", result.DeploymentsAdded,
+					"quotas_upserted", result.QuotasUpserted,
+				)
+			}
+		}
+	}
 
 	errCh := make(chan error, 2)
 	go func() {
