@@ -97,6 +97,51 @@ The data plane stays on the trusted LAN subnet between fleet nodes. When a model
 
 ---
 
+## Model cache
+
+Each agent maintains a local, disk-backed model-weight cache (`~/.purser/model-cache` by default). When the control plane sends a `StartEngine` RPC the agent resolves the logical model reference — for example `llama-3.1-8b:Q4_K_M` — to an on-disk GGUF file path before starting the engine adapter. This avoids re-downloading weights on every engine restart and decouples the control plane (which speaks in model IDs) from the engine adapter (which needs a filesystem path).
+
+```mermaid
+sequenceDiagram
+    participant CP as Control Plane
+    participant Svc as AgentSvc (service.rs)
+    participant MC as ModelCache
+    participant Sup as Supervisor
+    participant Eng as Engine Adapter
+
+    CP->>Svc: StartEngine(model_ref="llama-3.1-8b:Q4_K_M")
+    Svc->>MC: get("llama-3.1-8b:Q4_K_M")
+    alt cache hit
+        MC-->>Svc: Some("/…/blobs/<sha256>")
+        Svc->>Sup: start(EngineSpec { model_path: Some(path) })
+    else cache miss
+        MC-->>Svc: None
+        Note over Svc: warn — engine adapter locates weights itself
+        Svc->>Sup: start(EngineSpec { model_path: None })
+    end
+    Sup->>Eng: start_host / start_worker(model_ref, …)
+    Eng-->>Sup: LOADING → READY → METRICS
+    Sup-->>CP: event stream
+```
+
+**Key properties of the cache:**
+
+- **Content-addressed blobs** — two model refs with the same SHA-256 share a single blob file, so quantisation variants of the same base model are deduplicated on disk.
+- **Checksum verification** — every artifact is SHA-256-verified before being admitted; a mismatch or partial download is rejected.
+- **LRU eviction** under a configurable budget (`PURSER_MODEL_CACHE_MAX_BYTES`, default 50 GiB). The model currently being served is pinned so it is never evicted while the engine is running.
+- **Pluggable fetcher** — the default `FileMirrorFetcher` copies from a rack-local NFS / mounted object-store mirror (`PURSER_MODEL_MIRROR_DIR`). An `HttpFetcher` (behind the optional `http-fetch` Cargo feature) pulls from an internet origin with configurable retry logic.
+
+**Environment variables:**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PURSER_MODEL_CACHE_DIR` | `~/.purser/model-cache` | Root directory for blobs and temp files |
+| `PURSER_MODEL_CACHE_MAX_BYTES` | `53687091200` (50 GiB) | Maximum total bytes stored in the cache |
+| `PURSER_MODEL_MIRROR_DIR` | *(unset)* | Mirror root for `FileMirrorFetcher` relative URLs |
+| `PURSER_MODEL_FETCH_MAX_RETRIES` | `3` | HTTP fetch retries (http-fetch feature only) |
+
+---
+
 ## Enrollment flow
 
 1. **Join token minted** — operator calls `POST /api/v1/join-token` (or downloads the enrollment bundle from `GET /api/v1/enrollment-bundle`).

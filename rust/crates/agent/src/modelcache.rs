@@ -422,6 +422,14 @@ impl ModelCache {
         self.inner.lock().unwrap().entries.contains_key(model_ref)
     }
 
+    /// Return the on-disk GGUF path for `model_ref` if it is present in the
+    /// cache and the blob still exists on disk, touching the LRU clock. Returns
+    /// `None` if the model is not cached or its blob has been removed.
+    pub fn get(&self, model_ref: &str) -> Option<PathBuf> {
+        self.touch_if_present(model_ref)
+            .map(|sha| self.blob_path(&sha))
+    }
+
     /// Touch the LRU clock for `model_ref` if cached and its blob still exists;
     /// returns the content address on success.
     fn touch_if_present(&self, model_ref: &str) -> Option<String> {

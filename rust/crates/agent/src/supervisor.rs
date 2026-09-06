@@ -131,6 +131,11 @@ pub struct EngineSpec {
     pub bind_addr: String,
     /// Engine tuning parameters (host only).
     pub params: EngineParams,
+    /// Resolved on-disk GGUF path from the agent's model cache. `None` if the
+    /// cache did not hold the artifact at request time; the backend falls back to
+    /// locating the model itself. Populated by `AgentSvc::start_engine` before
+    /// the spec reaches the supervisor.
+    pub model_path: Option<std::path::PathBuf>,
 }
 
 impl EngineSpec {
@@ -144,6 +149,7 @@ impl EngineSpec {
             peers: Vec::new(),
             bind_addr: "127.0.0.1:0".to_string(),
             params: EngineParams::default(),
+            model_path: None,
         }
     }
 }
@@ -1056,6 +1062,7 @@ mod tests {
             peers: Vec::new(),
             bind_addr: "0.0.0.0:0".to_string(),
             params: EngineParams::default(),
+            model_path: None,
         };
         let mut rx = sup.start(host_spec);
 
