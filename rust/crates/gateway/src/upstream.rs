@@ -80,9 +80,12 @@ impl HttpClient {
             Ok(Err(err)) if err.is_timeout() => Err(ApiError::Timeout(
                 "The deployment host timed out while starting the response.".to_string(),
             )),
-            Ok(Err(err)) => Err(ApiError::NodeUnavailable(format!(
-                "The deployment host is unavailable (it may be rescheduling): {err}"
-            ))),
+            Ok(Err(err)) => {
+                tracing::warn!(err = %err, url = %url, "upstream connection failed");
+                Err(ApiError::NodeUnavailable(
+                    "The inference backend is temporarily unavailable; retry shortly.".to_string(),
+                ))
+            }
             Ok(Ok(resp)) => Ok(resp),
         }
     }

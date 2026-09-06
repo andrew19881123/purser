@@ -16,18 +16,18 @@
 //!
 //! `GET /v1/models` reflects the currently **active** routes.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::response::{Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument as _;
 
 use crate::auth::ApiKey;
@@ -36,6 +36,14 @@ use crate::metrics::record_request;
 use crate::openai::{gen_id, unix_now, ModelList, ModelObject};
 use crate::state::{AppState, OWNED_BY};
 use crate::upstream::{count_sse_tokens, json_completion_tokens};
+
+// ---------------------------------------------------------------------------
+// Global bounded semaphore for fire-and-forget usage reports (Fix M3).
+// Caps the number of concurrent reporting tasks so a slow Control Plane cannot
+// grow an unbounded task list; exceeding the limit silently drops the report
+// (usage accounting is best-effort, not transactional).
+static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(256)));
 
 // ---------------------------------------------------------------------------
 // Usage reporting helpers
@@ -65,8 +73,11 @@ fn estimate_input_tokens(body: &[u8]) -> u64 {
 }
 
 /// Fire-and-forget: POST token usage to the Control Plane.
-/// Errors are logged at debug level and otherwise ignored so they never
-/// affect the inference response path.
+///
+/// Bounded by [`USAGE_SEMAPHORE`]: at most 256 reporting tasks can be
+/// in-flight simultaneously. When the semaphore is exhausted the report is
+/// dropped with a debug log rather than spawning another task (usage
+/// accounting is best-effort, not transactional).
 fn spawn_usage_report(
     client: reqwest::Client,
     cp_url: Arc<String>,
@@ -76,30 +87,42 @@ fn spawn_usage_report(
     input_tokens: u64,
     output_tokens: u64,
 ) {
-    tokio::spawn(async move {
-        let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "api_key_id": api_key_id,
-            "model_id":   model_id,
-            "input_tokens":  input_tokens,
-            "output_tokens": output_tokens,
-        });
-        let mut builder = client.post(&url).json(&body);
-        if let Some(tok) = internal_token.as_deref() {
-            builder = builder.header("X-Purser-Internal-Token", tok);
+    match USAGE_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit; // released when the task completes
+                let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "api_key_id": api_key_id,
+                    "model_id":   model_id,
+                    "input_tokens":  input_tokens,
+                    "output_tokens": output_tokens,
+                });
+                let mut builder = client.post(&url).json(&body);
+                if let Some(tok) = internal_token.as_deref() {
+                    builder = builder.header("X-Purser-Internal-Token", tok);
+                }
+                if let Err(e) = builder.send().await {
+                    tracing::debug!(error = %e, "usage report to control plane failed (fire-and-forget)");
+                }
+            });
         }
-        if let Err(e) = builder.send().await {
-            tracing::debug!(error = %e, "usage report to control plane failed (fire-and-forget)");
+        Err(_) => {
+            tracing::debug!("usage semaphore full; dropping usage report for model {model_id}");
         }
-    });
+    }
 }
 
 /// Routes under `/v1`.
+///
+/// A 4 MB body-size cap is applied to the POST inference endpoints. `GET
+/// /v1/models` has no body so the cap does not restrict it.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/completions", post(completions))
         .route("/embeddings", post(embeddings))
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024)) // 4 MB cap (Fix H1)
         .route("/models", get(models))
 }
 
@@ -373,7 +396,12 @@ fn stream_response(
                     yield Ok(chunk);
                 }
                 Ok(Some(Err(err))) => {
-                    tracing::warn!(session_id = %session_id, error = %err, "upstream stream error");
+                    tracing::warn!(session_id = %session_id, error = %err, "upstream stream failed mid-flight");
+                    // Notify the client with a structured SSE error frame so it
+                    // knows the stream ended abnormally, not cleanly (Fix M2).
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                        b"data: {\"error\":{\"message\":\"upstream stream interrupted\",\"type\":\"api_error\",\"code\":\"upstream_error\"}}\n\n",
+                    ));
                     break;
                 }
             }
@@ -445,6 +473,7 @@ async fn buffered_response(
             ));
         }
         Ok(Err(err)) => {
+            tracing::warn!(err = %err, model = %model, "upstream body read failed");
             drop(guard);
             record_request(
                 model,
@@ -454,9 +483,10 @@ async fn buffered_response(
                 prompt_tokens,
                 0,
             );
-            return Err(ApiError::NodeUnavailable(format!(
-                "The deployment host failed while sending the response: {err}"
-            )));
+            return Err(ApiError::NodeUnavailable(
+                "The inference backend failed while sending the response; retry shortly."
+                    .to_string(),
+            ));
         }
         Ok(Ok(bytes)) => bytes,
     };

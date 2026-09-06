@@ -718,6 +718,163 @@ async fn embeddings_host_down_is_503() {
 }
 
 // ---------------------------------------------------------------------------
+// hardening tests
+// ---------------------------------------------------------------------------
+
+/// H1: a request body larger than 4 MB must be rejected with 413.
+#[tokio::test]
+async fn request_body_too_large_returns_413() {
+    let state = AppState::with_mock();
+    // 5 MB of zeros, valid UTF-8 but way above the 4 MB cap.
+    let big_body = vec![b' '; 5 * 1024 * 1024];
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, "Bearer client-key")
+        .body(Body::from(big_body))
+        .unwrap();
+    let response = app(state).oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "body >4 MB must be rejected with 413"
+    );
+}
+
+/// H2: constant-time validate() must reject tokens whose length differs from
+/// every configured key, not just tokens with matching prefixes.
+#[test]
+fn validate_rejects_token_with_wrong_length() {
+    let mut keys = HashMap::new();
+    keys.insert(
+        "sk-correct-key-1234".to_string(),
+        ApiKeyInfo {
+            id: "id-1".to_string(),
+            tenant: "team-a".to_string(),
+        },
+    );
+    let auth = AuthConfig::strict(keys, None);
+    // Short token (wrong length).
+    assert!(
+        auth.validate("sk-short").is_err(),
+        "shorter token must be rejected"
+    );
+    // Prefix of the real key (wrong length).
+    assert!(
+        auth.validate("sk-correct").is_err(),
+        "correct-prefix-but-shorter token must be rejected"
+    );
+    // Exact match succeeds.
+    assert!(
+        auth.validate("sk-correct-key-1234").is_ok(),
+        "exact key must be accepted"
+    );
+}
+
+/// H3: 503 error bodies must not expose internal addresses or transport details.
+#[tokio::test]
+async fn upstream_error_message_does_not_contain_ip() {
+    // AppState::with_mock() points MOCK_MODEL at 127.0.0.1:9 (closed port),
+    // so the gateway gets a connection-refused error from reqwest. The original
+    // error string would contain the URL (with "127." and ":"). After the fix
+    // only the sanitized message must reach the client.
+    let payload =
+        json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
+    let response = app(AppState::with_mock())
+        .oneshot(post_json("/v1/chat/completions", Some("client-key"), &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(response).await;
+    let msg = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        !msg.contains("10.") && !msg.contains("127.") && !msg.contains("localhost"),
+        "503 message must not expose internal addresses: {msg}"
+    );
+    // Colon typically appears in URLs and ports — must not be present.
+    assert!(
+        !msg.contains(':'),
+        "503 message must not contain ':' (port/URL leak): {msg}"
+    );
+}
+
+/// M2: when the upstream stream fails mid-flight, the client must receive an
+/// SSE error frame before the stream closes.
+#[tokio::test]
+async fn sse_mid_stream_error_sends_error_frame() {
+    // Mock TCP server: sends HTTP 200 SSE headers, one valid data chunk, then
+    // announces a second chunk but drops the connection before delivering it.
+    // This causes reqwest's bytes_stream() to yield an Err after the first Ok.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            // Consume the request headers.
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            // 200 OK with chunked SSE.
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .await;
+            // Valid first chunk.
+            let data = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+            let _ = sock
+                .write_all(format!("{:x}\r\n", data.len()).as_bytes())
+                .await;
+            let _ = sock.write_all(data).await;
+            let _ = sock.write_all(b"\r\n").await;
+            let _ = sock.flush().await;
+            // Announce next chunk but drop the connection before the payload —
+            // this triggers a decode error in reqwest's stream.
+            let _ = sock.write_all(b"ff\r\n").await;
+            let _ = sock.flush().await;
+            drop(sock);
+        }
+    });
+
+    let state = AppState::with_mock();
+    state
+        .insert_route(
+            MOCK_MODEL,
+            ModelRoute::active(format!("http://{addr}"), "dep-sse-err", "Q4_K_M"),
+        )
+        .await;
+
+    let payload = json!({
+        "model": MOCK_MODEL,
+        "messages": [{"role": "user", "content": "stream-error-test"}],
+        "stream": true
+    });
+    let response = app(state)
+        .oneshot(post_json("/v1/chat/completions", Some("client-key"), &payload))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = body_text(response).await;
+    // The first chunk must arrive.
+    assert!(
+        text.contains("\"content\":\"hi\""),
+        "first SSE chunk must be forwarded: {text}"
+    );
+    // The gateway must append a structured error frame before closing.
+    assert!(
+        text.contains("\"error\""),
+        "mid-stream error must emit an SSE error frame: {text}"
+    );
+    assert!(
+        text.contains("upstream_error") || text.contains("upstream stream interrupted"),
+        "error frame must identify the failure: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // observability
 // ---------------------------------------------------------------------------
 
