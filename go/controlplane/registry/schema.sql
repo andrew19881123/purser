@@ -134,3 +134,25 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_log_api_key ON usage_log (api_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_request_at ON usage_log (request_at);
+
+-- inference_audit_log: append-only record of every inference request for AI Act
+-- Art.12 compliance. Prompt content is NEVER stored (GDPR Article 5 data
+-- minimisation). request_id has a UNIQUE constraint so duplicate submissions
+-- (gateway retries, at-least-once delivery) are silently ignored.
+CREATE TABLE IF NOT EXISTS inference_audit_log (
+    id                INTEGER  PRIMARY KEY AUTOINCREMENT,
+    request_id        TEXT     NOT NULL UNIQUE,
+    api_key_hash      TEXT     NOT NULL,
+    model_id          TEXT     NOT NULL,
+    tenant_id         TEXT     NOT NULL DEFAULT '',
+    timestamp         TEXT     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    prompt_tokens     INTEGER  NOT NULL DEFAULT 0,
+    completion_tokens INTEGER  NOT NULL DEFAULT 0,
+    endpoint          TEXT     NOT NULL DEFAULT 'openai',
+    client_ip_prefix  TEXT     NOT NULL DEFAULT '',
+    latency_ms        REAL     NOT NULL DEFAULT 0,
+    finish_reason     TEXT     NOT NULL DEFAULT 'stop'
+);
+CREATE INDEX IF NOT EXISTS idx_inference_audit_key_ts    ON inference_audit_log(api_key_hash, timestamp);
+CREATE INDEX IF NOT EXISTS idx_inference_audit_model_ts  ON inference_audit_log(model_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_inference_audit_tenant_ts ON inference_audit_log(tenant_id, timestamp);

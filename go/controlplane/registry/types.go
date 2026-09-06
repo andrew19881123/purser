@@ -190,3 +190,45 @@ type Cert struct {
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// InferenceEvent is one row of the append-only inference audit log.
+// It satisfies AI Act Art.12: who requested what, when, using which model.
+// Prompt content is NEVER stored (GDPR Article 5 data minimisation).
+// RequestId carries a gateway-generated UUID v4; INSERT OR IGNORE on it
+// makes RecordInferenceEvent idempotent against duplicate submissions.
+type InferenceEvent struct {
+	ID               int64     `json:"id"`
+	RequestID        string    `json:"request_id"`
+	APIKeyHash       string    `json:"api_key_hash"`
+	ModelID          string    `json:"model_id"`
+	TenantID         string    `json:"tenant_id"`
+	Timestamp        time.Time `json:"timestamp"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	// Endpoint is the inference protocol used: "openai", "anthropic", or "embeddings".
+	Endpoint string `json:"endpoint"`
+	// ClientIPPrefix is the CIDR /24 prefix of the caller — the full IP is
+	// never stored (GDPR data minimisation).
+	ClientIPPrefix string  `json:"client_ip_prefix"`
+	LatencyMs      float64 `json:"latency_ms"`
+	// FinishReason is "stop", "length", or "error".
+	FinishReason string `json:"finish_reason"`
+}
+
+// ListInferenceEventsRequest is the filter and pagination spec for
+// ListInferenceEvents. All filter fields are optional (zero value = no filter).
+type ListInferenceEventsRequest struct {
+	APIKeyHash string    `json:"api_key_hash"` // filter by key hash
+	ModelID    string    `json:"model_id"`     // filter by model
+	TenantID   string    `json:"tenant_id"`    // filter by tenant
+	After      time.Time `json:"after"`        // exclusive lower bound on timestamp
+	Before     time.Time `json:"before"`       // exclusive upper bound on timestamp
+	Limit      int32     `json:"limit"`        // default 100, max 1000
+	PageToken  string    `json:"page_token"`   // cursor (opaque, decimal row id)
+}
+
+// ListInferenceEventsResponse is the paged result of ListInferenceEvents.
+type ListInferenceEventsResponse struct {
+	Events        []*InferenceEvent `json:"events"`
+	NextPageToken string            `json:"next_page_token,omitempty"`
+}
