@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **v0.3 candidate** — in sviluppo su `release/v0.3`.
+> Tag v0.3.0 sarà creato dal product owner.
+
+### Added
+- OIDC Authorization Code Flow + PKCE: endpoint `/auth/login` e `/auth/callback`; session cookie HttpOnly; browser SSO funzionante end-to-end
+- RBAC: mapping claim OIDC (groups/roles) → ruoli Purser via `PURSER_OIDC_GROUP_MAPPINGS`; tenant-scoped list deployments
+- TLS opzionale sul management API (`PURSER_TLS_AUTO` usa la PKI interna)
+- Rate limiting sul management API (per-IP e per-key, 100/50 RPS default)
+- Webhook notification quando il reconciler richiede approvazione manuale (`PURSER_RECONCILER_WEBHOOK_URL`)
+- Fleet Capacity Headroom API (`GET /api/v1/fleet/capacity`)
+- NodeMetrics → OTEL bridge: 5 gauge per-nodo (CPU, GPU, bandwidth, tok/s, inference alive)
+- Reconciler OTEL metrics: counter eventi, gauge pending-approval, histogram loop duration
+- Configurable OTEL trace sampler (`OTEL_TRACES_SAMPLER`)
+- Reconciler config status endpoint (`GET /api/v1/reconciler/status`)
+- Periodic bandwidth re-calibration (`PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`)
+- llama.cpp backend registrato in BackendRegistry (feature-gated `--features llamacpp`)
+- ModelCache cablato nel path StartEngine: model_ref risolto a path GGUF locale
+- HttpFetcher attivato di default (`PURSER_MODEL_MIRROR_URL`)
+- `prefix_caching_factor` e `kv_ssd_offload` in HardwareProfile proto; planner usa le capability reali
+- Flash attention come campo esplicito in EngineParams (`flash_attn: bool`)
+- ARM64 build matrix: linux/arm64 + darwin/arm64 (Apple Silicon M2/M3)
+- `docker-compose.yml` demo mode: `docker compose up`, 3 servizi mock, no GPU
+- `devcontainer.json` + `make dev` + good-first-issue guide in CONTRIBUTING.md
+- `GET /api/v1/models/{id}` endpoint server-side
+- Python SDK: `AsyncPurserClient` + `stream_metrics()` SSE generator
+- TypeScript SDK: `@purser/sdk 0.3.0` (native fetch, zero dipendenze runtime)
+- Planner micro-benchmark suite con dati baseline reali
+- Ansible role `purser_agent` per fleet enrollment
+- Webhook notifications + Ansible integration in GitHub Pages docs
+- apt/yum hosted repository via Cloudsmith (step CI pronto)
+- SLSA L2 provenance + cosign SBOM attestazioni + chart signing
+- Production license trust root (chiave reale, modello open-core commercialmente funzionale)
+- Fix ROOT hardcoded in e2e scripts: auto-detection via `${BASH_SOURCE[0]}`
+
+### Fixed
+- `purser-license keygen` output ora include guida step-by-step con chiave di produzione
+- OIDC: `PURSER_OIDC_CLIENT_SECRET` implementato (era documentato ma non letto)
+
+### Changed
+- Release pipeline: ARM64 artifacts, SLSA provenance, SBOM come attestazioni cosign
+- Planner: calibrazione più precisa con prefix caching e KV SSD offload dai profili hardware reali
+
 ## [0.2.0] - 2026-09-05
 
 > **v0.2 — "Production-Grade Enterprise"** — major feature release.

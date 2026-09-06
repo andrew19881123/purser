@@ -68,6 +68,7 @@ nav:
     - Certificate Management (cert-manager): configuration/cert-manager.md
     - Model Sources (S3 / GCS / Azure): configuration/model-sources.md
     - SWIM Gossip Discovery: configuration/swim.md
+    - Webhook Notifications: configuration/webhook.md
   - Enterprise:
     - Open-Core Model: enterprise/overview.md
     - Licensing & Key Management: enterprise/licensing.md
@@ -81,6 +82,7 @@ nav:
     - GCP Vertex AI: integrations/vertexai.md
     - Azure ML: integrations/azureml.md
     - Python SDK: integrations/python-sdk.md
+    - TypeScript SDK: integrations/typescript-sdk.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Gateway (/v1 OpenAI): api/gateway.md
