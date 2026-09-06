@@ -246,6 +246,11 @@ type Config struct {
 	Addr string
 	// Logger is used for request/error logging; a default is used if nil.
 	Logger *slog.Logger
+	// RaftNode, if set, enables the Raft-cluster status endpoint
+	// (GET /api/v1/cluster/status) and causes the handler to report Raft
+	// consensus state. When nil the endpoint returns a standalone-mode
+	// response (is_leader: true) so load-balancers work in both modes.
+	RaftNode RaftNode
 	// Deployer, if set, backs the deploy/teardown endpoints.
 	Deployer Deployer
 	// Metrics, if set, backs the live SSE metrics endpoint; otherwise a
@@ -374,6 +379,7 @@ type Server struct {
 	hfBaseURL         string
 	vertexai          *importer.VertexAIClient
 	reconcilerStatus  ReconcilerStatusProvider // nil = endpoint disabled
+	raftNode          RaftNode                 // nil = standalone mode
 
 	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
 	tlsCert    string
@@ -484,6 +490,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		hfBaseURL:         cfg.HFBaseURL,
 		vertexai:          cfg.VertexAI,
 		reconcilerStatus:  cfg.Reconciler,
+		raftNode:          cfg.RaftNode,
 		tlsCert:           cfg.TLSCert,
 		tlsKey:            cfg.TLSKey,
 		rateLimitRPS:      rlRPS,
@@ -783,8 +790,9 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 // rbacPublicPaths are the paths that bypass RBAC regardless of the key
 // presented. These are always accessible (e.g. health check, API schema).
 var rbacPublicPaths = map[string]bool{
-	"/api/v1/cluster/health": true,
-	"/api/v1/openapi.json":   true,
+	"/api/v1/cluster/health":  true,
+	"/api/v1/cluster/status":  true,
+	"/api/v1/openapi.json":    true,
 }
 
 // rbacMiddleware enforces role-based access control on every request based on
@@ -1063,6 +1071,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
 	s.mux.HandleFunc("GET /api/v1/cluster/health", s.handleClusterHealth)
+	s.mux.HandleFunc("GET /api/v1/cluster/status", s.handleClusterStatus)
 	s.mux.HandleFunc("POST /api/v1/apikeys", s.handleCreateAPIKey)
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
