@@ -24,15 +24,18 @@ import type {
   DeployOverrides,
   Deployment,
   DeploymentPlan,
+  EnterpriseStatus,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   MetricsStreamHandlers,
   ModelHealth,
   ModelSpec,
   NodeView,
   PlanPreviewResult,
   ReconcilerStatus,
+  UsageSummary,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -85,6 +88,16 @@ export interface PurserApi {
   listApiKeys(): Promise<ApiKey[]>;
   createApiKey(input: CreateApiKeyInput): Promise<ApiKeyWithSecret>;
   revokeApiKey(id: string): Promise<ApiKey>;
+
+  // --- usage ---
+  /** GET /api/v1/apikeys/{id}/usage — token and request counters for one key. */
+  getKeyUsage(keyId: string): Promise<KeyUsage>;
+  /** GET /api/v1/usage/summary — cross-tenant usage totals. */
+  getUsageSummary(): Promise<UsageSummary>;
+
+  // --- enterprise ---
+  /** GET /api/v1/enterprise/status — edition, licensee, features, expiry. */
+  getEnterpriseStatus(): Promise<EnterpriseStatus>;
 
   // --- live metrics (SSE) ---
   /** Subscribe to GET /api/v1/metrics; returns an unsubscribe/close function. */

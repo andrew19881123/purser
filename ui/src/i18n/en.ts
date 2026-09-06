@@ -338,6 +338,29 @@ export const en = {
   'settings.role.viewer.hint': 'Read-only access to the control plane',
   'settings.role.inference.hint': 'Gateway inference only — cannot manage the cluster',
 
+  // usage summary
+  'settings.col.tokens': 'Tokens (in / out)',
+  'settings.usage.loading': 'Loading…',
+  'settings.usage.error': '—',
+  'settings.usage.summary.title': 'Usage summary',
+  'settings.usage.summary.empty': 'No usage recorded yet.',
+  'settings.usage.col.tenant': 'Tenant',
+  'settings.usage.col.requests': 'Requests',
+  'settings.usage.col.inputTokens': 'Input tokens',
+  'settings.usage.col.outputTokens': 'Output tokens',
+
+  // license
+  'settings.license.title': 'License',
+  'settings.license.edition.community': 'Community',
+  'settings.license.edition.enterprise': 'Enterprise',
+  'settings.license.licensee': 'Licensee',
+  'settings.license.features': 'Features',
+  'settings.license.expires': 'Expires',
+  'settings.license.expired': 'Expired',
+  'settings.license.community.desc': 'You are running the MIT-licensed community edition. Upgrade for HA, RBAC, OIDC, audit log, and more.',
+  'settings.license.community.link': 'See Enterprise features →',
+  'settings.license.no.features': 'None',
+
   // enterprise audit log
   'nav.audit': 'Audit Log',
   'audit.title': 'Audit Log',

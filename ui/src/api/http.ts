@@ -31,10 +31,12 @@ import type {
   Deployment,
   DeploymentPlan,
   DeploymentState,
+  EnterpriseStatus,
   FitVerdict,
   ImportSource,
   JoinInfo,
   JoinTokenResult,
+  KeyUsage,
   LinkQuality,
   MetricsSnapshot,
   MetricsStreamHandlers,
@@ -46,6 +48,7 @@ import type {
   PlanPreviewResult,
   ReconcilerStatus,
   Role,
+  UsageSummary,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
 
@@ -592,7 +595,17 @@ export function createHttpApi(baseUrl: string): PurserApi {
           },
       ),
 
+    // --- usage ---
+    getKeyUsage: (keyId: string) =>
+      request<unknown>(`/apikeys/${enc(keyId)}/usage`).then((raw) => raw as KeyUsage),
+
+    getUsageSummary: () =>
+      request<unknown>('/usage/summary').then((raw) => raw as UsageSummary),
+
     // --- enterprise ---
+    getEnterpriseStatus: () =>
+      request<unknown>('/enterprise/status').then((raw) => raw as EnterpriseStatus),
+
     // GET /api/v1/enterprise/audit-log -> AuditLog (402 without valid license)
     getAuditLog: (limit = 100) =>
       request<unknown>(`/enterprise/audit-log?limit=${limit}`).then(normalizeAuditLog),

@@ -310,6 +310,29 @@ export const it: Record<StringKey, string> = {
   'settings.role.viewer.hint': 'Accesso in sola lettura al piano di controllo',
   'settings.role.inference.hint': 'Solo inferenza gateway — non può gestire il cluster',
 
+  // riepilogo utilizzo
+  'settings.col.tokens': 'Token (in / out)',
+  'settings.usage.loading': 'Caricamento…',
+  'settings.usage.error': '—',
+  'settings.usage.summary.title': 'Riepilogo utilizzo',
+  'settings.usage.summary.empty': 'Nessun utilizzo registrato.',
+  'settings.usage.col.tenant': 'Tenant',
+  'settings.usage.col.requests': 'Richieste',
+  'settings.usage.col.inputTokens': 'Token in input',
+  'settings.usage.col.outputTokens': 'Token in output',
+
+  // licenza
+  'settings.license.title': 'Licenza',
+  'settings.license.edition.community': 'Community',
+  'settings.license.edition.enterprise': 'Enterprise',
+  'settings.license.licensee': 'Licenziatario',
+  'settings.license.features': 'Funzionalità',
+  'settings.license.expires': 'Scade',
+  'settings.license.expired': 'Scaduta',
+  'settings.license.community.desc': 'Stai usando l\'edizione community con licenza MIT. Passa a Enterprise per HA, RBAC, OIDC, audit log e altro.',
+  'settings.license.community.link': 'Vedi funzionalità Enterprise →',
+  'settings.license.no.features': 'Nessuna',
+
   // audit log enterprise
   'nav.audit': 'Audit Log',
   'audit.title': 'Audit Log',

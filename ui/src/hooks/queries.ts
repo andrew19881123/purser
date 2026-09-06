@@ -246,6 +246,24 @@ export function useRevokeApiKey() {
   });
 }
 
+// --- usage ------------------------------------------------------------------
+
+export function useKeyUsage(keyId: string | undefined) {
+  return useQuery({
+    queryKey: ['keyUsage', keyId],
+    queryFn: () => api.getKeyUsage(keyId!),
+    enabled: !!keyId,
+  });
+}
+
+export function useUsageSummary() {
+  return useQuery({ queryKey: ['usageSummary'], queryFn: () => api.getUsageSummary() });
+}
+
+export function useEnterpriseStatus() {
+  return useQuery({ queryKey: ['enterpriseStatus'], queryFn: () => api.getEnterpriseStatus() });
+}
+
 // --- enterprise -------------------------------------------------------------
 
 export function useAuditLog(limit = 100) {
@@ -254,6 +272,7 @@ export function useAuditLog(limit = 100) {
     queryFn: () => api.getAuditLog(limit),
   });
 }
+
 
 // --- gateway (playground) ---------------------------------------------------
 
