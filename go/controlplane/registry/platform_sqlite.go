@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/purser/purser/go/controlplane/permissions"
 )
 
 // createPlatformTables is called by SQLiteRegistry.Migrate after the main
@@ -908,95 +910,23 @@ func (r *SQLiteRegistry) IsCustomRoleInUse(ctx context.Context, roleID string) (
 
 // SeedSystemRoles inserts the six built-in platform roles if they are not
 // already present. It is idempotent: running it twice is safe.
+// The canonical role definitions come from permissions.SystemRoles() so that
+// the seeding path and the permission-engine tests share a single source of
+// truth.
 func (r *SQLiteRegistry) SeedSystemRoles(ctx context.Context) error {
-	type seed struct {
-		id          string
-		name        string
-		description string
-		perms       []string
-	}
-	seeds := []seed{
-		{
-			id:          "platform_admin",
-			name:        "Platform Admin",
-			description: "Full platform administration access",
-			perms: []string{
-				PermPlatformOrgsCreate, PermPlatformOrgsDelete,
-				PermPlatformPoolsManage, PermPlatformUsersInvite,
-				PermOrgTeamsCreate, PermOrgTeamsDelete,
-				PermOrgMembersInvite, PermOrgMembersRemove,
-				PermOrgRolesCreate, PermOrgRolesDelete, PermOrgPoolsRequest,
-				PermTeamModelsDeploy, PermTeamModelsUndeploy,
-				PermTeamKeysCreate, PermTeamKeysRevoke,
-				PermTeamMembersView, PermTeamMembersInvite, PermTeamMembersRemove,
-				PermTeamMetricsView, PermTeamApprovalsView, PermTeamApprovalsReview,
-				PermInferenceCall,
-			},
-		},
-		{
-			id:          "org_admin",
-			name:        "Org Admin",
-			description: "Full organization administration access",
-			perms: []string{
-				PermOrgTeamsCreate, PermOrgTeamsDelete,
-				PermOrgMembersInvite, PermOrgMembersRemove,
-				PermOrgRolesCreate, PermOrgRolesDelete, PermOrgPoolsRequest,
-				PermTeamModelsDeploy, PermTeamModelsUndeploy,
-				PermTeamKeysCreate, PermTeamKeysRevoke,
-				PermTeamMembersView, PermTeamMembersInvite, PermTeamMembersRemove,
-				PermTeamMetricsView, PermTeamApprovalsView, PermTeamApprovalsReview,
-				PermInferenceCall,
-			},
-		},
-		{
-			id:          "team_admin",
-			name:        "Team Admin",
-			description: "Full team administration access",
-			perms: []string{
-				PermTeamModelsDeploy, PermTeamModelsUndeploy,
-				PermTeamKeysCreate, PermTeamKeysRevoke,
-				PermTeamMembersView, PermTeamMembersInvite, PermTeamMembersRemove,
-				PermTeamMetricsView, PermTeamApprovalsView, PermTeamApprovalsReview,
-				PermInferenceCall,
-			},
-		},
-		{
-			id:          "developer",
-			name:        "Developer",
-			description: "Deploy models, manage keys, run inference",
-			perms: []string{
-				PermTeamModelsDeploy, PermTeamModelsUndeploy,
-				PermTeamKeysCreate,
-				PermTeamMetricsView,
-				PermInferenceCall,
-			},
-		},
-		{
-			id:          "viewer",
-			name:        "Viewer",
-			description: "Read-only access to team membership and metrics",
-			perms: []string{
-				PermTeamMembersView,
-				PermTeamMetricsView,
-			},
-		},
-		{
-			id:          "inference_only",
-			name:        "Inference Only",
-			description: "May call inference endpoints only",
-			perms:       []string{PermInferenceCall},
-		},
-	}
-
 	now := fmtTime(nowUTC())
-	for _, s := range seeds {
-		_, err := r.db.ExecContext(ctx, `
+	for _, role := range permissions.SystemRoles() {
+		permsJSON, err := json.Marshal(role.Permissions)
+		if err != nil {
+			return fmt.Errorf("registry: seed system role %q: marshal permissions: %w", role.ID, err)
+		}
+		_, err = r.db.ExecContext(ctx, `
 			INSERT INTO custom_roles (id, org_id, name, description, permissions, is_system, created_at, updated_at)
 			VALUES (?, NULL, ?, ?, ?, 1, ?, ?)
 			ON CONFLICT(id) DO NOTHING`,
-			s.id, s.name, s.description, permissionsJSON(s.perms), now, now)
+			role.ID, role.Name, "", string(permsJSON), now, now)
 		if err != nil {
-			return fmt.Errorf("registry: seed system role %q: %w", s.id, err)
+			return fmt.Errorf("registry: seed system role %q: %w", role.ID, err)
 		}
 	}
 	return nil
