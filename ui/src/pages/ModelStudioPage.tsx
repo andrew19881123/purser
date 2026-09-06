@@ -10,7 +10,7 @@
 // State is purely local (useState) — no global store. All API calls go through
 // React Query mutations so loading/error states are handled uniformly.
 // ---------------------------------------------------------------------------
-import { useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Badge,
   Button,
@@ -42,6 +42,87 @@ import type {
   SageMakerSource,
   VertexAISource,
 } from '../api/types';
+
+// ---------------------------------------------------------------------------
+// Progress Stepper
+// ---------------------------------------------------------------------------
+
+type StepState = 'done' | 'active' | 'pending';
+
+interface Step {
+  label: string;
+  state: StepState;
+}
+
+function Stepper({ steps }: { steps: Step[] }) {
+  return (
+    <div
+      style={{ display: 'flex', alignItems: 'flex-start', padding: '0.5rem 0 1.25rem' }}
+      role="list"
+      aria-label="Progress"
+    >
+      {steps.map((step, i) => {
+        const isDone   = step.state === 'done';
+        const isActive = step.state === 'active';
+        const circleStyle: React.CSSProperties = {
+          width: '2rem',
+          height: '2rem',
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '0.875rem',
+          fontWeight: 600,
+          border: '2px solid',
+          borderColor: isDone ? 'var(--success-fg)' : isActive ? 'var(--accent)' : 'var(--border)',
+          background:  isDone ? 'var(--success-fg)' : isActive ? 'var(--accent)' : 'var(--surface)',
+          color:       isDone || isActive ? 'var(--accent-contrast)' : 'var(--text-muted)',
+          position: 'relative',
+          zIndex: 1,
+          flexShrink: 0,
+          transition: 'background 0.2s, border-color 0.2s',
+        };
+        const labelStyle: React.CSSProperties = {
+          marginTop: '0.4rem',
+          fontSize: '0.75rem',
+          color: step.state === 'pending' ? 'var(--text-muted)' : 'var(--text)',
+          fontWeight: step.state === 'pending' ? 400 : 500,
+          textAlign: 'center',
+          whiteSpace: 'nowrap',
+        };
+        const lineColor = isDone ? 'var(--success-fg)' : 'var(--border)';
+        return (
+          <div
+            key={step.label}
+            role="listitem"
+            aria-current={isActive ? 'step' : undefined}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, position: 'relative' }}
+          >
+            {i < steps.length - 1 && (
+              <div
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  top: '1rem',
+                  left: '50%',
+                  right: '-50%',
+                  height: '2px',
+                  background: lineColor,
+                  zIndex: 0,
+                  transition: 'background 0.2s',
+                }}
+              />
+            )}
+            <div style={circleStyle} aria-hidden="true">
+              {isDone ? '✓' : i + 1}
+            </div>
+            <span style={labelStyle}>{step.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Step 1 — source forms
@@ -627,6 +708,29 @@ export function ModelStudioPage() {
   const previewMutation  = usePreviewModelPlan();
   const deployMutation   = useDeployModel();
 
+  // Stepper state — derives from model / previewResult / mutation state
+  const steps: Step[] = useMemo(() => {
+    const step1State: StepState = model ? 'done' : 'active';
+    const step2State: StepState = model
+      ? 'done'
+      : importMutation.isPending
+        ? 'active'
+        : 'pending';
+    const step3State: StepState = previewResult
+      ? 'done'
+      : model
+        ? 'active'
+        : 'pending';
+    const step4State: StepState =
+      previewResult?.feasible && previewResult.plan ? 'active' : 'pending';
+    return [
+      { label: 'Source',  state: step1State },
+      { label: 'Inspect', state: step2State },
+      { label: 'Preview', state: step3State },
+      { label: 'Deploy',  state: step4State },
+    ];
+  }, [model, previewResult, importMutation.isPending]);
+
   // --- switch source tab ----------------------------------------------------
   function switchSource(type: ImportSourceType) {
     setActiveSource(type);
@@ -755,6 +859,9 @@ export function ModelStudioPage() {
           </span>
         }
       />
+
+      {/* ── Progress stepper ─────────────────────────────────────────────── */}
+      <Stepper steps={steps} />
 
       {/* ── Step 1: Source selector ───────────────────────────────────────── */}
       <Card title={t('studio.source.label')}>
