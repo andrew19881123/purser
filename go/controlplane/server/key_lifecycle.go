@@ -75,7 +75,7 @@ func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor:   "api",
+		Actor:   actorFromRequest(r),
 		Action:  "apikey.rotated",
 		Target:  oldID,
 		Details: json.RawMessage(`{"new_id":"` + newID + `"}`),
