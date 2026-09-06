@@ -28,6 +28,7 @@ import (
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/pki"
 	"github.com/purser/purser/go/controlplane/planning"
+	raftcp "github.com/purser/purser/go/controlplane/raft"
 	"github.com/purser/purser/go/controlplane/reconciler"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/server"
@@ -51,6 +52,13 @@ type config struct {
 	// when the caller does not supply an X-HF-Token header. Read from
 	// PURSER_HF_TOKEN; leave unset for public-model-only access.
 	hfToken string
+	// Raft HA configuration. All four fields are optional — if raftNodeID is
+	// empty the control plane runs in standalone (single-node) mode and the
+	// Raft subsystem is not started.
+	raftNodeID    string // PURSER_RAFT_NODE_ID
+	raftBindAddr  string // PURSER_RAFT_BIND_ADDR
+	raftDataDir   string // PURSER_RAFT_DATA_DIR
+	raftBootstrap bool   // PURSER_RAFT_BOOTSTRAP
 }
 
 func loadConfig() config {
@@ -65,6 +73,11 @@ func loadConfig() config {
 		agentPort:     envInt("PURSER_AGENT_PORT", 0),
 		internalToken: envOr("PURSER_INTERNAL_TOKEN", ""),
 		hfToken:       envOr("PURSER_HF_TOKEN", ""),
+		// Raft — all optional; single-node mode when raftNodeID is empty.
+		raftNodeID:    envOr("PURSER_RAFT_NODE_ID", ""),
+		raftBindAddr:  envOr("PURSER_RAFT_BIND_ADDR", ":7000"),
+		raftDataDir:   envOr("PURSER_RAFT_DATA_DIR", "raft-data"),
+		raftBootstrap: os.Getenv("PURSER_RAFT_BOOTSTRAP") == "true",
 	}
 	flag.StringVar(&c.dbPath, "db", c.dbPath, "path to the SQLite registry file (env PURSER_DB)")
 	flag.StringVar(&c.addr, "addr", c.addr, "management API listen address (env PURSER_ADDR)")
@@ -128,6 +141,31 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("registry ready", "db", cfg.dbPath)
+
+	// Raft HA — optional; only started when PURSER_RAFT_NODE_ID is set.
+	// When absent the control plane runs in single-node (standalone) mode,
+	// which is the default deployment and retains full backward compatibility.
+	var raftNode *raftcp.Node
+	if cfg.raftNodeID != "" {
+		fsm := raftcp.NewFSM(reg, logger)
+		raftNode, err = raftcp.NewNode(raftcp.Config{
+			NodeID:    cfg.raftNodeID,
+			BindAddr:  cfg.raftBindAddr,
+			DataDir:   cfg.raftDataDir,
+			Bootstrap: cfg.raftBootstrap,
+		}, fsm)
+		if err != nil {
+			return fmt.Errorf("start raft node: %w", err)
+		}
+		defer raftNode.Shutdown() //nolint:errcheck
+		logger.Info("raft node started",
+			"node_id", cfg.raftNodeID,
+			"bind_addr", cfg.raftBindAddr,
+			"data_dir", cfg.raftDataDir,
+			"bootstrap", cfg.raftBootstrap)
+	} else {
+		logger.Info("raft disabled — running in standalone mode (set PURSER_RAFT_NODE_ID to enable HA)")
+	}
 
 	// Internal PKI (self-signed CA, persisted under pki-dir).
 	ca, err := pki.New(ctx, reg, pki.Options{Dir: cfg.pkiDir})
@@ -216,7 +254,11 @@ func run(logger *slog.Logger) error {
 
 	// Management HTTP API. The Planner turns fleet state into DeploymentPlans
 	// for plan-less deploys and the /models fit verdicts.
-	srv := server.New(reg, server.Config{
+	// Guard against the classic "nil concrete type in non-nil interface" Go
+	// pitfall: only assign RaftNode when the pointer is actually non-nil so
+	// that handleClusterStatus can test s.raftNode == nil to detect standalone
+	// mode.
+	srvCfg := server.Config{
 		Addr:          cfg.addr,
 		Logger:        logger,
 		Deployer:      orch,
@@ -229,7 +271,11 @@ func run(logger *slog.Logger) error {
 		OIDCVerifier:  oidcVerifier,
 		InternalToken: cfg.internalToken,
 		HFToken:       cfg.hfToken,
-	})
+	}
+	if raftNode != nil {
+		srvCfg.RaftNode = raftNode
+	}
+	srv := server.New(reg, srvCfg)
 
 	// Start the background OTEL infrastructure metrics collector (nodes ready/
 	// total, active deployments). It exits when ctx is cancelled.
