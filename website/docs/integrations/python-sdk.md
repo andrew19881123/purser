@@ -1,9 +1,10 @@
 # Python SDK
 
-The `purser-sdk` package provides a typed, synchronous Python client for the
-Purser control-plane management API.  It covers every management endpoint —
-nodes, models, deployments, plans, API keys, cluster health, and enterprise
-features — using only the Python standard library plus
+The `purser-sdk` package provides typed Python clients for the Purser
+control-plane management API — a synchronous `PurserClient` and an async
+`AsyncPurserClient`.  Both cover every management endpoint — nodes, models,
+deployments, plans, API keys, cluster health, and enterprise features — using
+only the Python standard library plus
 [httpx](https://www.python-httpx.org/).
 
 ## Installation
@@ -318,6 +319,80 @@ except PurserError as e:
 | `AuditEntry` | Single audit log entry |
 | `AuditChain` | Chain verification summary |
 | `AuditLog` | Full `audit_log()` response |
+
+## Async usage
+
+`AsyncPurserClient` mirrors every method in `PurserClient` but uses
+`httpx.AsyncClient` and `async def` coroutines.  Import and use it as an
+async context manager:
+
+```python
+import asyncio
+from purser import AsyncPurserClient
+
+async def main():
+    async with AsyncPurserClient("http://localhost:8080", api_key="psk_...") as client:
+        # Any method that exists on PurserClient is available here as a coroutine.
+        nodes = await client.list_nodes()
+        for node in nodes:
+            print(node.hostname, node.state)
+
+        health = await client.cluster_health()
+        print(health.status, health.ready_nodes)
+
+        spec = ModelSpec(model_id="llama3-8b", family="llama", params_total_b=8.0)
+        model = await client.create_model(spec)
+
+asyncio.run(main())
+```
+
+The async client supports the same exception hierarchy and error handling as
+the sync client — `NotFoundError`, `ConflictError`, `LicenseRequiredError`,
+and `PurserError`.
+
+---
+
+## Streaming metrics (SSE)
+
+Both clients expose `stream_metrics()` which connects to the
+`GET /api/v1/metrics` SSE endpoint and yields one dict per event (~2 s
+cadence).  Each dict contains:
+
+| Key | Type | Description |
+|---|---|---|
+| `at` | `str` | RFC-3339 timestamp of the snapshot |
+| `aggregate_decode_tok_s` | `float` | Cluster-wide decode throughput (tok/s) |
+| `nodes` | `list` | Per-node metrics |
+
+### Sync streaming
+
+```python
+from purser import PurserClient
+
+with PurserClient("http://localhost:8080", api_key="psk_...") as client:
+    for snapshot in client.stream_metrics():
+        print(f"[{snapshot['at']}] {snapshot['aggregate_decode_tok_s']:.1f} tok/s")
+```
+
+### Async streaming
+
+```python
+import asyncio
+from purser import AsyncPurserClient
+
+async def watch():
+    async with AsyncPurserClient("http://localhost:8080", api_key="psk_...") as client:
+        async for snapshot in client.stream_metrics():
+            print(f"[{snapshot['at']}] {snapshot['aggregate_decode_tok_s']:.1f} tok/s")
+
+asyncio.run(watch())
+```
+
+Invalid JSON lines and the `[DONE]` sentinel are silently skipped; the
+generator runs until the server closes the connection or you `break` out of
+the loop.
+
+---
 
 ## Development
 

@@ -1,8 +1,8 @@
-"""PurserClient — synchronous HTTP client for the Purser management API."""
+"""AsyncPurserClient — asynchronous HTTP client for the Purser management API."""
 from __future__ import annotations
 
 import json
-from typing import Any, Generator
+from typing import Any, AsyncGenerator
 
 import httpx
 
@@ -26,8 +26,11 @@ from .types import (
 )
 
 
-class PurserClient:
-    """Synchronous client for the Purser control-plane management API.
+class AsyncPurserClient:
+    """Asynchronous client for the Purser control-plane management API.
+
+    Mirrors :class:`~purser.PurserClient` exactly, but all methods are
+    ``async def`` and use ``httpx.AsyncClient`` under the hood.
 
     Args:
         base_url: Base URL of the Purser control plane, e.g.
@@ -37,13 +40,18 @@ class PurserClient:
 
     Example::
 
-        client = PurserClient("http://localhost:8080", api_key="psk_...")
-        nodes = client.list_nodes()
-        client.close()
+        client = AsyncPurserClient("http://localhost:8080", api_key="psk_...")
+        nodes = await client.list_nodes()
+        await client.aclose()
 
-        # or as a context manager:
-        with PurserClient("http://localhost:8080") as client:
-            health = client.cluster_health()
+        # or as an async context manager (recommended):
+        async with AsyncPurserClient("http://localhost:8080") as client:
+            health = await client.cluster_health()
+
+        # SSE streaming:
+        async with AsyncPurserClient("http://localhost:8080") as client:
+            async for snapshot in client.stream_metrics():
+                print(snapshot['aggregate_decode_tok_s'])
     """
 
     def __init__(
@@ -59,7 +67,7 @@ class PurserClient:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        self._client = httpx.Client(
+        self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers=headers,
             timeout=timeout,
@@ -69,13 +77,13 @@ class PurserClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Execute an HTTP request and return the parsed JSON body.
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        """Execute an async HTTP request and return the parsed JSON body.
 
         Returns ``None`` for 204 No Content responses.
         Raises a typed exception for any non-2xx status.
         """
-        response = self._client.request(method, path, **kwargs)
+        response = await self._client.request(method, path, **kwargs)
         self._raise_for_status(response)
         if response.status_code == 204:
             return None
@@ -116,21 +124,21 @@ class PurserClient:
     # Nodes
     # ------------------------------------------------------------------
 
-    def list_nodes(self) -> list[Node]:
+    async def list_nodes(self) -> list[Node]:
         """Return all nodes known to the cluster."""
-        data = self._request("GET", "/api/v1/nodes")
+        data = await self._request("GET", "/api/v1/nodes")
         return [Node._from_dict(n) for n in data.get("nodes", [])]
 
-    def get_node(self, node_id: str) -> Node:
+    async def get_node(self, node_id: str) -> Node:
         """Return a single node by ID.
 
         Raises:
             NotFoundError: If no node with that ID exists.
         """
-        data = self._request("GET", f"/api/v1/nodes/{node_id}")
+        data = await self._request("GET", f"/api/v1/nodes/{node_id}")
         return Node._from_dict(data)
 
-    def drain_node(self, node_id: str) -> None:
+    async def drain_node(self, node_id: str) -> None:
         """Cordon a node so no new work is scheduled onto it.
 
         This marks the node as ``DRAINING``; existing deployments on the node
@@ -139,9 +147,9 @@ class PurserClient:
         Raises:
             NotFoundError: If no node with that ID exists.
         """
-        self._request("POST", f"/api/v1/nodes/{node_id}/drain")
+        await self._request("POST", f"/api/v1/nodes/{node_id}/drain")
 
-    def restart_node(self, node_id: str) -> None:
+    async def restart_node(self, node_id: str) -> None:
         """Tear down all active deployments on the node and let the reconciler
         re-provision them.  The node process itself is not rebooted.
 
@@ -154,7 +162,7 @@ class PurserClient:
         """
         raise NotImplementedError("restart_node is not yet implemented on the server")
 
-    def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str) -> None:
         """Decommission a node (lifecycle transition to DECOMMISSIONED).
 
         The node must have no active deployments; otherwise a
@@ -164,18 +172,18 @@ class PurserClient:
             NotFoundError: If no node with that ID exists.
             ConflictError: If the node still hosts active deployments.
         """
-        self._request("DELETE", f"/api/v1/nodes/{node_id}")
+        await self._request("DELETE", f"/api/v1/nodes/{node_id}")
 
     # ------------------------------------------------------------------
     # Models
     # ------------------------------------------------------------------
 
-    def list_models(self) -> list[Model]:
+    async def list_models(self) -> list[Model]:
         """Return all models in the catalog."""
-        data = self._request("GET", "/api/v1/models")
+        data = await self._request("GET", "/api/v1/models")
         return [Model._from_dict(m) for m in data.get("models", [])]
 
-    def create_model(self, spec: ModelSpec) -> Model:
+    async def create_model(self, spec: ModelSpec) -> Model:
         """Register a new model in the catalog.
 
         Args:
@@ -188,28 +196,27 @@ class PurserClient:
         Raises:
             ConflictError: If a model with the same ID already exists.
         """
-        data = self._request("POST", "/api/v1/models", json=spec.to_dict())
+        data = await self._request("POST", "/api/v1/models", json=spec.to_dict())
         # Server returns {"model_id": "..."} on 201 — do a follow-up GET for
         # the full object.
         model_id: str = data.get("model_id", spec.model_id)
-        return self.get_model(model_id)
+        return await self.get_model(model_id)
 
-    def get_model(self, model_id: str) -> Model:
+    async def get_model(self, model_id: str) -> Model:
         """Return a single model by ID.
 
         Raises:
             NotFoundError: If no model with that ID exists.
         """
         # The server does not have a dedicated GET /models/{id} endpoint, so
-        # we list and filter locally.  This is fine for the catalog sizes
-        # expected in practice.
-        models = self.list_models()
+        # we list and filter locally.
+        models = await self.list_models()
         for m in models:
             if m.id == model_id:
                 return m
         raise NotFoundError(f"model not found: {model_id}")
 
-    def delete_model(self, model_id: str) -> None:
+    async def delete_model(self, model_id: str) -> None:
         """Remove a model from the catalog.
 
         The model must have no active deployments referencing it.
@@ -218,9 +225,9 @@ class PurserClient:
             NotFoundError: If no model with that ID exists.
             ConflictError: If active deployments still reference the model.
         """
-        self._request("DELETE", f"/api/v1/models/{model_id}")
+        await self._request("DELETE", f"/api/v1/models/{model_id}")
 
-    def preview_plan(self, model_id: str) -> PlanPreview:
+    async def preview_plan(self, model_id: str) -> PlanPreview:
         """Compute a deployment plan dry-run without persisting or deploying.
 
         Returns:
@@ -231,13 +238,13 @@ class PurserClient:
         Raises:
             NotFoundError: If no model with that ID exists.
         """
-        data = self._request("POST", f"/api/v1/models/{model_id}/plan")
+        data = await self._request("POST", f"/api/v1/models/{model_id}/plan")
         feasible: bool = bool(data.get("feasible", False))
         if not feasible:
             return PlanPreview(feasible=False, reason=data.get("reason", ""))
         return PlanPreview(feasible=True, plan=Plan._from_dict(data))
 
-    def deploy_model(
+    async def deploy_model(
         self,
         model_id: str,
         plan_id: str | None = None,
@@ -262,7 +269,7 @@ class PurserClient:
         body: dict[str, Any] = {}
         if plan_id:
             body["plan_id"] = plan_id
-        data = self._request(
+        data = await self._request(
             "POST", f"/api/v1/models/{model_id}/deploy", json=body
         )
         return Deployment(
@@ -272,7 +279,7 @@ class PurserClient:
             state="provisioning",
         )
 
-    def get_model_health(self, model_id: str) -> ModelHealth:
+    async def get_model_health(self, model_id: str) -> ModelHealth:
         """Return health information for a deployed model.
 
         Raises:
@@ -284,38 +291,38 @@ class PurserClient:
     # Deployments
     # ------------------------------------------------------------------
 
-    def list_deployments(self) -> list[Deployment]:
+    async def list_deployments(self) -> list[Deployment]:
         """Return all deployments (active and historical)."""
-        data = self._request("GET", "/api/v1/deployments")
+        data = await self._request("GET", "/api/v1/deployments")
         return [Deployment._from_dict(d) for d in data.get("deployments", [])]
 
-    def delete_deployment(self, deployment_id: str) -> None:
+    async def delete_deployment(self, deployment_id: str) -> None:
         """Tear down a deployment.
 
         Raises:
             NotFoundError: If no deployment with that ID exists.
         """
-        self._request("DELETE", f"/api/v1/deployments/{deployment_id}")
+        await self._request("DELETE", f"/api/v1/deployments/{deployment_id}")
 
-    def get_plan(self, plan_id: str) -> Plan:
+    async def get_plan(self, plan_id: str) -> Plan:
         """Return a stored deployment plan by ID.
 
         Raises:
             NotFoundError: If no plan with that ID exists.
         """
-        data = self._request("GET", f"/api/v1/plans/{plan_id}")
+        data = await self._request("GET", f"/api/v1/plans/{plan_id}")
         return Plan._from_dict(data)
 
     # ------------------------------------------------------------------
     # API keys
     # ------------------------------------------------------------------
 
-    def list_api_keys(self) -> list[APIKey]:
+    async def list_api_keys(self) -> list[APIKey]:
         """Return all API keys (metadata only; plaintext keys are never re-exposed)."""
-        data = self._request("GET", "/api/v1/apikeys")
+        data = await self._request("GET", "/api/v1/apikeys")
         return [APIKey._from_dict(k) for k in data.get("apikeys", [])]
 
-    def create_api_key(
+    async def create_api_key(
         self,
         name: str,
         tenant: str = "",
@@ -331,22 +338,22 @@ class PurserClient:
             tenant: Optional tenant tag for multi-tenant environments.
             quota: Optional request quota (0 = unlimited).
         """
-        data = self._request(
+        data = await self._request(
             "POST",
             "/api/v1/apikeys",
             json={"name": name, "tenant": tenant, "quota": quota},
         )
         return APIKey._from_dict(data, include_key=True)
 
-    def delete_api_key(self, key_id: str) -> None:
+    async def delete_api_key(self, key_id: str) -> None:
         """Permanently revoke an API key.
 
         Raises:
             NotFoundError: If no key with that ID exists.
         """
-        self._request("DELETE", f"/api/v1/apikeys/{key_id}")
+        await self._request("DELETE", f"/api/v1/apikeys/{key_id}")
 
-    def get_key_usage(self, key_id: str) -> KeyUsage:
+    async def get_key_usage(self, key_id: str) -> KeyUsage:
         """Return token usage statistics for an API key.
 
         Raises:
@@ -358,7 +365,7 @@ class PurserClient:
     # Join token
     # ------------------------------------------------------------------
 
-    def create_join_token(self, ttl_seconds: int = 86400) -> JoinToken:
+    async def create_join_token(self, ttl_seconds: int = 86400) -> JoinToken:
         """Mint a single-use, expiring cluster join token.
 
         Hand the returned token to a new machine via the ``PURSER_JOIN_TOKEN``
@@ -367,7 +374,7 @@ class PurserClient:
         Args:
             ttl_seconds: Token lifetime in seconds (default 86 400 = 24 h).
         """
-        data = self._request(
+        data = await self._request(
             "POST",
             "/api/v1/join-token",
             json={"ttl_seconds": ttl_seconds},
@@ -382,25 +389,25 @@ class PurserClient:
     # Cluster
     # ------------------------------------------------------------------
 
-    def cluster_health(self) -> ClusterHealth:
+    async def cluster_health(self) -> ClusterHealth:
         """Return a coarse cluster health summary (DB + node counts)."""
-        data = self._request("GET", "/api/v1/cluster/health")
+        data = await self._request("GET", "/api/v1/cluster/health")
         return ClusterHealth._from_dict(data)
 
     # ------------------------------------------------------------------
     # Enterprise (requires license)
     # ------------------------------------------------------------------
 
-    def enterprise_status(self) -> EnterpriseStatus:
+    async def enterprise_status(self) -> EnterpriseStatus:
         """Return the active edition and license information.
 
         This endpoint never requires a license — it reports ``"community"``
         when no valid license is present.
         """
-        data = self._request("GET", "/api/v1/enterprise/status")
+        data = await self._request("GET", "/api/v1/enterprise/status")
         return EnterpriseStatus._from_dict(data)
 
-    def audit_log(self, limit: int = 100) -> AuditLog:
+    async def audit_log(self, limit: int = 100) -> AuditLog:
         """Return the most recent audit-log entries with chain verification.
 
         Args:
@@ -414,7 +421,7 @@ class PurserClient:
             LicenseRequiredError: If no valid enterprise license with the
                 ``"audit"`` feature is active.
         """
-        data = self._request(
+        data = await self._request(
             "GET", "/api/v1/enterprise/audit-log", params={"limit": limit}
         )
         entries = [AuditEntry._from_dict(e) for e in data.get("entries", [])]
@@ -435,19 +442,20 @@ class PurserClient:
     # Metrics streaming (SSE)
     # ------------------------------------------------------------------
 
-    def stream_metrics(self) -> Generator[dict[str, Any], None, None]:
-        """Stream real-time node metrics from GET /api/v1/metrics (SSE).
+    async def stream_metrics(self) -> AsyncGenerator[dict[str, Any], None]:
+        """Async generator — stream real-time node metrics from GET /api/v1/metrics (SSE).
 
         Yields dicts with keys: at, aggregate_decode_tok_s, nodes (list).
         Each dict corresponds to one SSE event (emitted every ~2 seconds).
 
         Usage::
 
-            for snapshot in client.stream_metrics():
-                print(snapshot['aggregate_decode_tok_s'])
+            async with AsyncPurserClient("http://localhost:8080") as client:
+                async for snapshot in client.stream_metrics():
+                    print(snapshot['aggregate_decode_tok_s'])
         """
-        with self._client.stream("GET", "/api/v1/metrics") as response:
-            for line in response.iter_lines():
+        async with self._client.stream("GET", "/api/v1/metrics") as response:
+            async for line in response.aiter_lines():
                 if line.startswith("data:"):
                     data = line[5:].strip()
                     if data and data != "[DONE]":
@@ -460,12 +468,12 @@ class PurserClient:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def close(self) -> None:
-        """Close the underlying HTTP connection pool."""
-        self._client.close()
+    async def aclose(self) -> None:
+        """Close the underlying async HTTP connection pool."""
+        await self._client.aclose()
 
-    def __enter__(self) -> PurserClient:
+    async def __aenter__(self) -> AsyncPurserClient:
         return self
 
-    def __exit__(self, *args: Any) -> None:
-        self.close()
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
