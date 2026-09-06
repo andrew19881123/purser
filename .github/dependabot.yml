@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust"]
+
+  - package-ecosystem: gomod
+    directory: /go/controlplane
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "go"]
+
+  - package-ecosystem: gomod
+    directory: /go/planner
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "go"]
+
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ui"]

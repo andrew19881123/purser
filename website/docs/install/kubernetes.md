@@ -16,7 +16,7 @@ graph TD
         PVC[("PVC /data\nSQLite registry\n+ PKI CA key")]
         SVC_CP["Service: control-plane\nHTTP :8080 / gRPC :9443"]
         SVC_GW["Service: gateway\nHTTP :8080"]
-        SVC_UI["Service: ui\nHTTP :80"]
+        SVC_UI["Service: ui\nHTTP :8080"]
         ING["Ingress (optional)\npurser.example.com"]
         CP --- PVC
         SVC_CP --> CP
@@ -141,7 +141,7 @@ All three components served from one hostname via a Kubernetes Ingress. Path rou
 |---|---|---|
 | `/api` | control-plane | 8080 |
 | `/v1` | gateway | 8080 |
-| `/` | ui (nginx) | 80 |
+| `/` | ui (nginx) | 8080 |
 
 ```bash
 helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.1.1 \
