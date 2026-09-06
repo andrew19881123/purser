@@ -443,6 +443,38 @@ type PolicyVersion struct {
 	CreatedBy  string    `json:"created_by"`
 }
 
+// TeamBillingReport is the billing aggregated for a team.
+// The team is identified by its tenant_id (the Tenant field of its API keys).
+// OrgID is set when the report is produced as part of an OrgBillingReport; it
+// is empty when the team report is requested directly via the team endpoint.
+// ByModel holds one BillingTenantUsage row per distinct model used by the team.
+type TeamBillingReport struct {
+	TeamID        string               `json:"team_id"`
+	TeamName      string               `json:"team_name,omitempty"`
+	OrgID         string               `json:"org_id,omitempty"`
+	PeriodStart   time.Time            `json:"period_start"`
+	PeriodEnd     time.Time            `json:"period_end"`
+	TotalRequests int64                `json:"total_requests"`
+	InputTokens   int64                `json:"input_tokens"`
+	OutputTokens  int64                `json:"output_tokens"`
+	TotalTokens   int64                `json:"total_tokens"`
+	TotalCostUSD  float64              `json:"total_cost_usd"`
+	ByModel       []BillingTenantUsage `json:"by_model,omitempty"`
+}
+
+// OrgBillingReport is the billing aggregated for an entire organization.
+// Teams are discovered from inference_audit_log using the naming convention
+// "<orgID>/<teamSlug>" for tenant_id values; the org report sums all team totals.
+type OrgBillingReport struct {
+	OrgID        string              `json:"org_id"`
+	OrgName      string              `json:"org_name,omitempty"`
+	PeriodStart  time.Time           `json:"period_start"`
+	PeriodEnd    time.Time           `json:"period_end"`
+	TotalCostUSD float64             `json:"total_cost_usd"`
+	TotalTokens  int64               `json:"total_tokens"`
+	Teams        []TeamBillingReport `json:"teams"`
+}
+
 // GDPRErasureLog records one GDPR Art.17 right-to-erasure operation.
 // SubjectHash is SHA-256 of the subject identifier so the log itself holds
 // no PII. ErasureType identifies which table was scrubbed (e.g.
