@@ -37,6 +37,7 @@ vi.mock('../../hooks/queries', () => ({
     restart: { mutate: vi.fn(), isPending: false },
     remove: { mutate: removeMutate, isPending: false },
   }),
+  useReconcilerStatus: () => ({ isLoading: false, isError: false, data: undefined }),
 }));
 
 // ---- helpers ----------------------------------------------------------------
