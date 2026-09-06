@@ -1158,6 +1158,27 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimPrefix(auth, "Bearer ")
 }
 
+// actorFromRequest extracts a displayable actor identity from the request.
+// Priority: OIDC sub claim > OIDC email claim > API key fingerprint (first 8
+// hex chars of SHA-256) > "system".
+//
+// This is the single source of truth for audit log Actor fields on HTTP-handled
+// requests. Background goroutines and startup code that have no request context
+// should use the literal string "system" directly.
+func actorFromRequest(r *http.Request) string {
+	if sub, ok := r.Context().Value(ctxKeyOIDCSub).(string); ok && sub != "" {
+		return "oidc:" + sub
+	}
+	if email, ok := r.Context().Value(ctxKeyOIDCEmail).(string); ok && email != "" {
+		return "oidc:" + email
+	}
+	if token := bearerToken(r); token != "" {
+		sum := sha256.Sum256([]byte(token))
+		return "apikey:" + hex.EncodeToString(sum[:])[:8]
+	}
+	return "system"
+}
+
 // rateLimitExempt reports whether the request is exempt from rate limiting.
 // GET /api/v1/cluster/health and GET /api/v1/openapi.json are always allowed
 // through so that monitoring systems and tooling do not get throttled.
@@ -1349,6 +1370,9 @@ func (s *Server) routes() {
 	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
 	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)
+	// GDPR Art.17 right-to-erasure — admin only, enterprise-gated ("gdpr" feature).
+	s.mux.HandleFunc("POST /api/v1/gdpr/erasure", s.handleGDPRErasure)
+	s.mux.HandleFunc("GET /api/v1/gdpr/erasure-log", s.handleGDPRErasureLog)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -1764,7 +1788,7 @@ func (s *Server) handleRestartNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor: "api", Action: "api.node.restart", Target: id,
+		Actor: actorFromRequest(r), Action: "api.node.restart", Target: id,
 	})
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
 		"node_id":     id,
@@ -1883,7 +1907,7 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "create_model_failed", err.Error())
 		return
 	}
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "model.created", Target: id})
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: actorFromRequest(r), Action: "model.created", Target: id})
 	s.writeJSON(w, http.StatusCreated, map[string]any{"model_id": id})
 }
 
@@ -2074,7 +2098,7 @@ func (s *Server) handleImportHuggingFace(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor:  "api",
+		Actor:  actorFromRequest(r),
 		Action: "model.imported",
 		Target: modelID,
 	})
@@ -2139,7 +2163,7 @@ func (s *Server) handleImportObjectStorage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor: "api", Action: "model.imported", Target: id,
+		Actor: actorFromRequest(r), Action: "model.imported", Target: id,
 	})
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"model_id":     id,
@@ -2291,7 +2315,7 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "delete_model_failed", err.Error())
 		return
 	}
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "model.deleted", Target: id})
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: actorFromRequest(r), Action: "model.deleted", Target: id})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -2795,7 +2819,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "create_apikey_failed", err.Error())
 		return
 	}
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "apikey.created", Target: id})
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: actorFromRequest(r), Action: "apikey.created", Target: id})
 	// Return the plaintext key ONCE.
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"id":     id,
@@ -2835,7 +2859,7 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "delete_apikey_failed", err.Error())
 		return
 	}
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "apikey.deleted", Target: id})
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: actorFromRequest(r), Action: "apikey.deleted", Target: id})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -2870,7 +2894,7 @@ func (s *Server) handleJoinToken(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "join_token_failed", err.Error())
 		return
 	}
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "join_token.minted", Target: s.clusterID})
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: actorFromRequest(r), Action: "join_token.minted", Target: s.clusterID})
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"token":      tok.Token,
 		"expires_at": tok.ExpiresAt.UTC().Format(time.RFC3339),
@@ -2909,7 +2933,7 @@ func (s *Server) handleEnrollmentBundle(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusInternalServerError, "join_token_failed", err.Error())
 		return
 	}
-	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: "api", Action: "enrollment_bundle.created", Target: s.clusterID})
+	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{Actor: actorFromRequest(r), Action: "enrollment_bundle.created", Target: s.clusterID})
 
 	now := time.Now().UTC()
 	expires := tok.ExpiresAt.UTC()
@@ -3233,7 +3257,7 @@ func (s *Server) handleImportSageMaker(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor:  "api",
+		Actor:  actorFromRequest(r),
 		Action: "model.imported",
 		Target: modelID,
 	})
@@ -3347,7 +3371,7 @@ func (s *Server) handleImportVertexAI(w http.ResponseWriter, r *http.Request, bo
 		return
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor:   "api",
+		Actor:   actorFromRequest(r),
 		Action:  "model.imported",
 		Target:  modelID,
 		Details: json.RawMessage(sourceJSON),
@@ -3435,7 +3459,7 @@ func (s *Server) handleImportAzureML(w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor: "api", Action: "model.imported", Target: modelID,
+		Actor: actorFromRequest(r), Action: "model.imported", Target: modelID,
 	})
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"model_id": modelID,

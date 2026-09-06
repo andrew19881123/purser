@@ -595,12 +595,46 @@ func (r *SQLiteRegistry) SavePolicyVersion(_ context.Context, _ *PolicyVersion) 
 
 // --- GDPR ---------------------------------------------------------------------
 
-func (r *SQLiteRegistry) RecordGDPRErasure(_ context.Context, _ *GDPRErasureLog) error {
-	return errNotImplemented
+// EraseInferenceEventsBySubject pseudonymises all inference_audit_log rows for
+// the given api_key_hash subject. It does NOT delete records (the hash chain
+// must remain intact), but overwrites the identifying fields so no personal
+// data remains. The api_key_hash is replaced with "ERASED-YYYYMMDD" so a
+// single erasure run per day is idempotent for the same subject.
+func (r *SQLiteRegistry) EraseInferenceEventsBySubject(ctx context.Context, subjectHash string) (int64, error) {
+	erasedHash := "ERASED-" + time.Now().UTC().Format("20060102")
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE inference_audit_log
+		 SET api_key_hash = ?,
+		     client_ip_prefix = '0.0.0.0/0',
+		     tenant_id = CASE WHEN tenant_id != '' THEN 'ERASED' ELSE '' END
+		 WHERE api_key_hash = ?`,
+		erasedHash, subjectHash,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("registry: erase_inference_events: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
 }
 
-func (r *SQLiteRegistry) EraseInferenceEventsBySubject(_ context.Context, _ string) (int64, error) {
-	return 0, errNotImplemented
+// RecordGDPRErasure appends an immutable record to gdpr_erasure_log. The log
+// is append-only by design: it provides a compliance audit trail of all
+// erasure operations (who erased which subject, when, how many events were
+// scrubbed). Callers MUST call this after EraseInferenceEventsBySubject even
+// when zero events were matched — the absence of matching data is itself
+// compliance-relevant.
+func (r *SQLiteRegistry) RecordGDPRErasure(ctx context.Context, log *GDPRErasureLog) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO gdpr_erasure_log
+		 (subject_hash, erased_at, erased_by, reason, events_erased, erasure_type)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		log.SubjectHash, fmtTime(log.ErasedAt), log.ErasedBy,
+		log.Reason, log.EventsErased, log.ErasureType,
+	)
+	if err != nil {
+		return fmt.Errorf("registry: record_gdpr_erasure: %w", err)
+	}
+	return nil
 }
 
 // --- internal scan helper ----------------------------------------------------

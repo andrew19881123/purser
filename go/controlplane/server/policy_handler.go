@@ -93,7 +93,7 @@ func (s *Server) handleUpsertPolicy(w http.ResponseWriter, r *http.Request) {
 	s.reloadPolicies(r.Context())
 
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor: "api", Action: "policy.upserted", Target: name,
+		Actor: actorFromRequest(r), Action: "policy.upserted", Target: name,
 	})
 	s.writeJSON(w, http.StatusOK, p)
 }
@@ -128,7 +128,7 @@ func (s *Server) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
 	s.reloadPolicies(r.Context())
 
 	_ = s.reg.AppendAudit(r.Context(), &registry.AuditEntry{
-		Actor: "api", Action: "policy.deleted", Target: name,
+		Actor: actorFromRequest(r), Action: "policy.deleted", Target: name,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
