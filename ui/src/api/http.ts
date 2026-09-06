@@ -498,10 +498,16 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // GET /api/v1/plans/{id} -> plan (with explanation)
     getPlan: (planId) => request<unknown>(`/plans/${enc(planId)}`).then(normalizePlan),
 
-    // --- onboarding (enrollment token; path not yet frozen in the docs) ---
-    getJoinInfo: () => request<unknown>('/join-token').then(normalizeJoinInfo),
+    // --- onboarding (enrollment token) ---
+    // The server only has POST /join-token (no GET); auto-issue a 24h token on load.
+    getJoinInfo: () =>
+      request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds: 86400 } }).then(
+        normalizeJoinInfo,
+      ),
     rotateJoinToken: () =>
-      request<unknown>('/join-token/rotate', { method: 'POST' }).then(normalizeJoinInfo),
+      request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds: 86400 } }).then(
+        normalizeJoinInfo,
+      ),
     // POST /api/v1/join-token — body {ttl_seconds} (snakeizeKeys converts automatically)
     createJoinToken: (ttlSeconds) =>
       request<unknown>('/join-token', { method: 'POST', body: { ttlSeconds } }).then(
