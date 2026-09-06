@@ -325,4 +325,19 @@ impl ModelQueueSemaphores {
             .unwrap_or_else(|p| p.into_inner())
             .remove(model);
     }
+
+    /// Current in-flight request count for `model` (i.e. held permits).
+    ///
+    /// Returns `0` when no semaphore has been created for this model yet.
+    /// Used to emit the `purser_gateway_model_queue_depth` gauge.
+    pub fn queue_depth(&self, model: &str) -> usize {
+        let map = self
+            .semaphores
+            .lock()
+            .expect("model queue semaphore mutex poisoned");
+        match map.get(model) {
+            Some(sem) => self.max_depth.saturating_sub(sem.available_permits()),
+            None => 0,
+        }
+    }
 }

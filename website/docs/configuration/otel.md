@@ -82,6 +82,42 @@ Tracer name: `purser.gateway`. Exporter: OTLP/gRPC.
 
 The Control Plane pushes metrics every 30 seconds via OTLP/HTTP.
 
+#### Gateway — LLM-specific metrics (Prometheus)
+
+The gateway exposes Prometheus metrics at `GET /metrics` (text/plain, version 0.0.4).
+All gateway metrics carry `model` and `tenant` labels unless noted otherwise.
+
+| Metric name | Type | Labels | Description |
+|---|---|---|---|
+| `purser_gateway_requests_total` | Counter | `model`, `tenant`, `status` | Total inference requests, labelled by HTTP status code. |
+| `purser_gateway_request_duration_seconds` | Histogram | `model`, `tenant` | End-to-end request latency. Use p50/p95/p99 for SLO tracking. |
+| `purser_gateway_tokens_input_total` | Counter | `model`, `tenant` | Prompt tokens consumed (best-effort estimate). |
+| `purser_gateway_tokens_output_total` | Counter | `model`, `tenant` | Completion tokens generated (from `usage.completion_tokens` or SSE frame count). |
+| `purser_gateway_tokens_per_second` | Histogram | `model`, `tenant` | Token generation throughput (tokens/second). |
+| `purser_gateway_time_to_first_token_seconds` | Histogram | `model`, `tenant` | **TTFT** — time from request dispatch to first SSE chunk (streaming) or response headers (buffered). p50/p99 are primary SLO indicators for interactive use-cases. |
+| `purser_gateway_active_streams` | Gauge | `model`, `tenant` | Number of concurrent SSE streaming connections currently open. Backed by a Drop guard — a persistent non-zero value indicates a resource leak. |
+| `purser_gateway_errors_total` | Counter | `model`, `tenant`, `error_type` | Typed error breakdown. `error_type` values: `timeout_upstream`, `node_unavailable`, `auth_failure`, `quota_exceeded`, `bad_request`, `rate_limited`. |
+| `purser_gateway_queue_wait_seconds` | Histogram | `model` | Time spent waiting for a per-model semaphore permit. Always near zero with the current non-blocking `try_acquire` path; non-zero once blocking queues are introduced. |
+| `purser_gateway_model_queue_depth` | Gauge | `model` | Current number of in-flight requests holding a per-model semaphore permit (= `max_queue_depth` − available permits). |
+
+**Sample Grafana queries:**
+
+```promql
+# TTFT p99 by model
+histogram_quantile(0.99, rate(purser_gateway_time_to_first_token_seconds_bucket[5m])) by (model)
+
+# Active streaming connections
+purser_gateway_active_streams
+
+# Error rate by type
+rate(purser_gateway_errors_total[5m]) by (model, error_type)
+
+# Queue depth by model
+purser_gateway_model_queue_depth
+```
+
+---
+
 #### Infrastructure gauges (Meter: `purser.control-plane`)
 
 | Metric name | Unit | Description |
