@@ -154,6 +154,18 @@ impl AgentConfig {
     /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
     ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
     /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
+    ///
+    /// ## Engine backend selection (`PURSER_ENGINE_BACKEND`)
+    ///
+    /// | Value     | Feature flag (purser-agent)    | Description                                  |
+    /// |-----------|-------------------------------|----------------------------------------------|
+    /// | `mock`    | _(always available)_          | GPU-free deterministic in-process mock.      |
+    /// | `llamacpp`| `--features llamacpp`         | Real llama.cpp RPC worker/host processes.    |
+    ///
+    /// Selecting `llamacpp` without compiling the agent with `--features llamacpp`
+    /// produces a clear startup error. When `llamacpp` is selected and
+    /// `PURSER_LLAMACPP_BIN` is not set, a startup warning is logged and the
+    /// adapter searches for the llama.cpp binaries in `PATH` instead.
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
