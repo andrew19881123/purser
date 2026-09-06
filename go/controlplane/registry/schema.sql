@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant);
 
+-- api_key_access_log: per-request access log for API key audit and anomaly
+-- detection. ip_prefix stores the /24 CIDR prefix only (GDPR data minimisation).
+CREATE TABLE IF NOT EXISTS api_key_access_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id   TEXT    NOT NULL,
+    key_hash     TEXT    NOT NULL,
+    method       TEXT    NOT NULL DEFAULT '',
+    path         TEXT    NOT NULL DEFAULT '',
+    ip_prefix    TEXT    NOT NULL DEFAULT '',  -- /24 CIDR, GDPR data minimisation
+    user_agent   TEXT    NOT NULL DEFAULT '',
+    status_code  INTEGER NOT NULL DEFAULT 0,
+    request_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_akacl_key_id     ON api_key_access_log(api_key_id, request_at);
+CREATE INDEX IF NOT EXISTS idx_akacl_request_at ON api_key_access_log(request_at);
+
 -- sessions: inference sessions for metrics/attribution.
 CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,
