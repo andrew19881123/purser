@@ -19,17 +19,41 @@ pub const ENV_PORT: &str = "PURSER_GATEWAY_PORT";
 /// (backward-compatible).
 pub const ENV_CONTROL_PLANE_URL: &str = "PURSER_CONTROL_PLANE_URL";
 
+/// HTTP proxy for outbound calls from the gateway (e.g. upstream timeouts).
+pub const ENV_HTTP_PROXY: &str = "PURSER_GATEWAY_HTTP_PROXY";
+/// HTTPS proxy for outbound TLS calls; overrides `HTTP_PROXY` for TLS targets.
+pub const ENV_HTTPS_PROXY: &str = "PURSER_GATEWAY_HTTPS_PROXY";
+/// Comma-separated proxy bypass list.
+pub const ENV_NO_PROXY: &str = "PURSER_GATEWAY_NO_PROXY";
+/// Path to a PEM file with additional CA certificates for outbound TLS.
+pub const ENV_CA_BUNDLE: &str = "PURSER_GATEWAY_CA_BUNDLE";
+
 /// Fully-resolved gateway configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub host: IpAddr,
     pub port: u16,
+    /// Optional HTTP proxy for outbound plain-HTTP traffic.
+    pub http_proxy: Option<String>,
+    /// Optional HTTPS proxy for outbound TLS traffic.
+    pub https_proxy: Option<String>,
+    /// Optional proxy bypass list (comma-separated hosts/ranges).
+    pub no_proxy: Option<String>,
+    /// Optional path to a PEM file with extra trusted CA certificates.
+    pub ca_bundle_path: Option<String>,
 }
 
 impl Config {
-    /// Build a config from explicit host/port values.
+    /// Build a config from explicit host/port values (no proxy/CA).
     pub fn new(host: IpAddr, port: u16) -> Self {
-        Self { host, port }
+        Self {
+            host,
+            port,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+            ca_bundle_path: None,
+        }
     }
 
     /// The socket address the server should bind to.
@@ -39,8 +63,8 @@ impl Config {
 
     /// Resolve configuration from the environment.
     ///
-    /// Both [`ENV_HOST`] and [`ENV_PORT`] are **required** — there are no
-    /// implicit defaults.
+    /// [`ENV_HOST`] and [`ENV_PORT`] are **required** — there are no
+    /// implicit defaults. Proxy and CA-bundle variables are optional.
     pub fn from_env() -> Result<Self, ConfigError> {
         let host_raw = std::env::var(ENV_HOST).map_err(|_| ConfigError::Missing(ENV_HOST))?;
         let port_raw = std::env::var(ENV_PORT).map_err(|_| ConfigError::Missing(ENV_PORT))?;
@@ -54,8 +78,19 @@ impl Config {
             .parse()
             .map_err(|_| ConfigError::Invalid(ENV_PORT, port_raw))?;
 
-        Ok(Self { host, port })
+        Ok(Self {
+            host,
+            port,
+            http_proxy: non_empty(std::env::var(ENV_HTTP_PROXY).ok()),
+            https_proxy: non_empty(std::env::var(ENV_HTTPS_PROXY).ok()),
+            no_proxy: non_empty(std::env::var(ENV_NO_PROXY).ok()),
+            ca_bundle_path: non_empty(std::env::var(ENV_CA_BUNDLE).ok()),
+        })
     }
+}
+
+fn non_empty(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
 }
 
 /// Error produced while resolving [`Config`] from the environment.

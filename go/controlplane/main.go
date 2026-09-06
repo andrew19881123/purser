@@ -42,6 +42,7 @@ import (
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/server"
 	"github.com/purser/purser/go/controlplane/telemetry"
+	"github.com/purser/purser/go/controlplane/transport"
 	purserv1 "github.com/purser/purser/go/gen/purser/v1"
 	"google.golang.org/grpc"
 )
@@ -229,6 +230,18 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// Enterprise network support: install a custom transport that respects
+	// HTTP_PROXY / HTTPS_PROXY / NO_PROXY and loads a CA bundle from
+	// PURSER_CA_BUNDLE (when set). Setting http.DefaultTransport propagates
+	// the configuration to all net/http clients in this process that do not
+	// supply their own transport, including the OIDC provider and the
+	// HuggingFace importer.
+	customTransport, err := transport.Default()
+	if err != nil {
+		return fmt.Errorf("configuring HTTP transport: %w", err)
+	}
+	http.DefaultTransport = customTransport
 
 	reg, err := registry.Open(cfg.dbPath)
 	if err != nil {

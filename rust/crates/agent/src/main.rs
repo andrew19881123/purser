@@ -39,10 +39,10 @@ async fn main() -> anyhow::Result<()> {
     // Cache directory: PURSER_MODEL_CACHE_DIR (default: ~/.purser/model-cache).
     // Cache budget:    PURSER_MODEL_CACHE_MAX_BYTES (default: 50 GiB).
     //
-    // When http-fetch is enabled the HttpFetcher is used; otherwise the
-    // FileMirrorFetcher copies from a rack-local NFS/mounted mirror
-    // (PURSER_MODEL_MIRROR_DIR, default: same as cache dir, effectively a
-    // no-op until a mirror is configured).
+    // When http-fetch is enabled the HttpFetcher is used (with proxy/CA-bundle
+    // settings from config); otherwise the FileMirrorFetcher copies from a
+    // rack-local NFS/mounted mirror (PURSER_MODEL_MIRROR_DIR, default: same as
+    // cache dir, effectively a no-op until a mirror is configured).
     let model_cache: Option<Arc<purser_agent::modelcache::ModelCache>> = {
         let cache_dir: std::path::PathBuf = std::env::var("PURSER_MODEL_CACHE_DIR")
             .map(std::path::PathBuf::from)
@@ -73,7 +73,10 @@ async fn main() -> anyhow::Result<()> {
 
         #[cfg(feature = "http-fetch")]
         let fetcher: Box<dyn purser_agent::modelcache::Fetcher> = {
-            Box::new(purser_agent::modelcache::HttpFetcher::new(
+            let client = purser_agent::http_client::build_http_client(&config)
+                .context("building HTTP client for model fetcher")?;
+            Box::new(purser_agent::modelcache::HttpFetcher::with_client(
+                client,
                 config.model_fetch_max_retries,
             ))
         };

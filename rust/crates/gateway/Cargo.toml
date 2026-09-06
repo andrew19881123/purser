@@ -15,7 +15,8 @@ metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 opentelemetry = { version = "0.22", features = ["trace"] }
 opentelemetry-otlp = { version = "0.15", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["stream", "json"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["stream", "json", "rustls"] }
+anyhow = "1.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 subtle = { workspace = true }
