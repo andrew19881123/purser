@@ -1427,24 +1427,29 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{teamId}/members/{userId}", s.handleRemoveTeamMember)
 
 	// Platform v0.4: Users, Custom Roles, Permissions discovery.
-	// Note: /users/me must be registered before /users/{id} so the router
-	// matches the literal "me" segment before the wildcard.
 	s.mux.HandleFunc("GET /api/v1/platform/users", s.handleListUsers)
 	s.mux.HandleFunc("GET /api/v1/platform/users/me", s.handleGetMe)
 	s.mux.HandleFunc("GET /api/v1/platform/users/{id}", s.handleGetUser)
-
-	// Platform: Custom Roles (CRUD scoped to org).
 	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/roles", s.handleCreateRole)
 	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles", s.handleListRoles)
 	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleGetRole)
 	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleUpdateRole)
 	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleDeleteRole)
-
-	// Platform: Permission catalogue discovery.
 	s.mux.HandleFunc("GET /api/v1/platform/permissions", s.handleListPermissions)
-
-	// Platform: Effective permissions for current user in a team.
 	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/my-permissions", s.handleGetMyPermissions)
+
+	// Platform: Node Pools (v0.4 multi-tenant).
+	s.mux.HandleFunc("POST /api/v1/platform/pools", s.handleCreatePool)
+	s.mux.HandleFunc("GET /api/v1/platform/pools", s.handleListPools)
+	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}", s.handleGetPool)
+	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}", s.handleUpdatePool)
+	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}", s.handleDeletePool)
+	s.mux.HandleFunc("POST /api/v1/platform/pools/{id}/nodes", s.handleAssignNodeToPool)
+	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/nodes", s.handleListPoolNodes)
+	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/nodes/{nodeId}", s.handleRemoveNodeFromPool)
+	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleUpsertPoolQuota)
+	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/quotas", s.handleListPoolQuotas)
+	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleDeletePoolQuota)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -2537,7 +2542,17 @@ func (s *Server) handleDeployModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case s.planner != nil:
-		produced, ok := s.planFromFleet(w, r, modelID)
+		// Resolve team pool constraints: if the request carries an API key with a
+		// non-empty Tenant, look up that team's allowed node IDs and pass them to
+		// the planner so the deployment only uses nodes from the team's pool.
+		// Backward compat: empty result means "use all nodes" (no pool assigned).
+		var poolConstraints plannerplan.Constraints
+		if key := apiKeyFromContext(r.Context()); key != nil && key.Tenant != "" {
+			if nodes, err := s.reg.GetAllowedNodeIDs(r.Context(), key.Tenant); err == nil && len(nodes) > 0 {
+				poolConstraints.AllowedNodeIDs = nodes
+			}
+		}
+		produced, ok := s.planFromFleet(w, r, modelID, poolConstraints)
 		if !ok {
 			return // planFromFleet already wrote the response
 		}
@@ -2599,8 +2614,11 @@ func (s *Server) handleDeployModel(w http.ResponseWriter, r *http.Request) {
 //   - 404 if the model is unknown;
 //   - 422 with reason/deficit/suggestions if the model does not fit the fleet;
 //   - 500 on internal/persistence errors.
-func (s *Server) planFromFleet(w http.ResponseWriter, r *http.Request, modelID string) (*purserv1.DeploymentPlan, bool) {
-	produced, err := s.planner.Plan(r.Context(), modelID, plannerplan.Constraints{})
+//
+// c carries optional planner constraints, e.g. AllowedNodeIDs from a team pool.
+// Pass plannerplan.Constraints{} for unconstrained planning.
+func (s *Server) planFromFleet(w http.ResponseWriter, r *http.Request, modelID string, c plannerplan.Constraints) (*purserv1.DeploymentPlan, bool) {
+	produced, err := s.planner.Plan(r.Context(), modelID, c)
 	if errors.Is(err, registry.ErrNotFound) {
 		s.writeError(w, http.StatusNotFound, "not_found", "model not found")
 		return nil, false
