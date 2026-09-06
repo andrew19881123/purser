@@ -25,6 +25,8 @@ import type {
   AuditEntry,
   AuditLog,
   Backend,
+  BillingReport,
+  BillingSummary,
   CatalogEntry,
   ClusterCapacity,
   DeployOverrides,
@@ -678,5 +680,25 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // GET /api/v1/reconciler/status -> ReconcilerStatus (config + pending tracker).
     getReconcilerStatus: () =>
       request<unknown>('/reconciler/status').then((raw) => raw as ReconcilerStatus),
+
+    // --- billing / chargeback ---
+    getBillingReport: (start: string, end: string, tenantId?: string): Promise<BillingReport> => {
+      const params = new URLSearchParams({ start, end });
+      if (tenantId) params.set('tenant_id', tenantId);
+      return request<BillingReport>(`/billing/report?${params.toString()}`);
+    },
+
+    getBillingCsvUrl: (start: string, end: string, tenantId?: string): string => {
+      const params = new URLSearchParams({ start, end, format: 'csv' });
+      if (tenantId) params.set('tenant_id', tenantId);
+      return `${baseUrl}/billing/report?${params.toString()}`;
+    },
+
+    getBillingSummary: (tenantId?: string): Promise<BillingSummary> => {
+      const params = new URLSearchParams();
+      if (tenantId) params.set('tenant_id', tenantId);
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      return request<BillingSummary>(`/billing/summary${qs}`);
+    },
   };
 }

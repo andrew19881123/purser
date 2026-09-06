@@ -18,6 +18,7 @@ import { PlaygroundPage } from './pages/PlaygroundPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
 import { ApprovalsPage } from './pages/ApprovalsPage';
+import { ChargebackPage } from './pages/ChargebackPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 export const router = createBrowserRouter([
@@ -36,6 +37,7 @@ export const router = createBrowserRouter([
       { path: 'settings', element: <SettingsPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'approvals', element: <ApprovalsPage /> },
+      { path: 'chargeback', element: <ChargebackPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

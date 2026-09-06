@@ -195,6 +195,30 @@ type DeploymentApproval struct {
 	Notes        string     `json:"notes,omitempty"`
 }
 
+// BillingTenantUsage aggregates inference activity for a single tenant+model
+// pair inside a billing window. It is the row type inside BillingReport.
+type BillingTenantUsage struct {
+	TenantID         string    `json:"tenant_id"`
+	ModelID          string    `json:"model_id"`
+	RequestCount     int64     `json:"request_count"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	TotalTokens      int64     `json:"total_tokens"`
+	AvgLatencyMs     float64   `json:"avg_latency_ms"`
+	PeriodStart      time.Time `json:"period_start"`
+	PeriodEnd        time.Time `json:"period_end"`
+}
+
+// BillingReport is the full chargeback report for a configurable time window.
+// It is returned by GetBillingReport and served by GET /api/v1/billing/report.
+type BillingReport struct {
+	PeriodStart   time.Time            `json:"period_start"`
+	PeriodEnd     time.Time            `json:"period_end"`
+	Tenants       []BillingTenantUsage `json:"tenants"`
+	TotalRequests int64                `json:"total_requests"`
+	TotalTokens   int64                `json:"total_tokens"`
+}
+
 // Cert tracks a certificate issued by the internal CA (see package pki).
 type Cert struct {
 	Serial    string    `json:"serial"`
