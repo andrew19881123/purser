@@ -145,3 +145,95 @@ examples and tenant-scoping details.
 
 Keys created before RBAC was introduced have `role = "admin"` in the database
 (the column was added with `DEFAULT 'admin'`). No existing key loses access.
+
+---
+
+## Permission-based RBAC (v0.4)
+
+Starting in v0.4, every API endpoint is mapped to a **minimum required
+permission string**. The middleware resolves the caller's effective permissions
+and rejects requests that lack the required string with `403 Forbidden` and a
+body that includes the `"required"` field for diagnostics.
+
+### How the middleware resolves permissions
+
+The priority chain for each request is:
+
+1. **OIDC session (no API key)** — the OIDC group-claim mapping is used as
+   before (see [OIDC Group Claim Mapping](oidc.md#group-claim-mapping)).
+2. **API key with team context** — when the key's `tenant` field matches a
+   registered team, `GetEffectivePermissions` is called to resolve the full
+   permission set from the team-member → custom-role chain.
+3. **Legacy API key** — keys with a `role` of `admin`, `viewer`, or `inference`
+   fall back to `FromLegacyRole()` for full backward compatibility.
+
+Platform admins (`IsPlatformAdmin = true`) bypass all permission checks
+unconditionally.
+
+### Route → permission map
+
+The table below lists every endpoint covered by the v0.4 permission engine.
+Endpoints **not** in this table fall through to the legacy role switch (safe
+degradation for any clients or keys not yet migrated).
+
+| HTTP Method | Path | Required permission |
+|---|---|---|
+| `GET`    | `/api/v1/nodes`                                  | `team:metrics:view`     |
+| `POST`   | `/api/v1/nodes/{id}/drain`                       | `team:models:deploy`    |
+| `DELETE` | `/api/v1/nodes/{id}`                             | `org:pools:request`     |
+| `GET`    | `/api/v1/models`                                 | `team:metrics:view`     |
+| `POST`   | `/api/v1/models`                                 | `team:models:deploy`    |
+| `DELETE` | `/api/v1/models/{id}`                            | `team:models:undeploy`  |
+| `POST`   | `/api/v1/models/{id}/deploy`                     | `team:models:deploy`    |
+| `GET`    | `/api/v1/deployments`                            | `team:metrics:view`     |
+| `DELETE` | `/api/v1/deployments/{id}`                       | `team:models:undeploy`  |
+| `GET`    | `/api/v1/apikeys`                                | `team:metrics:view`     |
+| `POST`   | `/api/v1/apikeys`                                | `team:keys:create`      |
+| `DELETE` | `/api/v1/apikeys/{id}`                           | `team:keys:revoke`      |
+| `POST`   | `/api/v1/apikeys/{id}/rotate`                    | `team:keys:create`      |
+| `GET`    | `/api/v1/enterprise/audit-log`                   | `team:metrics:view`     |
+| `GET`    | `/api/v1/inference-audit`                        | `team:metrics:view`     |
+| `GET`    | `/api/v1/approvals`                              | `team:approvals:view`   |
+| `POST`   | `/api/v1/approvals/{deploymentId}/approve`       | `team:approvals:review` |
+| `POST`   | `/api/v1/approvals/{deploymentId}/reject`        | `team:approvals:review` |
+| `GET`    | `/api/v1/policies`                               | `team:metrics:view`     |
+| `PUT`    | `/api/v1/policies/{name}`                        | `org:roles:create`      |
+| `DELETE` | `/api/v1/policies/{name}`                        | `org:roles:delete`      |
+| `POST`   | `/api/v1/config/apply`                           | `team:models:deploy`    |
+| `POST`   | `/api/v1/config/diff`                            | `team:metrics:view`     |
+| `POST`   | `/api/v1/platform/orgs`                          | `platform:orgs:create`  |
+| `DELETE` | `/api/v1/platform/orgs/{id}`                     | `platform:orgs:delete`  |
+| `POST`   | `/api/v1/platform/pools`                         | `platform:pools:manage` |
+
+### Legacy role → effective permissions
+
+For API keys that have not been migrated to team membership, the legacy role
+is converted to a permission set automatically:
+
+| Legacy role | Effective permission strings |
+|---|---|
+| `admin`     | All permissions (platform admin bypass) |
+| `viewer`    | `team:members:view`, `team:metrics:view`, `team:approvals:view` |
+| `inference` | `inference:call` |
+
+These mappings mean existing `admin` keys remain fully operational, `viewer`
+keys can still access all read endpoints that require `team:metrics:view`, and
+`inference` keys are denied access to every management endpoint (as before).
+
+### Migrating keys to custom roles
+
+To grant fine-grained access (e.g. a developer who can deploy but not manage
+billing), create a custom role and a team membership:
+
+```bash
+# Create a custom role for developers
+curl -X POST /api/v1/platform/orgs/{orgId}/roles \
+  -d '{"name":"developer","permissions":["team:models:deploy","team:models:undeploy","team:metrics:view","team:keys:create","inference:call"]}'
+
+# Add the API key's ID as a team member with the role
+curl -X POST /api/v1/platform/teams/{teamId}/members \
+  -d '{"user_sub":"<key-id>","role_id":"<role-id>"}'
+```
+
+Once the team membership is in place the key's `tenant` field is used to
+resolve the custom role on every request — no key rotation required.
