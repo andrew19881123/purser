@@ -14,7 +14,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 bytes = "1"
 foca = { version = "0.13", features = ["std", "postcard-codec"] }
 rand = { version = "0.8", features = ["std_rng"] }
