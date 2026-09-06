@@ -1904,6 +1904,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "subtle",
  "tokio",
  "tower 0.5.3",
  "tracing",
