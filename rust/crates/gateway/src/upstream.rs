@@ -16,7 +16,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use reqwest::Client;
 
+use crate::config::Config;
 use crate::error::ApiError;
+use crate::http_client::build_http_client;
 
 /// Environment overrides for upstream timeouts (milliseconds).
 pub const ENV_CONNECT_MS: &str = "PURSER_GATEWAY_UPSTREAM_CONNECT_MS";
@@ -44,6 +46,26 @@ impl HttpClient {
         Self { client, ttfb, idle }
     }
 
+    /// Build an `HttpClient` using a [`Config`] that carries proxy and CA-bundle
+    /// settings. Falls back to `Self::new` if the custom client cannot be built
+    /// (logs a warning in that case so the gateway still starts).
+    pub fn with_config(config: &Config, connect: Duration, ttfb: Duration, idle: Duration) -> Self {
+        let client = match build_http_client(config, connect) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to build proxy/CA-configured HTTP client; falling back to plain client"
+                );
+                Client::builder()
+                    .connect_timeout(connect)
+                    .build()
+                    .expect("failed to build fallback reqwest client")
+            }
+        };
+        Self { client, ttfb, idle }
+    }
+
     /// Sensible defaults for talking to a local/LAN deployment host.
     pub fn default_local() -> Self {
         Self::new(
@@ -54,11 +76,19 @@ impl HttpClient {
     }
 
     /// Build from environment overrides, falling back to [`Self::default_local`].
+    ///
+    /// Also reads proxy and CA-bundle settings from the environment via
+    /// [`Config::from_env`] when available.
     pub fn from_env() -> Self {
         let connect = env_ms(ENV_CONNECT_MS, 2000);
         let ttfb = env_ms(ENV_TTFB_MS, 30_000);
         let idle = env_ms(ENV_IDLE_MS, 30_000);
-        Self::new(connect, ttfb, idle)
+        // Attempt to read proxy/CA config; fall back to plain client on failure
+        // (e.g. when PURSER_GATEWAY_HOST/PORT are unset in tests).
+        match Config::from_env() {
+            Ok(cfg) => Self::with_config(&cfg, connect, ttfb, idle),
+            Err(_) => Self::new(connect, ttfb, idle),
+        }
     }
 
     /// POST a JSON body to `url`, bounded by the time-to-first-byte timeout.

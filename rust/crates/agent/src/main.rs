@@ -32,11 +32,15 @@ async fn main() -> anyhow::Result<()> {
     let config = AgentConfig::from_env().context("loading agent configuration")?;
     let config = Arc::new(config);
 
-    // When http-fetch is enabled: construct an HTTP model fetcher from config.
-    // TODO(phase2): pass to ModelCache::open() when the weight-loading path is
-    // wired in place of FileMirrorFetcher.
+    // When http-fetch is enabled: build a reqwest client that honours the
+    // corporate proxy and custom CA-bundle settings from the config, then
+    // wire it into the model-weight fetcher.
     #[cfg(feature = "http-fetch")]
-    let _http_fetcher = purser_agent::modelcache::HttpFetcher::new(config.model_fetch_max_retries);
+    let _http_fetcher = {
+        let client = purser_agent::http_client::build_http_client(&config)
+            .context("building HTTP client for model fetcher")?;
+        purser_agent::modelcache::HttpFetcher::with_client(client, config.model_fetch_max_retries)
+    };
 
     // Security: warn if bound on all interfaces rather than a trusted subnet.
     if config.bind_addr.ip().is_unspecified() {

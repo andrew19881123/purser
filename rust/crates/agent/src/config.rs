@@ -110,6 +110,28 @@ pub struct AgentConfig {
     ///
     /// Overridable via `PURSER_MODEL_FETCH_MAX_RETRIES`. Defaults to 3.
     pub model_fetch_max_retries: u32,
+
+    // -----------------------------------------------------------------------
+    // Network proxy and custom CA bundle (enterprise networks)
+    // -----------------------------------------------------------------------
+    /// HTTP proxy URL for plain-HTTP outbound traffic.
+    /// Overridable via `PURSER_AGENT_HTTP_PROXY`.
+    pub http_proxy: Option<String>,
+
+    /// HTTPS proxy URL for TLS outbound traffic.
+    /// When set, takes precedence over `http_proxy` for HTTPS destinations.
+    /// Overridable via `PURSER_AGENT_HTTPS_PROXY`.
+    pub https_proxy: Option<String>,
+
+    /// Comma-separated list of hosts/IP ranges to bypass the proxy for.
+    /// Overridable via `PURSER_AGENT_NO_PROXY`.
+    pub no_proxy: Option<String>,
+
+    /// Path to a PEM file containing additional CA certificates to trust.
+    /// Required when model mirrors or control-plane endpoints use certificates
+    /// signed by a private (corporate) CA.
+    /// Overridable via `PURSER_AGENT_CA_BUNDLE`.
+    pub ca_bundle_path: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -129,6 +151,10 @@ impl Default for AgentConfig {
             swim_seed_addrs: Vec::new(),
             secret_store_dir: default_secret_store_dir(),
             model_fetch_max_retries: 3,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+            ca_bundle_path: None,
         }
     }
 }
@@ -154,6 +180,10 @@ impl AgentConfig {
     /// - `PURSER_SECRET_KEY`                — 32-byte AES-256 key, hex or base64
     ///   (consumed directly by `EncryptedFileSecretStore`, not stored in this struct)
     /// - `PURSER_MODEL_FETCH_MAX_RETRIES`   — e.g. `5` (default: 3)
+    /// - `PURSER_AGENT_HTTP_PROXY`          — HTTP proxy URL (e.g. `http://proxy.corp:3128`)
+    /// - `PURSER_AGENT_HTTPS_PROXY`         — HTTPS proxy URL; overrides `HTTP_PROXY` for TLS
+    /// - `PURSER_AGENT_NO_PROXY`            — comma-separated bypass list (e.g. `localhost,10.0.0.0/8`)
+    /// - `PURSER_AGENT_CA_BUNDLE`           — path to PEM file with additional trusted CA certs
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -206,6 +236,10 @@ impl AgentConfig {
                 .parse()
                 .with_context(|| format!("invalid PURSER_MODEL_FETCH_MAX_RETRIES: {retries:?}"))?;
         }
+        cfg.http_proxy = non_empty(std::env::var("PURSER_AGENT_HTTP_PROXY").ok());
+        cfg.https_proxy = non_empty(std::env::var("PURSER_AGENT_HTTPS_PROXY").ok());
+        cfg.no_proxy = non_empty(std::env::var("PURSER_AGENT_NO_PROXY").ok());
+        cfg.ca_bundle_path = non_empty(std::env::var("PURSER_AGENT_CA_BUNDLE").ok());
 
         Ok(cfg)
     }

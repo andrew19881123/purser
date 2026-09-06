@@ -158,6 +158,16 @@ impl HttpFetcher {
             max_retries,
         }
     }
+
+    /// Construct an `HttpFetcher` using a pre-built client (e.g. one
+    /// configured with a corporate proxy or custom CA via
+    /// [`crate::http_client::build_http_client`]).
+    pub fn with_client(client: reqwest::Client, max_retries: u32) -> Self {
+        Self {
+            client,
+            max_retries,
+        }
+    }
 }
 
 #[cfg(feature = "http-fetch")]

@@ -21,6 +21,8 @@
 
 pub mod config;
 pub mod discovery;
+#[cfg(feature = "http-fetch")]
+pub mod http_client;
 pub mod healing;
 pub mod linkbench;
 pub mod mock_inference;
