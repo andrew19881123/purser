@@ -6,6 +6,11 @@
 // Orchestration Controller and the Reconciler control loop. The Planner and
 // Gateway are separate processes; the orchestrator notifies the Gateway over
 // HTTP when deployments change.
+//
+// Subcommands:
+//
+//	control-plane backup  --db <src>  --output <dst>
+//	control-plane restore --input <src> --db <dst> --confirm
 package main
 
 import (
@@ -28,6 +33,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/purser/purser/enterprise/license"
+	"github.com/purser/purser/go/controlplane/backup"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/pki"
@@ -132,10 +138,83 @@ func envFloat(key string, def float64) float64 {
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Dispatch backup/restore subcommands before the regular flag parse so their
+	// own FlagSet can define --db, --output, --input, and --confirm without
+	// conflicting with the server's flag set.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "backup":
+			if err := runBackupCmd(logger, os.Args[2:]); err != nil {
+				logger.Error("backup failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		case "restore":
+			if err := runRestoreCmd(logger, os.Args[2:]); err != nil {
+				logger.Error("restore failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	if err := run(logger); err != nil {
 		logger.Error("control plane exited", "err", err)
 		os.Exit(1)
 	}
+}
+
+// runBackupCmd implements the `backup` subcommand.
+//
+//	control-plane backup --db /var/lib/purser/registry.db --output /backup/purser-20260906.db
+func runBackupCmd(logger *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	dbPath := fs.String("db", envOr("PURSER_DB", "purser-registry.db"),
+		"path to the source SQLite registry (env PURSER_DB)")
+	output := fs.String("output", "", "destination path for the backup file (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *output == "" {
+		return fmt.Errorf("--output is required")
+	}
+	logger.Info("starting backup", "src", *dbPath, "dst", *output)
+	if err := backup.BackupDB(*dbPath, *output); err != nil {
+		return err
+	}
+	logger.Info("backup complete", "dst", *output)
+	return nil
+}
+
+// runRestoreCmd implements the `restore` subcommand.
+//
+//	control-plane restore --input /backup/purser-20260906.db --db /var/lib/purser/registry.db --confirm
+//
+// --confirm is required so that the command cannot accidentally overwrite
+// a live database without an explicit operator acknowledgement.
+func runRestoreCmd(logger *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	dbPath := fs.String("db", envOr("PURSER_DB", "purser-registry.db"),
+		"destination path for the restored database (env PURSER_DB)")
+	input := fs.String("input", "", "path to the backup file to restore from (required)")
+	confirm := fs.Bool("confirm", false,
+		"required: acknowledge that the current database will be replaced")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *input == "" {
+		return fmt.Errorf("--input is required")
+	}
+	if !*confirm {
+		return fmt.Errorf("--confirm is required: restoring will overwrite %s; pass --confirm to proceed", *dbPath)
+	}
+	logger.Info("starting restore", "src", *input, "dst", *dbPath)
+	if err := backup.RestoreDB(*input, *dbPath); err != nil {
+		return err
+	}
+	logger.Info("restore complete", "dst", *dbPath)
+	return nil
 }
 
 func run(logger *slog.Logger) error {
