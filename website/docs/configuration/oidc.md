@@ -3,6 +3,9 @@
 !!! note "OIDC is available in the community edition"
     As of v0.3, OIDC authentication includes a full **Authorization Code Flow + PKCE** browser SSO endpoint. Set `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, and `PURSER_OIDC_REDIRECT_URI` to enable it. Machine-to-machine access (API keys, the internal gateway token) also continues to work regardless of OIDC state.
 
+!!! tip "High-availability (multi-node) session support"
+    Sessions and PKCE state are now persisted in the SQLite registry rather than in-process memory. In a Raft cluster, a user can **log in on node A and have subsequent requests served by node B** without being re-prompted. Session revocation (logout or backchannel logout) propagates immediately via the shared database.
+
 ---
 
 ## What OIDC protects
@@ -15,6 +18,8 @@ When configured, OIDC protects:
 What is **exempt** from OIDC:
 
 - **`GET /auth/login` and `GET /auth/callback`** — the login flow endpoints themselves are unauthenticated
+- **`GET /auth/logout`** — reachable even with an expired/revoked session so the browser can always clear its cookie
+- **`POST /auth/backchannel-logout`** — called by the IdP, not by the user; verified via the IdP's own JWT signature
 - **Gateway API keys** — machine-to-machine inference traffic uses bearer tokens, which bypass OIDC
 - **Internal gateway token** — Control Plane → Gateway route sync is a separate shared secret, unaffected by OIDC
 - **Agent gRPC** — Agent enrollment and heartbeat use mTLS certificates issued by the internal PKI, not OIDC
@@ -56,6 +61,89 @@ As of v0.3, Purser implements the **OAuth 2.0 Authorization Code Flow with PKCE*
 | SameSite | Lax |
 | TTL | 8 hours |
 | Signature | HMAC-SHA256, key from `PURSER_SESSION_SECRET` |
+
+### Session persistence and HA
+
+Every session created via `/auth/callback` is persisted in the SQLite registry
+(`oidc_sessions` table). This enables:
+
+- **Cross-node requests**: in a Raft cluster, the session is valid on all nodes
+  because every node shares the same replicated database.
+- **Immediate revocation**: a logout on any node is visible to all other nodes
+  on the next request (no TTL delay).
+- **Cluster restart resilience**: sessions survive a process restart as long as
+  `PURSER_SESSION_SECRET` is stable (set via the env var or the Helm secret).
+
+The control plane runs an hourly background job to delete expired sessions and
+stale PKCE state rows so the tables stay bounded.
+
+---
+
+## Logout endpoints
+
+### `GET /auth/logout`
+
+Revokes the current session (marks the `oidc_sessions` row as revoked), clears
+the `purser_session` cookie, and redirects to `/`.
+
+```
+GET https://purser.example.com/auth/logout
+```
+
+Add a **Sign Out URL** to your IdP application pointing here so users are logged
+out of Purser when they sign out of the IdP portal.
+
+### `POST /auth/backchannel-logout` (IdP-initiated)
+
+Implements **OpenID Connect Back-Channel Logout 1.0**. When a user terminates
+their IdP session, the IdP can POST a signed `logout_token` JWT to this endpoint
+to revoke **all** Purser sessions for that subject.
+
+```
+POST https://purser.example.com/auth/backchannel-logout
+Content-Type: application/x-www-form-urlencoded
+
+logout_token=<signed-JWT>
+```
+
+Returns `200 OK` on success; `400 Bad Request` if the token is missing or
+signature verification fails.
+
+#### Configuring backchannel logout in your IdP
+
+=== "Microsoft EntraID"
+
+    In the Azure portal, open the application registration → **Authentication**.
+    Under **Front-channel logout URL** add:
+
+    ```
+    https://purser.example.com/auth/logout
+    ```
+
+    EntraID does not currently support backchannel logout for web apps; use the
+    front-channel URL above.
+
+=== "Okta"
+
+    In the Okta Admin Console → **Applications → your app → General** tab,
+    set **Logout initiated by** to `App` and fill in:
+
+    - **Initiate login URI**: `https://purser.example.com/auth/login`
+    - **Post Logout Redirect URI**: `https://purser.example.com/auth/logout`
+
+    To enable backchannel logout, go to the **Sign On** tab → **Back-channel
+    Logout** and set the URL to:
+
+    ```
+    https://purser.example.com/auth/backchannel-logout
+    ```
+
+=== "Keycloak"
+
+    In Keycloak Admin Console → **Clients → purser → Settings**:
+
+    - **Backchannel Logout URL**: `https://purser.example.com/auth/backchannel-logout`
+    - **Backchannel Logout Session Required**: enabled
 
 ---
 

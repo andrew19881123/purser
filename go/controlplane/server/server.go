@@ -625,6 +625,24 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) ListenAndServe() error {
 	go s.cleanupLimiters()
 	go s.startKeyExpiryWatcher(context.Background())
+	// Hourly background cleanup of expired OIDC sessions and PKCE state rows.
+	// This prevents unbounded growth of the oidc_sessions and pkce_state tables
+	// on long-running instances. The goroutine runs for the lifetime of the
+	// process; no cancellation is wired up because process exit is sufficient.
+	if s.reg != nil {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				if n, err := s.reg.DeleteExpiredOIDCSessions(context.Background()); err == nil && n > 0 {
+					s.log.Debug("cleaned expired OIDC sessions", "count", n)
+				}
+				if _, err := s.reg.DeleteExpiredPKCEStates(context.Background()); err != nil {
+					s.log.Debug("DeleteExpiredPKCEStates error", "err", err)
+				}
+			}
+		}()
+	}
 	if s.tlsEnabled {
 		s.log.Info("management API serving HTTPS", "addr", s.server.Addr)
 		// For file-path mode pass the paths; for in-memory mode the TLSConfig
@@ -739,8 +757,11 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 2. Auth endpoints are exempt: they ARE the login flow.
-		if r.URL.Path == "/auth/login" || r.URL.Path == "/auth/callback" {
+		// 2. Auth endpoints are exempt: they ARE the login/logout flow.
+		// /auth/logout and /auth/backchannel-logout are reachable even with an
+		// already-revoked session so the browser can always clear its cookie.
+		switch r.URL.Path {
+		case "/auth/login", "/auth/callback", "/auth/logout", "/auth/backchannel-logout":
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -802,10 +823,24 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		if len(s.sessionSecret) > 0 {
 			if cookie, err := r.Cookie(sessionCookieName); err == nil {
 				if sub, email, err := s.verifySession(cookie.Value); err == nil {
-					ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
-					ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
+					// 5a. Check revocation in the distributed session store.
+					// This catches sessions revoked via backchannel logout or an
+					// admin force-logout on any other cluster node.
+					revoked := false
+					if s.reg != nil {
+						tokenHash := sha256HexOf(cookie.Value)
+						if _, dbErr := s.reg.GetOIDCSession(r.Context(), tokenHash); dbErr != nil {
+							// Session not found or revoked in DB — treat as invalid.
+							s.log.Debug("OIDC session revoked or not in DB", "err", dbErr)
+							revoked = true
+						}
+					}
+					if !revoked {
+						ctx := context.WithValue(r.Context(), ctxKeyOIDCSub, sub)
+						ctx = context.WithValue(ctx, ctxKeyOIDCEmail, email)
+						next.ServeHTTP(w, r.WithContext(ctx))
+						return
+					}
 				} else {
 					s.log.Debug("OIDC session cookie invalid", "err", err)
 				}
@@ -1084,10 +1119,14 @@ func (s *Server) getOrCreateLimiter(
 }
 
 func (s *Server) routes() {
-	// Authorization Code Flow + PKCE endpoints (browser SSO).
-	// These are exempt from oidcMiddleware — they ARE the login flow.
+	// Authorization Code Flow + PKCE + session management endpoints (browser SSO).
+	// These are exempt from oidcMiddleware — they ARE the login/logout flow.
 	s.mux.HandleFunc("GET /auth/login", s.handleAuthLogin)
 	s.mux.HandleFunc("GET /auth/callback", s.handleAuthCallback)
+	s.mux.HandleFunc("GET /auth/logout", s.handleAuthLogout)
+	// Backchannel logout: called by the IdP when a user session ends at the
+	// IdP side. No user credential is presented — the IdP signs the token.
+	s.mux.HandleFunc("POST /auth/backchannel-logout", s.handleBackchannelLogout)
 
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)
