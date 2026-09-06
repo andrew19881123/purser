@@ -626,3 +626,72 @@ export interface BillingSummary {
   total_tokens: number;
   active_tenants: number;
 }
+
+// ---------------------------------------------------------------------------
+// v0.4 Platform model — Organizations, Teams, Node Pools, RBAC.
+// ---------------------------------------------------------------------------
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Team {
+  id: string;
+  org_id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamMember {
+  id: number;
+  team_id: string;
+  user_id: string;
+  role_id: string;
+  created_at: string;
+  user?: { email: string; display_name: string };
+  role?: { name: string; permissions: string[] };
+}
+
+export interface NodePool {
+  id: string;
+  name: string;
+  description?: string;
+  owner_type: 'platform' | 'org' | 'team';
+  owner_id: string;
+  policy: 'exclusive' | 'shared';
+  node_ids?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PoolTeamQuota {
+  pool_id: string;
+  team_id: string;
+  max_deployments: number;
+  max_gpu_nodes: number;
+  priority: number;
+}
+
+export interface PlatformUser {
+  id: string;
+  email: string;
+  display_name?: string;
+  auth_method: string;
+  last_seen_at?: string;
+}
+
+export interface EffectivePermissions {
+  user_id: string;
+  team_id: string;
+  org_id: string;
+  permissions: string[];
+  is_org_admin: boolean;
+}

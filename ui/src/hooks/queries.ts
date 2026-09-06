@@ -386,6 +386,172 @@ export function useRejectDeployment() {
   });
 }
 
+// --- v0.4 platform model: organizations ------------------------------------
+
+export function useOrganizations() {
+  return useQuery({
+    queryKey: ['organizations'],
+    queryFn: () => api.listOrganizations(),
+  });
+}
+
+export function useCreateOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; slug: string; description?: string }) =>
+      api.createOrganization(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organizations'] }),
+  });
+}
+
+export function useDeleteOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteOrganization(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organizations'] }),
+  });
+}
+
+// --- v0.4 platform model: teams -------------------------------------------
+
+export function useTeams(orgId: string | undefined) {
+  return useQuery({
+    queryKey: ['teams', orgId ?? ''],
+    queryFn: () => api.listTeams(orgId as string),
+    enabled: Boolean(orgId),
+  });
+}
+
+export function useTeam(id: string | undefined) {
+  return useQuery({
+    queryKey: ['team', id ?? ''],
+    queryFn: () => api.getTeam(id as string),
+    enabled: Boolean(id),
+  });
+}
+
+export function useCreateTeam(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; slug: string; description?: string }) =>
+      api.createTeam(orgId, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['teams', orgId] }),
+  });
+}
+
+export function useDeleteTeam(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteTeam(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['teams', orgId] }),
+  });
+}
+
+// --- v0.4 platform model: team members ------------------------------------
+
+export function useTeamMembers(teamId: string | undefined) {
+  return useQuery({
+    queryKey: ['teamMembers', teamId ?? ''],
+    queryFn: () => api.listTeamMembers(teamId as string),
+    enabled: Boolean(teamId),
+  });
+}
+
+export function useAddTeamMember(teamId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { user_id: string; role_id: string }) =>
+      api.addTeamMember(teamId, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['teamMembers', teamId] }),
+  });
+}
+
+export function useRemoveTeamMember(teamId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.removeTeamMember(teamId, userId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['teamMembers', teamId] }),
+  });
+}
+
+// --- v0.4 platform model: node pools ------------------------------------
+
+export function useNodePools() {
+  return useQuery({
+    queryKey: ['nodePools'],
+    queryFn: () => api.listNodePools(),
+  });
+}
+
+export function useCreateNodePool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createNodePool>[0]) =>
+      api.createNodePool(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['nodePools'] }),
+  });
+}
+
+export function usePoolNodes(poolId: string | undefined) {
+  return useQuery({
+    queryKey: ['poolNodes', poolId ?? ''],
+    queryFn: () => api.listPoolNodes(poolId as string),
+    enabled: Boolean(poolId),
+  });
+}
+
+export function usePoolQuotas(poolId: string | undefined) {
+  return useQuery({
+    queryKey: ['poolQuotas', poolId ?? ''],
+    queryFn: () => api.listPoolQuotas(poolId as string),
+    enabled: Boolean(poolId),
+  });
+}
+
+export function useUpsertPoolQuota(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ teamId, quota }: { teamId: string; quota: Parameters<typeof api.upsertPoolQuota>[2] }) =>
+      api.upsertPoolQuota(poolId, teamId, quota),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['poolQuotas', poolId] }),
+  });
+}
+
+export function useAssignNodeToPool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ poolId, nodeId }: { poolId: string; nodeId: string }) =>
+      api.assignNodeToPool(poolId, nodeId),
+    onSuccess: (_d, { poolId }) => qc.invalidateQueries({ queryKey: ['poolNodes', poolId] }),
+  });
+}
+
+export function useRemoveNodeFromPool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ poolId, nodeId }: { poolId: string; nodeId: string }) =>
+      api.removeNodeFromPool(poolId, nodeId),
+    onSuccess: (_d, { poolId }) => qc.invalidateQueries({ queryKey: ['poolNodes', poolId] }),
+  });
+}
+
+// --- v0.4 platform model: current user -----------------------------------
+
+export function useMe() {
+  return useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.getMe(),
+  });
+}
+
+export function useMyTeamPermissions(teamId: string | undefined) {
+  return useQuery({
+    queryKey: ['myTeamPermissions', teamId ?? ''],
+    queryFn: () => api.getMyTeamPermissions(teamId as string),
+    enabled: Boolean(teamId),
+  });
+}
+
 // --- live metrics (SSE) -----------------------------------------------------
 
 /**
