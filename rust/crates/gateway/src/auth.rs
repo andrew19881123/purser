@@ -14,12 +14,12 @@
 //!
 //! Keys are held in [`AuthConfig`], which the gateway loads from the
 //! environment at startup ([`AuthConfig::from_env`]) or receives explicitly in
-//! tests. When no keys are configured the gateway runs in **open dev mode**
-//! (any non-empty bearer is accepted and mapped to the `default` tenant); once
-//! any key is configured, validation is strict.
+//! tests. At startup, at least one key must be configured via
+//! [`ENV_API_KEYS`] or `PURSER_GATEWAY_DEV_MODE=1` must be set explicitly to
+//! enable open dev mode (any non-empty bearer accepted). The gateway refuses to
+//! start without one of these being true.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 
 use subtle::ConstantTimeEq;
 
@@ -36,6 +36,9 @@ pub const ENV_INTERNAL_TOKEN: &str = "PURSER_GATEWAY_INTERNAL_TOKEN";
 /// Environment variable holding the client API keys. Comma-separated entries,
 /// each `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:k2`.
 pub const ENV_API_KEYS: &str = "PURSER_GATEWAY_API_KEYS";
+/// Set to `"1"` to enable open dev mode (any non-empty bearer accepted).
+/// **Never use in production.** Required when `PURSER_GATEWAY_API_KEYS` is unset.
+pub const ENV_DEV_MODE: &str = "PURSER_GATEWAY_DEV_MODE";
 
 /// Header the Control Plane uses to authenticate management-plane calls.
 static INTERNAL_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-purser-internal-token");
@@ -64,11 +67,11 @@ pub struct ApiKey {
 /// Authentication policy: the set of accepted keys plus the management secret.
 #[derive(Debug, Clone, Default)]
 pub struct AuthConfig {
-    /// `secret -> info`. Empty ⇒ open dev mode (see [`AuthConfig::allow_any`]).
+    /// `secret -> info`. Empty only in explicit dev mode (see [`ENV_DEV_MODE`]).
     keys: HashMap<String, ApiKeyInfo>,
-    /// When `true`, any non-empty bearer is accepted (dev mode). Set
-    /// automatically when `keys` is empty.
-    allow_any: bool,
+    /// When `true`, any non-empty bearer is accepted (dev mode). Only set when
+    /// `PURSER_GATEWAY_DEV_MODE=1` is explicit; never set silently.
+    pub allow_any: bool,
     /// Shared secret for the management plane. `None` ⇒ management writes are
     /// disabled (fail closed).
     pub internal_token: Option<String>,
@@ -94,8 +97,12 @@ impl AuthConfig {
     }
 
     /// Load the policy from the environment (see [`ENV_API_KEYS`],
-    /// [`ENV_INTERNAL_TOKEN`]). No keys configured ⇒ open dev mode.
-    pub fn from_env() -> Self {
+    /// [`ENV_INTERNAL_TOKEN`], [`ENV_DEV_MODE`]).
+    ///
+    /// Returns an error if `PURSER_GATEWAY_API_KEYS` is empty **and**
+    /// `PURSER_GATEWAY_DEV_MODE` is not `"1"`. This prevents silent open-auth
+    /// deployments in production.
+    pub fn from_env() -> anyhow::Result<Self> {
         let internal_token = std::env::var(ENV_INTERNAL_TOKEN)
             .ok()
             .map(|s| s.trim().to_string())
@@ -124,12 +131,30 @@ impl AuthConfig {
             keys.insert(secret, ApiKeyInfo { id, tenant });
         }
 
-        let allow_any = keys.is_empty();
-        Self {
-            keys,
-            allow_any,
-            internal_token,
+        if keys.is_empty() {
+            if std::env::var(ENV_DEV_MODE).as_deref() == Ok("1") {
+                tracing::warn!(
+                    "PURSER_GATEWAY_DEV_MODE=1: accepting any bearer token. \
+                     NEVER use in production."
+                );
+                return Ok(Self {
+                    keys,
+                    allow_any: true,
+                    internal_token,
+                });
+            }
+            anyhow::bail!(
+                "PURSER_GATEWAY_API_KEYS is not set and PURSER_GATEWAY_DEV_MODE is not '1'. \
+                 Configure at least one API key via PURSER_GATEWAY_API_KEYS or set \
+                 PURSER_GATEWAY_DEV_MODE=1 for local development only."
+            );
         }
+
+        Ok(Self {
+            keys,
+            allow_any: false,
+            internal_token,
+        })
     }
 
     /// Number of explicitly-configured keys (0 ⇒ dev mode).
@@ -176,11 +201,15 @@ impl AuthConfig {
 }
 
 /// Derive a stable, non-secret id from a key, so logs/metrics never carry the
-/// raw secret. Not cryptographic — just a deterministic label.
+/// raw secret. Uses SHA-256 (deterministic across process restarts) so that
+/// quota tracking and audit trails survive gateway restarts.
 fn synthetic_id(token: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    token.hash(&mut hasher);
-    format!("key-{:016x}", hasher.finish())
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let result = hasher.finalize();
+    // First 8 bytes → 16 hex chars — same visual length as the old format.
+    format!("key-{}", hex::encode(&result[..8]))
 }
 
 impl<S> FromRequestParts<S> for ApiKey
@@ -271,4 +300,81 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Guard env-var mutations behind a process-wide mutex so parallel test
+    // threads do not race on PURSER_GATEWAY_API_KEYS / PURSER_GATEWAY_DEV_MODE.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // --- Fix 1: from_env() requires explicit dev mode when no keys are set ---
+
+    #[test]
+    fn test_auth_config_rejects_empty_keys_without_dev_mode() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var(ENV_API_KEYS);
+        std::env::remove_var(ENV_DEV_MODE);
+        assert!(
+            AuthConfig::from_env().is_err(),
+            "from_env() must fail when no keys and no dev mode flag"
+        );
+    }
+
+    #[test]
+    fn test_auth_config_allows_dev_mode_with_flag() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var(ENV_API_KEYS);
+        std::env::set_var(ENV_DEV_MODE, "1");
+        let cfg = AuthConfig::from_env().expect("dev mode should succeed");
+        assert!(cfg.allow_any, "allow_any must be true in dev mode");
+        std::env::remove_var(ENV_DEV_MODE);
+    }
+
+    #[test]
+    fn test_auth_config_strict_mode_when_keys_present() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var(ENV_API_KEYS, "sk-test:team-a:key1");
+        std::env::remove_var(ENV_DEV_MODE);
+        let cfg = AuthConfig::from_env().expect("should succeed with keys");
+        assert!(!cfg.allow_any, "allow_any must be false when keys are set");
+        assert_eq!(cfg.configured_keys(), 1);
+        std::env::remove_var(ENV_API_KEYS);
+    }
+
+    // --- Fix 2: synthetic_id is deterministic (SHA-256) ---
+
+    #[test]
+    fn test_synthetic_id_is_deterministic() {
+        let id1 = synthetic_id("test-token-abc123");
+        let id2 = synthetic_id("test-token-abc123");
+        assert_eq!(id1, id2, "synthetic_id must be deterministic across calls");
+        assert!(id1.starts_with("key-"), "must have key- prefix");
+        assert_eq!(
+            id1.len(),
+            "key-".len() + 16,
+            "must be 16 hex chars after prefix"
+        );
+    }
+
+    #[test]
+    fn test_synthetic_id_differs_for_different_tokens() {
+        let id1 = synthetic_id("token-a");
+        let id2 = synthetic_id("token-b");
+        assert_ne!(id1, id2, "different tokens must produce different ids");
+    }
+
+    #[test]
+    fn test_synthetic_id_known_value() {
+        // SHA-256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+        // First 8 bytes: 2c f2 4d ba 5f b0 a3 0e → hex "2cf24dba5fb0a30e"
+        let id = synthetic_id("hello");
+        assert_eq!(id, "key-2cf24dba5fb0a30e");
+    }
 }

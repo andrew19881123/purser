@@ -159,10 +159,16 @@ Both variables are **required** — the gateway refuses to start with a clear er
 
 ### Authentication
 
+!!! danger "Production requirement"
+    `PURSER_GATEWAY_API_KEYS` is **required** in production. The gateway refuses
+    to start if neither `PURSER_GATEWAY_API_KEYS` nor `PURSER_GATEWAY_DEV_MODE=1`
+    is set. This prevents accidental open-auth deployments.
+
 | Variable | Default | Description |
 |---|---|---|
+| `PURSER_GATEWAY_API_KEYS` | (required) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. **At least one key is required unless `PURSER_GATEWAY_DEV_MODE=1` is set.** The gateway fails with a clear error at startup if this is unset and dev mode is not enabled. |
+| `PURSER_GATEWAY_DEV_MODE` | (unset) | Set to `"1"` to enable open dev mode — any non-empty bearer token is accepted and mapped to the `default` tenant. **Never set this in production.** Only valid for local development when `PURSER_GATEWAY_API_KEYS` is not configured. The gateway logs a warning on startup when this is active. |
 | `PURSER_GATEWAY_INTERNAL_TOKEN` | (none) | Shared secret for the management plane (route sync). The Control Plane sends it in the `X-Purser-Internal-Token` header. When absent, route sync is disabled (fail-closed). Must match `PURSER_GATEWAY_TOKEN` on the Control Plane. |
-| `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway runs in **OPEN DEV MODE** — any non-empty bearer token is accepted. **Always set this in production.** |
 
 ### Quota and rate limiting
 
@@ -217,9 +223,9 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 `PURSER_AGENT_BIND`, `PURSER_CONTROL_PLANE_ADDR`, `PURSER_CLUSTER_ID`, `PURSER_NODE_ID`, `PURSER_JOIN_TOKEN`, `PURSER_HEALTH_INTERVAL_SECS`, `PURSER_INFERENCE_PORT`, `PURSER_AGENT_ADVERTISED_ADDR`, `PURSER_INFERENCE_ADVERTISED_ADDR`, `PURSER_ENGINE_BACKEND`, `PURSER_LLAMACPP_BIN`, `PURSER_SEEDS`, `RUST_LOG`, `PURSER_SWIM_ENABLED`, `PURSER_SWIM_BIND_ADDR`, `PURSER_SWIM_SEED_ADDRS`, `PURSER_SECRET_STORE_DIR`, `PURSER_SECRET_KEY`, `PURSER_AGENT_MEM_BW_OVERRIDE_GBS`, `PURSER_AGENT_BW_RECALIBRATE_INTERVAL_HOURS`, `PURSER_MODEL_FETCH_MAX_RETRIES`, `PURSER_MODEL_MIRROR_URL`
 
-### Gateway env vars (13)
+### Gateway env vars (14)
 
-`PURSER_GATEWAY_HOST`, `PURSER_GATEWAY_PORT`, `PURSER_CONTROL_PLANE_URL`, `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_API_KEYS`, `PURSER_GATEWAY_TOKENS_PER_MIN`, `PURSER_GATEWAY_MAX_CONCURRENT`, `PURSER_GATEWAY_MAX_INFLIGHT`, `PURSER_GATEWAY_RETRY_AFTER_SECS`, `PURSER_GATEWAY_UPSTREAM_CONNECT_MS`, `PURSER_GATEWAY_UPSTREAM_TTFB_MS`, `PURSER_GATEWAY_UPSTREAM_IDLE_MS`, `RUST_LOG`
+`PURSER_GATEWAY_HOST`, `PURSER_GATEWAY_PORT`, `PURSER_CONTROL_PLANE_URL`, `PURSER_GATEWAY_API_KEYS`, `PURSER_GATEWAY_DEV_MODE`, `PURSER_GATEWAY_INTERNAL_TOKEN`, `PURSER_GATEWAY_TOKENS_PER_MIN`, `PURSER_GATEWAY_MAX_CONCURRENT`, `PURSER_GATEWAY_MAX_INFLIGHT`, `PURSER_GATEWAY_RETRY_AFTER_SECS`, `PURSER_GATEWAY_UPSTREAM_CONNECT_MS`, `PURSER_GATEWAY_UPSTREAM_TTFB_MS`, `PURSER_GATEWAY_UPSTREAM_IDLE_MS`, `RUST_LOG`
 
 ---
 

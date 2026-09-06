@@ -11,6 +11,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::inference::USAGE_SEMAPHORE;
+
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, FromRef, FromRequestParts, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -189,11 +191,10 @@ async fn proxy_messages(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     // Parse the Anthropic request.
-    let req: MessagesRequest =
-        serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest {
-            message: format!("Invalid JSON request body: {e}"),
-            code: Some("invalid_body".to_string()),
-        })?;
+    let req: MessagesRequest = serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest {
+        message: format!("Invalid JSON request body: {e}"),
+        code: Some("invalid_body".to_string()),
+    })?;
 
     if req.model.is_empty() {
         return Err(ApiError::BadRequest {
@@ -621,11 +622,7 @@ async fn anthropic_buffered_response(
 // JSON translation helpers
 // ---------------------------------------------------------------------------
 
-fn openai_to_anthropic_json(
-    bytes: &[u8],
-    model: &str,
-    input_tokens: u64,
-) -> serde_json::Value {
+fn openai_to_anthropic_json(bytes: &[u8], model: &str, input_tokens: u64) -> serde_json::Value {
     let msg_id = gen_id("msg");
     let v: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
 
@@ -634,15 +631,11 @@ fn openai_to_anthropic_json(
         .unwrap_or("")
         .to_owned();
 
-    let finish_reason = v["choices"][0]["finish_reason"]
-        .as_str()
-        .unwrap_or("stop");
+    let finish_reason = v["choices"][0]["finish_reason"].as_str().unwrap_or("stop");
     let stop_reason = finish_to_stop_reason(finish_reason);
 
     let out_tokens = v["usage"]["completion_tokens"].as_u64().unwrap_or(0);
-    let in_tokens = v["usage"]["prompt_tokens"]
-        .as_u64()
-        .unwrap_or(input_tokens);
+    let in_tokens = v["usage"]["prompt_tokens"].as_u64().unwrap_or(input_tokens);
 
     serde_json::json!({
         "id":            format!("msg_{}", msg_id),
@@ -690,10 +683,7 @@ fn preamble_events(msg_id: &str, model: &str, input_tokens: u64) -> Vec<Bytes> {
         "content_block": {"type": "text", "text": ""},
     });
     vec![
-        Bytes::from(format!(
-            "event: message_start\ndata: {}\n\n",
-            msg_start
-        )),
+        Bytes::from(format!("event: message_start\ndata: {}\n\n", msg_start)),
         Bytes::from(format!(
             "event: content_block_start\ndata: {}\n\n",
             cb_start
@@ -720,7 +710,9 @@ fn closing_events_with_stop(out_tokens: u64, stop_reason: &str) -> Vec<Bytes> {
         "usage": {"output_tokens": out_tokens},
     });
     vec![
-        Bytes::from_static(b"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"),
+        Bytes::from_static(
+            b"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        ),
         Bytes::from(format!("event: message_delta\ndata: {}\n\n", msg_delta)),
         Bytes::from_static(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
     ]
@@ -734,11 +726,7 @@ fn closing_events_with_stop(out_tokens: u64, stop_reason: &str) -> Vec<Bytes> {
 ///
 /// The Anthropic error envelope is `{"type":"error","error":{"type":"...","message":"..."}}`,
 /// distinct from the OpenAI `{"error":{"type":"...","message":"..."}}` shape.
-pub(crate) fn anthropic_error_response(
-    status: u16,
-    error_type: &str,
-    message: &str,
-) -> Response {
+pub(crate) fn anthropic_error_response(status: u16, error_type: &str, message: &str) -> Response {
     let body = serde_json::json!({
         "type": "error",
         "error": {
@@ -800,6 +788,11 @@ fn to_axum_status(status: reqwest::StatusCode) -> axum::http::StatusCode {
 }
 
 /// Fire-and-forget usage report to the Control Plane (mirrors inference.rs).
+///
+/// Bounded by [`USAGE_SEMAPHORE`] (shared with the OpenAI path): at most 256
+/// reporting tasks can be in-flight simultaneously. When the semaphore is
+/// exhausted the report is dropped with a debug log — usage accounting is
+/// best-effort, not transactional.
 fn spawn_usage_report(
     client: reqwest::Client,
     cp_url: Arc<String>,
@@ -809,22 +802,35 @@ fn spawn_usage_report(
     input_tokens: u64,
     output_tokens: u64,
 ) {
-    tokio::spawn(async move {
-        let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "api_key_id": api_key_id,
-            "model_id":   model_id,
-            "input_tokens":  input_tokens,
-            "output_tokens": output_tokens,
-        });
-        let mut builder = client.post(&url).json(&body);
-        if let Some(tok) = internal_token.as_deref() {
-            builder = builder.header("X-Purser-Internal-Token", tok);
+    match USAGE_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit; // released when the task completes
+                let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "api_key_id": api_key_id,
+                    "model_id":   model_id,
+                    "input_tokens":  input_tokens,
+                    "output_tokens": output_tokens,
+                });
+                let mut builder = client.post(&url).json(&body);
+                if let Some(tok) = internal_token.as_deref() {
+                    builder = builder.header("X-Purser-Internal-Token", tok);
+                }
+                if let Err(e) = builder.send().await {
+                    tracing::debug!(
+                        error = %e,
+                        "Anthropic path: usage report failed (fire-and-forget)"
+                    );
+                }
+            });
         }
-        if let Err(e) = builder.send().await {
-            tracing::debug!(error = %e, "Anthropic path: usage report failed (fire-and-forget)");
+        Err(_) => {
+            tracing::debug!(
+                "usage semaphore full; dropping usage report for model {model_id} (Anthropic path)"
+            );
         }
-    });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -939,13 +945,13 @@ mod tests {
 
     // ---- HTTP tests (tower::ServiceExt) -------------------------------------
 
+    use crate::auth::{ApiKeyInfo, AuthConfig};
+    use crate::routes::app;
+    use crate::state::{AppState, ModelRoute, MOCK_MODEL};
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use axum::response::Response as AxumResponse;
     use http_body_util::BodyExt;
-    use crate::auth::{ApiKeyInfo, AuthConfig};
-    use crate::routes::app;
-    use crate::state::{AppState, ModelRoute, MOCK_MODEL};
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use tower::ServiceExt;
@@ -1001,9 +1007,9 @@ mod tests {
     async fn mock_openai_inference(body: Bytes) -> AxumResponse {
         let v: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
         if v["stream"].as_bool().unwrap_or(false) {
-            let d1 = json!({"choices":[{"index":0,"delta":{"content":"pong"},"finish_reason":null}]});
-            let d2 =
-                json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+            let d1 =
+                json!({"choices":[{"index":0,"delta":{"content":"pong"},"finish_reason":null}]});
+            let d2 = json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
             let sse = format!("data: {d1}\n\ndata: {d2}\n\ndata: [DONE]\n\n");
             Response::builder()
                 .status(200)
@@ -1164,7 +1170,10 @@ mod tests {
             .to_string();
         assert!(ct.starts_with("text/event-stream"), "content-type: {ct}");
         let text = body_text(response).await;
-        assert!(text.contains("message_start"), "must contain message_start: {text}");
+        assert!(
+            text.contains("message_start"),
+            "must contain message_start: {text}"
+        );
         assert!(
             text.contains("content_block_start"),
             "must contain content_block_start: {text}"
@@ -1173,7 +1182,10 @@ mod tests {
             text.contains("content_block_delta"),
             "must contain content_block_delta: {text}"
         );
-        assert!(text.contains("message_stop"), "must contain message_stop: {text}");
+        assert!(
+            text.contains("message_stop"),
+            "must contain message_stop: {text}"
+        );
         assert!(text.contains("pong"), "must contain the token: {text}");
     }
 }

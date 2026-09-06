@@ -17,7 +17,9 @@ opentelemetry-otlp = { version = "0.15", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["stream", "json", "rustls"] }
 anyhow = "1.0"
+hex = "0.4"
 serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.10"
 serde_json = "1.0.151"
 subtle = { workspace = true }
 tokio = { version = "1.53.1", features = ["full"] }

@@ -36,16 +36,16 @@ async fn main() -> ExitCode {
         }
     };
 
-    let auth = AuthConfig::from_env();
+    let auth = match AuthConfig::from_env() {
+        Ok(auth) => auth,
+        Err(err) => {
+            eprintln!("purser-gateway: authentication configuration error: {err}");
+            return ExitCode::from(2);
+        }
+    };
     let quota = QuotaConfig::from_env();
     let http = HttpClient::from_env();
 
-    if auth.configured_keys() == 0 {
-        tracing::warn!(
-            "no API keys configured (PURSER_GATEWAY_API_KEYS unset): running in OPEN DEV MODE, \
-             accepting any non-empty bearer token"
-        );
-    }
     if auth.internal_token.is_none() {
         tracing::warn!(
             "no management token configured (PURSER_GATEWAY_INTERNAL_TOKEN unset): route-sync \

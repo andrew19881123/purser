@@ -42,13 +42,14 @@ use crate::upstream::{count_sse_tokens, json_completion_tokens};
 // Caps the number of concurrent reporting tasks so a slow Control Plane cannot
 // grow an unbounded task list; exceeding the limit silently drops the report
 // (usage accounting is best-effort, not transactional).
-static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+// pub(crate) so the Anthropic path (anthropic.rs) shares the same semaphore
+// rather than having a separate, uncoordinated limit.
+pub(crate) static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(256)));
 
 // Global bounded semaphore for inference audit emits — same rationale as the
 // usage semaphore: a slow Control Plane must not grow an unbounded task list.
-static AUDIT_SEMAPHORE: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::new(256)));
+static AUDIT_SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(256)));
 
 // ---------------------------------------------------------------------------
 // Inference audit helpers
@@ -117,10 +118,7 @@ fn emit_inference_event(
         Ok(permit) => {
             tokio::spawn(async move {
                 let _permit = permit;
-                let url = format!(
-                    "{}/api/v1/inference-events",
-                    cp_url.trim_end_matches('/')
-                );
+                let url = format!("{}/api/v1/inference-events", cp_url.trim_end_matches('/'));
                 let mut builder = client.post(&url).json(&event);
                 if let Some(tok) = internal_token.as_deref() {
                     builder = builder.header("X-Purser-Internal-Token", tok);

@@ -782,7 +782,11 @@ async fn upstream_error_message_does_not_contain_ip() {
     let payload =
         json!({"model": MOCK_MODEL, "messages":[{"role":"user","content":"hi"}], "stream": false});
     let response = app(AppState::with_mock())
-        .oneshot(post_json("/v1/chat/completions", Some("client-key"), &payload))
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            Some("client-key"),
+            &payload,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -853,7 +857,11 @@ async fn sse_mid_stream_error_sends_error_frame() {
         "stream": true
     });
     let response = app(state)
-        .oneshot(post_json("/v1/chat/completions", Some("client-key"), &payload))
+        .oneshot(post_json(
+            "/v1/chat/completions",
+            Some("client-key"),
+            &payload,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
