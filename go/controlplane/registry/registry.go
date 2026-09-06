@@ -59,6 +59,11 @@ type Registry interface {
 	// --- API keys ----------------------------------------------------------
 	CreateAPIKey(ctx context.Context, k *APIKey) error
 	GetAPIKey(ctx context.Context, id string) (*APIKey, error)
+	// GetAPIKeyByHash returns the single enabled API key whose key_hash equals
+	// keyHash (SHA-256 hex of the raw token). Returns ErrNotFound when no
+	// enabled key matches. The single-row indexed query is O(1) vs. the O(n)
+	// full-scan that ListAPIKeys + loop would require.
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
 	ListAPIKeys(ctx context.Context) ([]*APIKey, error)
 	UpdateAPIKey(ctx context.Context, k *APIKey) error
 	DeleteAPIKey(ctx context.Context, id string) error

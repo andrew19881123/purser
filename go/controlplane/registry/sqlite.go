@@ -90,6 +90,10 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_seq ON audit_log (seq)`); err != nil {
 		return fmt.Errorf("registry: migrate: %w", err)
 	}
+	// Unique index on key_hash so GetAPIKeyByHash is an O(1) point lookup.
+	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys (key_hash)`); err != nil {
+		return fmt.Errorf("registry: migrate: %w", err)
+	}
 	return nil
 }
 
@@ -617,6 +621,23 @@ func (r *SQLiteRegistry) GetAPIKey(ctx context.Context, id string) (*APIKey, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("registry: get api_key %q: %w", id, err)
+	}
+	return k, nil
+}
+
+// GetAPIKeyByHash returns the enabled API key whose key_hash column equals
+// keyHash. The WHERE clause hits the idx_api_keys_hash unique index, making
+// the lookup O(1) — the preferred path for the RBAC middleware hot-path.
+func (r *SQLiteRegistry) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE key_hash = ? AND enabled = 1 LIMIT 1`,
+		keyHash)
+	k, err := scanAPIKey(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("registry: get api_key by hash: %w", err)
 	}
 	return k, nil
 }

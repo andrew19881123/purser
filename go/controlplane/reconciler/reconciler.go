@@ -32,6 +32,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/purser/purser/go/controlplane/orchestrator"
@@ -267,6 +268,8 @@ type Reconciler struct {
 	log     *slog.Logger
 	now     func() time.Time
 
+	// mu protects tracker against concurrent reads (Status) and writes (Reconcile).
+	mu      sync.RWMutex
 	tracker map[string]*discState
 
 	// OTEL instruments. All are no-ops unless a real MeterProvider was
@@ -379,6 +382,11 @@ func (rc *Reconciler) Reconcile(ctx context.Context) (Report, error) {
 	}
 
 	observed := rc.observe(ctx, deps, byID, now)
+
+	// Hold the write lock while reading and modifying the tracker so concurrent
+	// calls to Status() always see a consistent snapshot.
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 
 	// Update tracker: mark observed, register new, then act on eligible ones.
 	for _, st := range rc.tracker {
@@ -698,11 +706,12 @@ type ReconcilerStatus struct {
 
 // Status returns a point-in-time snapshot of the reconciler's configuration
 // and hysteresis tracker state. It is safe to call from an HTTP handler
-// concurrently with Reconcile (reads are non-destructive; the tracker map is
-// only mutated inside Reconcile's single goroutine, so the read may observe
-// a partially-updated pass — this is intentional, eventual-consistency
-// semantics).
+// concurrently with Reconcile — the RLock allows concurrent reads while
+// Reconcile holds a write lock during tracker updates.
 func (rc *Reconciler) Status() ReconcilerStatus {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
 	now := rc.now()
 
 	// Aggregate tracker entries by EventType. Each key is "type|depID|nodeID".
