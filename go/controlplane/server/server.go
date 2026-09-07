@@ -1521,6 +1521,19 @@ func (s *Server) routes() {
 	// Platform: status overview (admin) and liveness probe (public).
 	s.mux.HandleFunc("GET /api/v1/platform/status", s.handlePlatformStatus)
 	s.mux.HandleFunc("GET /api/v1/platform/health", s.handlePlatformHealth)
+
+	// Data Planes — CP/DP architectural separation (v0.5).
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes", s.handleCreateDataPlane)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes", s.handleListDataPlanes)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}", s.handleGetDataPlane)
+	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}", s.handleUpdateDataPlane)
+	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}", s.handleDeleteDataPlane)
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/heartbeat", s.handleDataPlaneHeartbeat)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/config", s.handleGetDataPlaneConfig)
+	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}/config", s.handlePutDataPlaneConfig)
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleAssignNodeToDataPlane)
+	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleUnassignNodeFromDataPlane)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/nodes", s.handleListDataPlaneNodes)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log

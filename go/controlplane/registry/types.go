@@ -659,6 +659,48 @@ type EffectivePermissions struct {
 	IsOrgAdmin  bool     `json:"is_org_admin,omitempty"`
 }
 
+// =============================================================================
+// Data Plane types (v0.5 CP/DP architectural separation)
+// =============================================================================
+
+// DataPlane represents a named inference cluster registered to this Control Plane.
+// Analogous to a "Gateway Service" in IBM API Connect.
+type DataPlane struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	Tier           string         `json:"tier"`        // "production" | "development" | etc.
+	GatewayURL     string         `json:"gateway_url"` // endpoint clients use for inference
+	Status         string         `json:"status"`      // "active" | "registering" | "degraded" | "offline"
+	JoinTokenHash  string         `json:"-"`           // not exposed in API responses
+	ConfigSnapshot map[string]any `json:"config_snapshot,omitempty"`
+	LastHeartbeat  *time.Time     `json:"last_heartbeat,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	// Computed fields (not stored)
+	NodeCount int `json:"node_count,omitempty"`
+}
+
+// DataPlaneHeartbeat is sent by a DP gateway to report its health.
+type DataPlaneHeartbeat struct {
+	DataPlaneID  string   `json:"dataplane_id"`
+	Status       string   `json:"status"`
+	NodeCount    int      `json:"node_count"`
+	ActiveModels []string `json:"active_models,omitempty"`
+}
+
+// DataPlaneConfigSnapshot is the config the CP pushes to a DP.
+type DataPlaneConfigSnapshot struct {
+	// RoutingTable maps model_id → deployment details.
+	RoutingTable map[string]any `json:"routing_table"`
+	// AuthBundle: API key hashes + quota limits for this DP.
+	AuthBundle map[string]any `json:"auth_bundle"`
+	// PolicyBundle: OPA policies active for this DP.
+	PolicyBundle []string `json:"policy_bundle"`
+	// GeneratedAt: when this snapshot was generated.
+	GeneratedAt time.Time `json:"generated_at"`
+}
+
 // Platform-level permission strings (all capabilities).
 // Fine-grained RBAC: callers check Has(perm) against EffectivePermissions.
 const (
