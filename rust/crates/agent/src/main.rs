@@ -382,6 +382,12 @@ async fn main() -> anyhow::Result<()> {
         let health_interval = config.health_interval;
         let fallback_node_id = node_id.clone();
         let secret_store = Arc::clone(&secret_store);
+        // Pre-build the HTTP client for cert renewal before entering the async
+        // move closure (config lives in main's scope and can't be moved in).
+        #[cfg(feature = "http-fetch")]
+        let cert_renewal_http_client = purser_agent::http_client::build_http_client(&config).ok();
+        #[cfg(feature = "http-fetch")]
+        let cert_check_hours = config.cert_check_interval_hours.unwrap_or(24);
         tokio::spawn(async move {
             // The token is a secret: log it only through the redacting wrapper.
             tracing::debug!(
@@ -406,6 +412,36 @@ async fn main() -> anyhow::Result<()> {
                         let _ = sm.enrolled();
                         let _ = sm.ready();
                     }
+
+                    // Spawn the cert-renewal loop now that we have the node ID.
+                    // It wakes every PURSER_CERT_CHECK_INTERVAL_HOURS hours (default 24)
+                    // and automatically renews the mTLS cert when < 30 days remain.
+                    #[cfg(feature = "http-fetch")]
+                    match cert_renewal_http_client {
+                        Some(http_client) => {
+                            let renewal_node_id = enrollment.node_id.clone();
+                            let renewal_cp_addr = cp_addr.clone();
+                            let renewal_store = Arc::clone(&secret_store);
+                            tokio::spawn(purser_agent::healing::cert_renewal_loop(
+                                renewal_node_id,
+                                renewal_cp_addr,
+                                renewal_store,
+                                http_client,
+                                cert_check_hours,
+                            ));
+                            tracing::info!(
+                                check_interval_hours = cert_check_hours,
+                                "cert renewal loop started"
+                            );
+                        }
+                        None => {
+                            tracing::warn!(
+                                "could not build HTTP client for cert renewal; \
+                                 renewal loop disabled"
+                            );
+                        }
+                    }
+
                     // H6: reconnect loop with exponential backoff so a transient
                     // control-plane outage does not permanently sever heartbeating.
                     let node_id_for_hb = enrollment.node_id;

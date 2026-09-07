@@ -30,8 +30,10 @@ use crate::supervisor::EnginePhase;
 // Certificate expiry monitoring
 // ---------------------------------------------------------------------------
 
-/// Threshold before expiry at which renewal is triggered.
-pub const RENEWAL_THRESHOLD: Duration = Duration::from_secs(24 * 3600); // 24 hours
+/// Threshold before expiry at which renewal is triggered (30 days).
+/// The cert-renewal loop sends a renewal request to the control plane when
+/// fewer than this many seconds remain on the current certificate.
+pub const RENEWAL_THRESHOLD: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
 
 /// Interval between expiry checks.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600); // 6 hours
@@ -87,6 +89,136 @@ impl CertMonitor {
             true // No cert or unparseable → treat as expired
         }
     }
+}
+
+/// Returns the number of whole days remaining until the certificate stored in
+/// `monitor` expires.  Returns `None` when no certificate is present or the
+/// cert cannot be parsed.  Returns a negative value when the cert has already
+/// expired.
+pub fn cert_days_remaining(monitor: &CertMonitor) -> Option<i64> {
+    let expiry_secs = monitor.cert_expiry_secs()?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let diff = expiry_secs as i64 - now as i64;
+    Some(diff / 86_400)
+}
+
+/// Returns the number of whole days remaining until the certificate stored in
+/// `monitor` expires (convenience version that returns 0 on absence/error).
+pub fn cert_days_remaining_or_zero(monitor: &CertMonitor) -> i64 {
+    cert_days_remaining(monitor).unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Certificate auto-renewal loop (requires the http-fetch feature / reqwest)
+// ---------------------------------------------------------------------------
+
+/// Background loop that checks the agent's mTLS certificate expiry every
+/// `check_interval_hours` hours (default 24) and automatically renews it by
+/// calling `POST {cp_addr}/api/v1/enrollment/renew` when fewer than 30 days
+/// remain.
+///
+/// On success the new certificate PEM is written atomically to the secret
+/// store under the key `"client_cert"`.  On failure a warning is logged and
+/// the loop retries at the next check interval — it never crashes the agent.
+///
+/// The function is only compiled when the `http-fetch` Cargo feature is
+/// enabled (which is on by default).
+#[cfg(feature = "http-fetch")]
+pub async fn cert_renewal_loop(
+    node_id: String,
+    cp_addr: String,
+    secret_store: std::sync::Arc<dyn crate::secrets::SecretStore>,
+    http_client: reqwest::Client,
+    check_interval_hours: u64,
+) {
+    let interval = tokio::time::Duration::from_secs(check_interval_hours.max(1) * 3600);
+    let mut ticker = tokio::time::interval(interval);
+    // The first tick fires immediately; skip it so we don't renew on start-up.
+    ticker.tick().await;
+
+    loop {
+        ticker.tick().await;
+        if let Err(e) = maybe_renew_cert(&node_id, &cp_addr, &*secret_store, &http_client).await {
+            tracing::warn!("cert renewal check failed: {e}");
+        }
+    }
+}
+
+/// Inner function: checks whether the stored cert is within [`RENEWAL_THRESHOLD`]
+/// of expiry and, if so, requests a new cert from the control plane.
+///
+/// The new certificate PEM is stored back into the secret store under
+/// `"client_cert"`.  The write replaces the previous value atomically within
+/// the store's own locking — no temp-file dance needed because
+/// [`crate::secrets::EncryptedFileSecretStore::put`] already writes a fresh
+/// `.enc` file on each call.
+#[cfg(feature = "http-fetch")]
+async fn maybe_renew_cert(
+    node_id: &str,
+    cp_addr: &str,
+    store: &dyn crate::secrets::SecretStore,
+    client: &reqwest::Client,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    // Read & parse the current cert from the secret store.
+    let cert_bytes = store
+        .get("client_cert")
+        .context("reading client_cert from secret store")?
+        .ok_or_else(|| anyhow::anyhow!("no client_cert in secret store — not yet enrolled"))?;
+
+    let expiry_secs = parse_cert_expiry_from_bytes(&cert_bytes)
+        .ok_or_else(|| anyhow::anyhow!("could not parse certificate expiry"))?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let remaining_secs = expiry_secs.saturating_sub(now);
+    let days_remaining = remaining_secs / 86_400;
+
+    if remaining_secs > RENEWAL_THRESHOLD.as_secs() {
+        tracing::debug!(days_remaining, "mTLS certificate valid — no renewal needed");
+        return Ok(());
+    }
+
+    tracing::info!(
+        days_remaining,
+        "mTLS certificate expires soon — requesting renewal"
+    );
+
+    let url = format!("{}/api/v1/enrollment/renew", cp_addr.trim_end_matches('/'));
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "node_id": node_id }))
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("renewal request failed: status={status}, body={body}");
+    }
+
+    let body: serde_json::Value = resp.json().await.context("parsing renewal response JSON")?;
+
+    let cert_pem = body["certificate_pem"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing certificate_pem in renewal response"))?;
+
+    let expires_at = body["expires_at"].as_str().unwrap_or("unknown");
+
+    store
+        .put("client_cert", cert_pem.as_bytes())
+        .context("storing renewed client_cert")?;
+
+    tracing::info!("cert renewed, new expiry: {}", expires_at);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +662,92 @@ mod tests {
     // -----------------------------------------------------------------------
     // CertMonitor unit tests
     // -----------------------------------------------------------------------
+
+    /// Build a minimal DER-encoded X.509 certificate whose `notAfter` field
+    /// is set to 2999-12-31 23:59:59Z.  The parser only needs the structure
+    /// up to and including the `validity` block, so the trailing TBSCertificate
+    /// fields and the signature are omitted — this is sufficient for the
+    /// `parse_cert_expiry_from_der` function.
+    fn minimal_future_cert_der() -> Vec<u8> {
+        // Validity SEQUENCE (32 bytes content):
+        //   UTCTime    "700101000000Z"  (13 bytes) → tag 0x17, len 0x0d
+        //   GeneralizedTime "29991231235959Z" (15 bytes) → tag 0x18, len 0x0f
+        let not_before: &[u8] = b"700101000000Z"; // 13 bytes
+        let not_after: &[u8] = b"29991231235959Z"; // 15 bytes
+
+        // OID sha256WithRSAEncryption (9 bytes)
+        let oid: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b];
+
+        let mut der = Vec::new();
+
+        // Helper closures to write TLV.
+        let mut push_tlv = |tag: u8, value: &[u8], out: &mut Vec<u8>| {
+            out.push(tag);
+            out.push(value.len() as u8);
+            out.extend_from_slice(value);
+        };
+
+        // Build validity SEQUENCE content.
+        let mut validity_inner = Vec::new();
+        push_tlv(0x17, not_before, &mut validity_inner); // UTCTime
+        push_tlv(0x18, not_after, &mut validity_inner); // GeneralizedTime
+
+        // Build AlgorithmIdentifier SEQUENCE content: OID + NULL.
+        let mut alg_inner = Vec::new();
+        push_tlv(0x06, oid, &mut alg_inner); // OID
+        alg_inner.extend_from_slice(&[0x05, 0x00]); // NULL
+
+        // Build TBSCertificate SEQUENCE content.
+        let mut tbs_inner = Vec::new();
+        // version [0] = v3 (INTEGER 2)
+        tbs_inner.extend_from_slice(&[0xa0, 0x03, 0x02, 0x01, 0x02]);
+        // serialNumber INTEGER 1
+        tbs_inner.extend_from_slice(&[0x02, 0x01, 0x01]);
+        // AlgorithmIdentifier
+        push_tlv(0x30, &alg_inner, &mut tbs_inner);
+        // issuer SEQUENCE (empty)
+        tbs_inner.extend_from_slice(&[0x30, 0x00]);
+        // validity SEQUENCE
+        push_tlv(0x30, &validity_inner, &mut tbs_inner);
+
+        // Outer Certificate SEQUENCE wraps TBSCertificate only (parser stops
+        // after reading notAfter so we don't need SignatureAlgorithm/Signature).
+        let mut cert_inner = Vec::new();
+        push_tlv(0x30, &tbs_inner, &mut cert_inner);
+
+        push_tlv(0x30, &cert_inner, &mut der);
+        der
+    }
+
+    #[test]
+    fn cert_days_remaining_parses_future_cert() {
+        let der = minimal_future_cert_der();
+        let store = Arc::new(InMemorySecretStore::new());
+        store.put("client_cert", &der).unwrap();
+        let monitor = CertMonitor::new(store as Arc<dyn SecretStore>);
+
+        let days = cert_days_remaining(&monitor);
+        assert!(
+            days.is_some(),
+            "cert_days_remaining must return Some for a parseable cert"
+        );
+        let days = days.unwrap();
+        // notAfter is 2999-12-31 — should be well over 100 years from now.
+        assert!(
+            days > 365 * 100,
+            "cert set to year 2999 should be > 100 years away, got {days}"
+        );
+    }
+
+    #[test]
+    fn cert_days_remaining_none_for_absent_cert() {
+        let store = Arc::new(InMemorySecretStore::new());
+        let monitor = CertMonitor::new(store as Arc<dyn SecretStore>);
+        assert!(
+            cert_days_remaining(&monitor).is_none(),
+            "no cert → cert_days_remaining must return None"
+        );
+    }
 
     #[test]
     fn no_cert_treated_as_expired() {

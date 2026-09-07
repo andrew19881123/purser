@@ -90,6 +90,10 @@ type FleetManager interface {
 	// certificates, auditing fleet.node.decommissioned. It is a lifecycle
 	// transition, not a hard row deletion.
 	Decommission(ctx context.Context, nodeID string) error
+	// RenewCert issues a replacement certificate for an existing node.
+	// Returns fleet.ErrCertNotYetExpiring when the cert has > 60 days remaining
+	// (HTTP 409); returns registry.ErrNotFound when the node is unknown (HTTP 404).
+	RenewCert(ctx context.Context, nodeID string) (*fleet.RenewResult, error)
 }
 
 // ReconcilerStatusProvider is the surface the GET /api/v1/reconciler/status
@@ -1417,6 +1421,7 @@ func (s *Server) routes() {
 		s.policyMiddleware("deploy")(http.HandlerFunc(s.handleDeployModel)))
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
 	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
+	s.mux.HandleFunc("POST /api/v1/enrollment/renew", s.handleEnrollmentRenew)
 	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
 	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
