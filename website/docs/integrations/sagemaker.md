@@ -42,7 +42,7 @@ a minimal SigV4 (HMAC-SHA256) implementation using only the Go standard library.
 ## Import the latest approved model
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/models/import \
+curl -X POST https://purser.example.com/api/v1/models/import \
   -H "Content-Type: application/json" \
   -d '{
     "source": "sagemaker",
@@ -70,7 +70,7 @@ Add `"version": N` to select a particular approved package version instead of
 the latest:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/models/import \
+curl -X POST https://purser.example.com/api/v1/models/import \
   -H "Content-Type: application/json" \
   -d '{
     "source":       "sagemaker",

@@ -37,7 +37,7 @@ the server default without a restart.
 ## Importing a public model
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/models/import \
+curl -X POST https://purser.example.com/api/v1/models/import \
   -H "Content-Type: application/json" \
   -d '{
     "source":   "huggingface",
@@ -79,7 +79,7 @@ plane (see [Configuration](#configuration)).
 **Per-request token** — pass the token in the `X-HF-Token` header:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/models/import \
+curl -X POST https://purser.example.com/api/v1/models/import \
   -H "Content-Type: application/json" \
   -H "X-HF-Token: hf_xxxxxxxxxxxx" \
   -d '{
@@ -98,7 +98,7 @@ By default the importer collects **all** `.gguf` files in the repository and
 sums their sizes.  Use `filename_pattern` to select a specific quantisation:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/models/import \
+curl -X POST https://purser.example.com/api/v1/models/import \
   -H "Content-Type: application/json" \
   -d '{
     "source":           "huggingface",
@@ -128,13 +128,13 @@ any other model:
 
 ```bash
 # 1. Check the model landed in the catalog.
-curl http://localhost:8080/api/v1/models | jq '.models[] | select(.id == "Llama-3.1-8B-Instruct")'
+curl https://purser.example.com/api/v1/models | jq '.models[] | select(.id == "Llama-3.1-8B-Instruct")'
 
 # 2. Preview the deployment plan (dry run).
-curl -X POST http://localhost:8080/api/v1/models/Llama-3.1-8B-Instruct/plan
+curl -X POST https://purser.example.com/api/v1/models/Llama-3.1-8B-Instruct/plan
 
 # 3. Deploy (the planner auto-selects nodes).
-curl -X POST http://localhost:8080/api/v1/models/Llama-3.1-8B-Instruct/deploy
+curl -X POST https://purser.example.com/api/v1/models/Llama-3.1-8B-Instruct/deploy
 ```
 
 See the [Deployment guide](../deployment.md) for details on plans and

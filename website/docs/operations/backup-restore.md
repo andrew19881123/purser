@@ -211,3 +211,12 @@ requirements:
 
 Operators should document their specific RPO/RTO targets, backup retention
 policy, and restore-test schedule in their ICT continuity plan.
+
+---
+
+## See also
+
+- [Environment variables](../configuration/env-vars.md) — `PURSER_DB` and database connection options
+- [PKI Operations](pki-operations.md) — renew or rotate the internal CA; PKI state is included in the backup
+- [HA Control Plane](../enterprise/ha-control-plane.md) — Raft-based HA; backup procedure for multi-node clusters
+- [Audit log](../enterprise/audit-log.md) — the tamper-evident `audit_log` table is part of every backup

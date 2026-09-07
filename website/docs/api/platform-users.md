@@ -27,12 +27,12 @@ Authorization: Bearer <token>
   "actor": "oidc:alice@example.com",
   "orgs":  [{"org_id": "org-1", "user_sub": "oidc:alice@example.com", "role": "org_admin", "joined_at": "2026-09-01T10:00:00Z"}],
   "teams": [{"team_id": "team-1", "user_sub": "oidc:alice@example.com", "role_id": "role-dev", "joined_at": "2026-09-01T10:00:00Z"}],
-  "note":  "full user profile requires OIDC/LDAP integration (Wave 3)"
+  "note":  "full user profile requires OIDC/LDAP integration (planned for a future release)"
 }
 ```
 
 > **Note:** A full user profile (display name, avatar) requires OIDC/LDAP integration
-> planned for Wave 3. The current response exposes the stable `actor` string and
+> (planned for a future release). The current response exposes the stable `actor` string and
 > membership data.
 
 ---
@@ -338,9 +338,18 @@ If the caller is not a member of the team, an empty permission list is returned
 
 ## Roadmap
 
-| Wave | Feature |
-|------|---------|
+| Version | Feature |
+|---------|---------|
 | v0.4 (now) | Custom role CRUD, permissions catalogue, effective-permissions resolution |
-| Wave 3 | Full user profiles backed by OIDC/LDAP (`GET /users` returns rich records with email, name, avatar) |
-| Wave 3 | `POST /api/v1/platform/orgs` — explicit org creation API |
-| Wave 3 | Team member assignment via REST (`POST /platform/teams/{id}/members`) |
+| Planned | Full user profiles backed by OIDC/LDAP (`GET /users` returns rich records with email, name, avatar) |
+| Planned | `POST /api/v1/platform/orgs` — explicit org creation API |
+| Planned | Team member assignment via REST (`POST /platform/teams/{id}/members`) |
+
+---
+
+## See also
+
+- [Organizations & Teams API](platform-orgs.md) — create orgs, teams, and memberships
+- [RBAC Permissions](../configuration/permissions.md) — full permission string catalogue and built-in roles
+- [OIDC SSO configuration](../configuration/oidc.md) — configure OIDC/LDAP identity providers for user login
+- [Service accounts](../configuration/service-accounts.md) — non-interactive machine identities

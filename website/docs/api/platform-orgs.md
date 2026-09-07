@@ -2,7 +2,7 @@
 
 Purser v0.4 introduces a multi-tenant platform model with **Organizations**, **Teams**, and membership management. These endpoints allow operators to create and manage the organizational hierarchy that controls access to GPU resources.
 
-> **Note:** Full RBAC (org-scoped roles, team-scoped roles, permission inheritance) will be completed in Wave 3. In v0.4, all mutating operations require a platform **admin** API key.
+> **Note:** Full RBAC (org-scoped roles, team-scoped roles, permission inheritance) is planned for a future release. In v0.4, all mutating operations require a platform **admin** API key.
 
 ---
 
@@ -64,7 +64,7 @@ Both `name` and `slug` are required. The slug must be unique across the platform
 **curl example:**
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/platform/orgs \
+curl -s -X POST https://purser.example.com/api/v1/platform/orgs \
   -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"Acme Corp","slug":"acme"}'
@@ -103,7 +103,7 @@ GET /api/v1/platform/orgs/{id}
 **curl example:**
 
 ```bash
-curl -s http://localhost:8080/api/v1/platform/orgs/org-a1b2c3d4 \
+curl -s https://purser.example.com/api/v1/platform/orgs/org-a1b2c3d4 \
   -H "Authorization: Bearer $PURSER_ADMIN_KEY"
 ```
 
@@ -115,7 +115,7 @@ curl -s http://localhost:8080/api/v1/platform/orgs/org-a1b2c3d4 \
 PUT /api/v1/platform/orgs/{id}
 ```
 
-**Requires:** platform admin (Wave 3 will add org_admin).
+**Requires:** platform admin (a future release will add org_admin).
 
 Updates `name` and/or `description`. Omit a field to leave it unchanged.
 
@@ -160,7 +160,7 @@ Refuses deletion when the organization still has teams (**409 Conflict**). Delet
 POST /api/v1/platform/orgs/{orgId}/teams
 ```
 
-**Requires:** platform admin (Wave 3: org_admin).
+**Requires:** platform admin (future: org_admin).
 
 **Request body:**
 
@@ -198,7 +198,7 @@ POST /api/v1/platform/orgs/{orgId}/teams
 **curl example:**
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/platform/orgs/org-a1b2c3d4/teams \
+curl -s -X POST https://purser.example.com/api/v1/platform/orgs/org-a1b2c3d4/teams \
   -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"ML Research","slug":"ml-research"}'
@@ -240,7 +240,7 @@ GET /api/v1/platform/teams/{id}
 PUT /api/v1/platform/teams/{id}
 ```
 
-**Requires:** platform admin (Wave 3: org_admin, team_admin).
+**Requires:** platform admin (future: org_admin, team_admin).
 
 Updates `name` and/or `description`.
 
@@ -254,7 +254,7 @@ Updates `name` and/or `description`.
 DELETE /api/v1/platform/teams/{id}
 ```
 
-**Requires:** platform admin (Wave 3: org_admin).
+**Requires:** platform admin (future: org_admin).
 
 **Response `204` No Content** on success.
 
@@ -299,7 +299,7 @@ The `user_id` must correspond to an existing platform user (created on first OID
 **curl example:**
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/platform/orgs/org-a1b2c3d4/members \
+curl -s -X POST https://purser.example.com/api/v1/platform/orgs/org-a1b2c3d4/members \
   -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"user_id":"sub|12345","role":"member"}'
@@ -365,7 +365,7 @@ DELETE /api/v1/platform/orgs/{orgId}/members/{userId}
 POST /api/v1/platform/teams/{teamId}/members
 ```
 
-**Requires:** platform admin (Wave 3: team_admin, org_admin).
+**Requires:** platform admin (future: team_admin, org_admin).
 
 **Request body:**
 
@@ -394,7 +394,7 @@ POST /api/v1/platform/teams/{teamId}/members
 **curl example:**
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/platform/teams/team-e5f6g7h8/members \
+curl -s -X POST https://purser.example.com/api/v1/platform/teams/team-e5f6g7h8/members \
   -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"user_id":"sub|12345","role_id":"developer"}'
@@ -454,13 +454,13 @@ DELETE /api/v1/platform/teams/{teamId}/members/{userId}
 
 ## Permission Notes (v0.4)
 
-In v0.4, all mutating endpoints require the platform **admin** API key role. The authorization model will be expanded in Wave 3 to support:
+In v0.4, all mutating endpoints require the platform **admin** API key role. The authorization model will be expanded in a future release to support:
 
 - `org_admin` — full control over a single organization and its teams
 - `team_admin` — manage members and resources within a single team
 - `member` — read access scoped to the team's resources
 
-Until Wave 3 ships, use a platform admin key for all management operations.
+Use a platform admin key for all management operations until the expanded authorization model ships.
 
 ---
 
@@ -482,3 +482,12 @@ All errors follow the standard shape:
 | 404  | `not_found`     | Entity does not exist                    |
 | 409  | `conflict`      | Slug conflict or referential constraint  |
 | 500  | `*_failed`      | Internal error (logged server-side)      |
+
+---
+
+## See also
+
+- [Platform Users & Custom Roles](platform-users.md) — manage users, custom roles, and permissions
+- [RBAC Permissions](../configuration/permissions.md) — full permission reference and built-in roles
+- [Platform model overview](../configuration/platform-model.md) — how organizations, teams, and API keys relate
+- [API Key Lifecycle](../configuration/api-keys.md) — create admin keys for managing organizations

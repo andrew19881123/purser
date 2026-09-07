@@ -7,8 +7,17 @@ time.
 
 ## Creating a key
 
+### Via the Dashboard
+
+1. Open the **Settings** page and select the **API Keys** tab.
+2. Click **New Key**.
+3. Enter a name, select the tenant (team), role, and optionally an expiry date.
+4. Click **Create** — the plaintext key is shown once. Copy it before closing the dialog.
+
+### Via the API
+
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/apikeys \
+curl -s -X POST https://purser.example.com/api/v1/apikeys \
   -H 'Content-Type: application/json' \
   -d '{"name":"ci-runner","tenant":"eng","role":"inference","quota":50000}'
 ```
@@ -38,7 +47,7 @@ The `role` field controls what the key may do:
 To create a key that expires automatically, set `expires_at` in the request body:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/apikeys \
+curl -s -X POST https://purser.example.com/api/v1/apikeys \
   -H 'Content-Type: application/json' \
   -d '{
     "name":"short-lived",
@@ -65,7 +74,7 @@ a single transaction. Use this whenever you suspect a key has been compromised,
 or as part of a regular secret-rotation schedule.
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/apikeys/key-a1b2c3d4/rotate
+curl -s -X POST https://purser.example.com/api/v1/apikeys/key-a1b2c3d4/rotate
 ```
 
 ```json
@@ -101,7 +110,7 @@ but have never (or rarely) been used:
 
 ```bash
 # List all keys and look for ones with a null or old last_used_at
-curl -s http://localhost:8080/api/v1/apikeys | jq '
+curl -s https://purser.example.com/api/v1/apikeys | jq '
   .apikeys[]
   | select(.last_used_at == null or
            (.last_used_at | fromdateiso8601) < (now - 30*86400))
@@ -113,10 +122,10 @@ Zombie keys are a security risk. Rotate or revoke them with:
 
 ```bash
 # Revoke (permanent)
-curl -X DELETE http://localhost:8080/api/v1/apikeys/key-a1b2c3d4
+curl -X DELETE https://purser.example.com/api/v1/apikeys/key-a1b2c3d4
 
 # Rotate (creates a new key you may choose not to distribute)
-curl -X POST http://localhost:8080/api/v1/apikeys/key-a1b2c3d4/rotate
+curl -X POST https://purser.example.com/api/v1/apikeys/key-a1b2c3d4/rotate
 ```
 
 ## Access log
@@ -127,7 +136,7 @@ data-minimisation — the full IP is never persisted), User-Agent, and HTTP
 status code.
 
 ```bash
-curl -s 'http://localhost:8080/api/v1/apikeys/key-a1b2c3d4/access-log?limit=20'
+curl -s 'https://purser.example.com/api/v1/apikeys/key-a1b2c3d4/access-log?limit=20'
 ```
 
 ```json
@@ -159,3 +168,12 @@ The `limit` query parameter defaults to 50 and is capped at 1000.
 | `POST /api/v1/apikeys/{id}/rotate` | Atomic rotate: new key + disable old |
 | `GET  /api/v1/apikeys/{id}/access-log` | Per-key request audit trail |
 | `GET  /api/v1/apikeys/{id}/usage` | Aggregate token usage for a key |
+
+---
+
+## See also
+
+- [RBAC Permissions](permissions.md) — permission strings and built-in roles that govern what a key can do
+- [Platform Users & Custom Roles](../api/platform-users.md) — fine-grained role management for org members
+- [Service Accounts](../configuration/service-accounts.md) — machine-to-machine authentication without user credentials
+- [Chargeback reports](../enterprise/chargeback.md) — per-key token usage in billing reports
