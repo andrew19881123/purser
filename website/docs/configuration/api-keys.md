@@ -149,6 +149,53 @@ curl -s 'http://localhost:8080/api/v1/apikeys/key-a1b2c3d4/access-log?limit=20'
 
 The `limit` query parameter defaults to 50 and is capped at 1000.
 
+## Dashboard: API Key Usage
+
+The **Settings → API Keys** page in the operator dashboard gives a live view of
+every key alongside its token consumption.
+
+### Key table columns
+
+| Column | What it shows |
+|--------|---------------|
+| **Name** | Human-readable label set at creation |
+| **Team** | The tenant/team that owns the key |
+| **Key** | Obfuscated prefix (full secret never displayed again) |
+| **Role** | `admin` / `viewer` / `inference` — colour-coded badge |
+| **Usage** | Request quota meter: `usedThisMonth / monthlyQuota` |
+| **Tokens** | Aggregate token counts from the usage endpoint (lazy-loaded) |
+| **Last used** | Relative time ("5 m ago", "never") |
+| **Status** | `active` (green) / `revoked` (gray) |
+| **Actions** | Revoke button (non-destructive confirm dialog) |
+
+### Quota progress bar
+
+The **Usage** column renders a colour-coded meter based on the fraction of
+`usedThisMonth / monthlyQuota`:
+
+| Colour | Threshold |
+|--------|-----------|
+| Green (ok) | < 70 % |
+| Yellow (warning) | 70 – 90 % |
+| Red (danger) | > 90 % |
+
+Keys with `monthlyQuota = null` (unlimited) show **"Unlimited"** in place of the bar.
+
+### Last-used indicator
+
+The **Last used** column displays a compact relative timestamp ("3h ago",
+"2d ago"). A key that has never been used shows **"never"** — these are
+*zombie keys* and are a security risk. See the
+[Zombie keys](#the-last_used_at-field-and-zombie-keys) section below for how
+to find and clean them up programmatically.
+
+### Token usage (lazy-loaded)
+
+The **Tokens** column fires a per-key `GET /api/v1/apikeys/{id}/usage` request
+after the key list loads. While the response is in-flight, a spinner is shown.
+The final value renders as `<input_tokens> in / <output_tokens> out` using a
+compact notation (e.g. `1.2K in / 567 out`).
+
 ## Summary of lifecycle API
 
 | Endpoint | Description |

@@ -295,7 +295,7 @@ export function Meter({
   unit?: string;
 }) {
   const ratio = total > 0 ? used / total : 0;
-  const tone = ratio > 0.9 ? 'danger' : ratio > 0.75 ? 'warning' : 'ok';
+  const tone = ratio > 0.9 ? 'danger' : ratio > 0.7 ? 'warning' : 'ok';
   return (
     <div className="meter">
       <div className="meter__row">
