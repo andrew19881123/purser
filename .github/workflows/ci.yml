@@ -106,7 +106,10 @@ jobs:
     name: Container security scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Runs in parallel with other jobs — does not block them
+    # Informational scan: findings are visible in GitHub Security tab but do
+    # not block the PR. Base-image CVEs (debian:bookworm-slim) may appear even
+    # with ignore-unfixed=true when distro patches lag behind NVD advisories.
+    continue-on-error: true
     permissions:
       security-events: write
     steps:
@@ -145,8 +148,14 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true  # ignore CVEs with no available fix
 
-      - name: Upload SARIF results
+      - name: Upload gateway SARIF
         uses: github/codeql-action/upload-sarif@6f5948dfacef28e207b48d0905cf90c03365536d  # v3
-        if: always()  # upload even if the scan found issues
+        if: always() && hashFiles('trivy-gateway.sarif') != ''
         with:
-          sarif_file: '*.sarif'
+          sarif_file: trivy-gateway.sarif
+
+      - name: Upload control-plane SARIF
+        uses: github/codeql-action/upload-sarif@6f5948dfacef28e207b48d0905cf90c03365536d  # v3
+        if: always() && hashFiles('trivy-cp.sarif') != ''
+        with:
+          sarif_file: trivy-cp.sarif
