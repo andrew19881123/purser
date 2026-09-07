@@ -25,6 +25,7 @@ pub mod healing;
 #[cfg(feature = "http-fetch")]
 pub mod http_client;
 pub mod linkbench;
+pub mod metrics;
 pub mod mock_inference;
 pub mod modelcache;
 pub mod probe;

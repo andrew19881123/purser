@@ -18,6 +18,7 @@ use purser_agent::config::AgentConfig;
 use purser_agent::discovery::{self, Membership};
 use purser_agent::healing::{diagnose, CertMonitor, DiagnosisInput, Liveness, NodeHealthMonitor};
 use purser_agent::linkbench::BandwidthReflector;
+use purser_agent::metrics as agent_metrics;
 use purser_agent::probe::{DefaultProbe, HardwareProbe};
 use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
@@ -489,6 +490,56 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
+    }
+
+    // ── Prometheus /metrics server ───────────────────────────────────────────
+    // Exposes EngineMetrics gauges at GET :<PURSER_AGENT_METRICS_PORT>/metrics.
+    // Default port: 9091. Unauthenticated — expose only on trusted networks.
+    {
+        // Install the recorder once; subsequent calls to prometheus_handle() clone it.
+        let _metrics_handle = agent_metrics::prometheus_handle();
+
+        // Periodic gauge update: sample the supervisor's latest metrics every
+        // health_interval so Prometheus always has a fresh value to scrape.
+        let supervisor_m = Arc::clone(&supervisor);
+        let node_id_m = node_id.clone();
+        let metrics_interval = config.health_interval;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(metrics_interval);
+            loop {
+                ticker.tick().await;
+                let engine_metrics = supervisor_m.latest_metrics();
+                let alive = supervisor_m.engine_node_state() == NodeState::Running;
+                agent_metrics::update_engine_metrics(&node_id_m, engine_metrics.as_ref(), alive);
+            }
+        });
+
+        // Dedicated HTTP server for the /metrics endpoint.
+        let metrics_port: u16 = std::env::var("PURSER_AGENT_METRICS_PORT")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(9091);
+        let metrics_addr = SocketAddr::new(config.bind_addr.ip(), metrics_port);
+        let metrics_router = axum::Router::new().route(
+            "/metrics",
+            axum::routing::get(agent_metrics::metrics_handler),
+        );
+        match tokio::net::TcpListener::bind(metrics_addr).await {
+            Ok(listener) => {
+                tracing::info!(%metrics_addr, "Prometheus /metrics endpoint listening");
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, metrics_router).await {
+                        tracing::warn!(error = %e, "Prometheus metrics server error");
+                    }
+                });
+            }
+            Err(e) => tracing::warn!(
+                %metrics_addr,
+                error = %e,
+                "failed to bind Prometheus metrics port (PURSER_AGENT_METRICS_PORT); \
+                 /metrics will not be served"
+            ),
+        }
     }
 
     // Compose the shutdown future so SWIM tasks also receive the signal.
