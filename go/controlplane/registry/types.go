@@ -565,7 +565,7 @@ type PlatformTeam struct {
 
 // PlatformUser is a user identity on the Purser platform.
 type PlatformUser struct {
-	ID          string     `json:"id"`         // OIDC sub or LDAP DN
+	ID          string     `json:"id"` // OIDC sub or LDAP DN
 	Email       string     `json:"email"`
 	DisplayName string     `json:"display_name,omitempty"`
 	AuthMethod  string     `json:"auth_method"` // "oidc" | "ldap"
@@ -581,9 +581,9 @@ type PlatformUser struct {
 // JoinedAt is the canonical timestamp; CreatedAt mirrors it for compat.
 type OrgMember struct {
 	OrgID     string    `json:"org_id"`
-	UserSub   string    `json:"user_sub"`             // canonical identity
-	UserID    string    `json:"user_id,omitempty"`    // alias for UserSub (compat)
-	Role      string    `json:"role"`                  // "org_admin" | "member"
+	UserSub   string    `json:"user_sub"`          // canonical identity
+	UserID    string    `json:"user_id,omitempty"` // alias for UserSub (compat)
+	Role      string    `json:"role"`              // "org_admin" | "member"
 	InvitedBy string    `json:"invited_by,omitempty"`
 	JoinedAt  time.Time `json:"joined_at"`
 	CreatedAt time.Time `json:"created_at,omitempty"` // alias for JoinedAt (compat)
@@ -595,8 +595,8 @@ type OrgMember struct {
 // canonical; CreatedAt mirrors it.
 type TeamMember struct {
 	TeamID    string    `json:"team_id"`
-	UserSub   string    `json:"user_sub"`             // canonical identity
-	UserID    string    `json:"user_id,omitempty"`    // alias for UserSub (compat)
+	UserSub   string    `json:"user_sub"`          // canonical identity
+	UserID    string    `json:"user_id,omitempty"` // alias for UserSub (compat)
 	RoleID    string    `json:"role_id"`
 	InvitedBy string    `json:"invited_by,omitempty"`
 	JoinedAt  time.Time `json:"joined_at"`
@@ -651,8 +651,8 @@ type PoolTeamQuota struct {
 type EffectivePermissions struct {
 	TeamID      string   `json:"team_id"`
 	OrgID       string   `json:"org_id,omitempty"`
-	UserID      string   `json:"user_id,omitempty"`   // compat alias
-	UserSub     string   `json:"user_sub,omitempty"`  // canonical
+	UserID      string   `json:"user_id,omitempty"`  // compat alias
+	UserSub     string   `json:"user_sub,omitempty"` // canonical
 	RoleID      string   `json:"role_id,omitempty"`
 	RoleName    string   `json:"role_name,omitempty"`
 	Permissions []string `json:"permissions"`

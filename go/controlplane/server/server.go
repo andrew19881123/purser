@@ -910,10 +910,10 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 // rbacPublicPaths are the paths that bypass RBAC regardless of the key
 // presented. These are always accessible (e.g. health check, API schema).
 var rbacPublicPaths = map[string]bool{
-	"/api/v1/cluster/health":   true,
-	"/api/v1/cluster/status":   true,
-	"/api/v1/openapi.json":     true,
-	"/api/v1/platform/health":  true, // unauthenticated liveness probe (K8s-compatible)
+	"/api/v1/cluster/health":  true,
+	"/api/v1/cluster/status":  true,
+	"/api/v1/openapi.json":    true,
+	"/api/v1/platform/health": true, // unauthenticated liveness probe (K8s-compatible)
 	// /auth/token is the OAuth2 client_credentials token endpoint — it IS the
 	// authentication endpoint and must be reachable without a prior credential.
 	"/auth/token": true,

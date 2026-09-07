@@ -119,9 +119,9 @@ func TestGetOrgBillingReport_SumsTeams(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Seed two teams under "acme" org, using the naming convention.
-	seedEvent(t, reg, "acme/eng", "model-a", 100, 50)   // 150 tokens
-	seedEvent(t, reg, "acme/eng", "model-a", 200, 80)   // 280 tokens → eng total: 430
-	seedEvent(t, reg, "acme/fin", "model-b", 300, 120)  // 420 tokens → fin total: 420
+	seedEvent(t, reg, "acme/eng", "model-a", 100, 50)  // 150 tokens
+	seedEvent(t, reg, "acme/eng", "model-a", 200, 80)  // 280 tokens → eng total: 430
+	seedEvent(t, reg, "acme/fin", "model-b", 300, 120) // 420 tokens → fin total: 420
 	// Noise: different org — must NOT appear.
 	seedEvent(t, reg, "other-org/team", "model-a", 500, 200)
 

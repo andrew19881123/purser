@@ -33,12 +33,12 @@ func (s *Server) handlePlatformStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"platform_version":     "v0.4",
-		"organizations":        len(orgs),
-		"teams":                teamCount,
-		"node_pools":           len(pools),
-		"platform_users":       len(users),
-		"system_roles_seeded":  true,
+		"platform_version":    "v0.4",
+		"organizations":       len(orgs),
+		"teams":               teamCount,
+		"node_pools":          len(pools),
+		"platform_users":      len(users),
+		"system_roles_seeded": true,
 		"features": map[string]bool{
 			"organizations": true,
 			"team_pools":    true,
