@@ -338,10 +338,13 @@ CREATE TABLE IF NOT EXISTS gdpr_erasure_log (
 -- client_secret is never stored; only its SHA-256 hex hash is persisted.
 -- The client_credentials grant issues short-lived (15 min) HMAC-signed JWTs
 -- so the secret never travels on subsequent requests.
+-- tenant stores the team_id — service accounts are team-level credentials
+-- (not user-level). The field is named "tenant" for routing compatibility.
 CREATE TABLE IF NOT EXISTS service_accounts (
     id                 TEXT    PRIMARY KEY,
     name               TEXT    NOT NULL,
-    tenant             TEXT    NOT NULL DEFAULT '',
+    tenant             TEXT    NOT NULL DEFAULT '',  -- stores team_id
+    description        TEXT    NOT NULL DEFAULT '',  -- optional human description
     role               TEXT    NOT NULL DEFAULT 'inference',
     scopes             TEXT    NOT NULL DEFAULT '[]',
     client_id          TEXT    NOT NULL UNIQUE,

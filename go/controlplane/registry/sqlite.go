@@ -109,6 +109,9 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"deployment_approvals", "required_approvals", "INTEGER NOT NULL DEFAULT 1"},
 		// Expiry timestamp for the approval request (NULL = no expiry).
 		{"deployment_approvals", "expires_at", "TEXT"},
+		// Service account description field (v0.5). Default empty string preserves
+		// existing rows. Service accounts are team-scoped from v0.5 onwards.
+		{"service_accounts", "description", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)

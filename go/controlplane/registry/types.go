@@ -498,10 +498,16 @@ type GDPRErasureLog struct {
 // is exchanged for a short-lived (15 min) HMAC-signed JWT via POST /auth/token
 // so the secret never travels on subsequent API requests.
 // ClientSecretHash is never exposed in JSON responses (json:"-").
+//
+// Tenant holds the team_id to which this service account belongs. Service
+// accounts are team-level credentials — they are not associated with an
+// individual user. This aligns with LiteLLM and proxy auth patterns where
+// a single service account provides machine-to-machine access for a team.
 type ServiceAccount struct {
 	ID               string     `json:"id"`
 	Name             string     `json:"name"`
-	Tenant           string     `json:"tenant"`
+	Tenant           string     `json:"tenant"` // team_id (stored as tenant for routing compat)
+	Description      string     `json:"description,omitempty"`
 	Role             string     `json:"role"`
 	Scopes           []string   `json:"scopes,omitempty"`
 	ClientID         string     `json:"client_id"`
