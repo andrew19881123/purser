@@ -14,15 +14,17 @@ independently enforces it.
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   Control Plane (CP)                     │
-│  Registry · PKI · Auth · Policy · Planner · REST API     │
-│                                                          │
-│   POST /platform/dataplanes  ←  operator registers DP   │
-│   GET  /platform/dataplanes/{id}/config  ←  DP pulls     │
-│   POST /platform/dataplanes/{id}/heartbeat  ←  DP pushes │
-└──────────────┬───────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                   Control Plane (CP)                         │
+│  Registry · PKI · Auth · Policy · Planner · REST API         │
+│                                                              │
+│   POST /platform/dataplanes  ←  operator registers DP       │
+│   PUT  /platform/dataplanes/{id}/config/refresh ← immediate │
+│   ──── config snapshot push (every 30 s, background) ────►  │
+│   POST /platform/dataplanes/{id}/heartbeat  ←  DP health    │
+└──────────────┬───────────────────────────────────────────────┘
                │  join_token (dp_…) + HTTPS
+               │  config snapshot pushed every 30 s
                │
       ┌────────▼─────────┐         ┌───────────────────────┐
       │  Data Plane A    │         │  Data Plane B          │
@@ -35,9 +37,10 @@ independently enforces it.
          ↑ user inference traffic       ↑ user inference traffic
 ```
 
-Data Planes pull their routing table, auth bundle, and active policies from the CP
-on startup and at configurable intervals. Heartbeats flow from DP to CP so the CP
-can mark a DP `degraded` or `offline` when it goes silent.
+The CP pushes a config snapshot (routing table, auth bundle, active policies) to
+every active Data Plane every 30 seconds. The DP can operate autonomously using the
+stored snapshot if the CP is temporarily unreachable. Heartbeats flow DP → CP so
+the CP can mark a DP `degraded` or `offline` when it goes silent.
 
 ---
 
@@ -123,11 +126,84 @@ the DP status to `degraded`. After a second missed TTL window it sets it to
 
 ## Config Snapshot
 
-The CP compiles a configuration bundle — routing table (model → node assignments),
-auth bundle (API key hashes + quotas), and active Rego policy bundle — and makes it
-available for the DP to pull.
+The CP compiles a **Config Snapshot** for each Data Plane — a self-contained bundle
+the DP gateway uses to operate independently if the CP is temporarily unreachable.
+
+### Contents
+
+| Field | Description |
+|---|---|
+| `routing_table` | Active deployments whose host/engine nodes are assigned to this DP. Key: `model_id`. Value: `{deployment_id, endpoint, state, quantization}`. |
+| `auth_bundle` | Enabled API key hashes with their `role`, `tenant`, and `quota`. The gateway authenticates inference requests locally without calling the CP. |
+| `policy_bundle` | Names of enabled OPA/Rego policies the gateway should enforce. |
+| `generated_at` | RFC3339 timestamp of when the snapshot was built. |
+
+### Automatic push (background)
+
+The CP runs a background loop that rebuilds and stores the config snapshot for every
+non-offline Data Plane **every 30 seconds**.  This means the DP always has a
+reasonably fresh snapshot available via the pull endpoint without any polling overhead
+on the DP side.
+
+```
+CP background loop (every 30 s)
+  for each active/degraded DP:
+    1. buildDataPlaneSnapshot(dpID)
+       a. nodes assigned to this DP → filter routing_table
+       b. enabled API keys         → auth_bundle
+       c. enabled OPA policies     → policy_bundle
+    2. store snapshot in registry (UPDATE dataplanes SET config_snapshot=…)
+```
+
+### Flow diagram
+
+```
+  Control Plane                         Registry          Data Plane
+  ─────────────                         ────────          ──────────
+  startConfigSnapshotPusher (every 30s)
+    │
+    ├─ buildDataPlaneSnapshot(dpID)
+    │   ├─ ListNodesByDataPlane  ──────►  SQLite
+    │   ├─ ListDeployments       ──────►  SQLite
+    │   ├─ ListAPIKeys           ──────►  SQLite
+    │   └─ ListPolicies          ──────►  SQLite
+    │
+    └─ UpdateDataPlaneConfigSnapshot ──► SQLite (config_snapshot column)
+                                                        │
+                                             GET /config ◄── DP gateway
+                                             (pull on startup or interval)
+```
+
+### Immediate refresh
+
+After a model deployment or policy change you can force an immediate snapshot rebuild
+without waiting for the next 30-second tick:
+
+```bash
+curl -X POST https://cp.example.com/api/v1/platform/dataplanes/dp-a1b2c3d4e5f6/config/refresh \
+  -H "Authorization: Bearer <admin-key>"
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "message":      "config snapshot refreshed",
+  "dataplane_id": "dp-a1b2c3d4e5f6",
+  "refreshed_at": "2026-09-07T12:05:30Z"
+}
+```
+
+**When to call `/config/refresh`:**
+
+- After deploying a new model to a DP (`POST /models/{id}/deploy`)
+- After enabling or disabling an OPA policy (`PUT /policies/{name}`)
+- After creating or revoking an API key that this DP should immediately see
+- For emergency snapshot resets (e.g. after a config rollback)
 
 ### DP pulls config
+
+The DP gateway pulls the latest snapshot on startup and can refresh it on demand:
 
 ```
 GET /api/v1/platform/dataplanes/{id}/config
@@ -138,16 +214,26 @@ Authorization: Bearer <join_token>
 
 ```json
 {
-  "routing_table":  { "llama3-8b": { "nodes": ["node-1", "node-2"] } },
-  "auth_bundle":    { "sha256:abc…": { "quota": 10000, "role": "inference" } },
-  "policy_bundle":  ["allow_inference"],
+  "routing_table": {
+    "llama3-8b": {
+      "deployment_id": "dep-abc123",
+      "state":         "DEPLOYMENT_STATE_ACTIVE",
+      "endpoint":      "http://10.0.0.5:8080",
+      "quantization":  "Q4_K_M"
+    }
+  },
+  "auth_bundle": {
+    "aabbccdd…": { "role": "inference", "tenant": "team-alpha", "quota": 10000 }
+  },
+  "policy_bundle":  ["allow_inference", "rate_limit_by_tenant"],
   "generated_at":   "2026-09-07T12:05:00Z"
 }
 ```
 
-### Operator pushes config
+### Operator pushes config (manual override)
 
-An operator can push a snapshot directly (for testing or emergency overrides):
+An operator can push a snapshot directly for testing or emergency overrides.
+The background pusher will overwrite it on the next 30-second tick unless stopped.
 
 ```
 PUT /api/v1/platform/dataplanes/{id}/config
@@ -194,7 +280,8 @@ curl -X DELETE https://cp.example.com/api/v1/platform/dataplanes/dp-a1b2c3d4e5f6
 | `DELETE` | `/api/v1/platform/dataplanes/{id}` | admin | Delete DP |
 | `POST` | `/api/v1/platform/dataplanes/{id}/heartbeat` | join_token | DP health report |
 | `GET` | `/api/v1/platform/dataplanes/{id}/config` | join_token or admin | Pull config snapshot |
-| `PUT` | `/api/v1/platform/dataplanes/{id}/config` | admin | Push config snapshot |
+| `PUT` | `/api/v1/platform/dataplanes/{id}/config` | admin | Push config snapshot (manual override) |
+| `POST` | `/api/v1/platform/dataplanes/{id}/config/refresh` | admin | Trigger immediate snapshot rebuild |
 | `POST` | `/api/v1/platform/dataplanes/{id}/nodes/{nodeId}` | admin | Assign node to DP |
 | `DELETE` | `/api/v1/platform/dataplanes/{id}/nodes/{nodeId}` | admin | Unassign node |
 | `GET` | `/api/v1/platform/dataplanes/{id}/nodes` | admin | List nodes in DP |

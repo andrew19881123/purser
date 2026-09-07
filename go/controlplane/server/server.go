@@ -670,6 +670,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) ListenAndServe() error {
 	go s.cleanupLimiters()
 	go s.startKeyExpiryWatcher(context.Background())
+	go s.startConfigSnapshotPusher(context.Background())
 	// Hourly background cleanup of expired OIDC sessions and PKCE state rows.
 	// This prevents unbounded growth of the oidc_sessions and pkce_state tables
 	// on long-running instances. The goroutine runs for the lifetime of the
@@ -1536,6 +1537,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/heartbeat", s.handleDataPlaneHeartbeat)
 	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/config", s.handleGetDataPlaneConfig)
 	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}/config", s.handlePutDataPlaneConfig)
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/config/refresh", s.handleRefreshDataPlaneConfig)
 	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleAssignNodeToDataPlane)
 	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleUnassignNodeFromDataPlane)
 	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/nodes", s.handleListDataPlaneNodes)
