@@ -36,7 +36,7 @@ Preview what would change without touching the cluster:
 purser diff purser.yaml         # dry-run: prints add/remove/upsert plan
 ```
 
-> **Wave 2 note:** `purser apply` and `purser diff` are scheduled for the Wave 2 CLI
+> **Note:** `purser apply` and `purser diff` are planned for an upcoming CLI
 > release. The schema, loader, validator and diff engine are available now in
 > `go/controlplane/config` for programmatic use.
 
@@ -159,7 +159,7 @@ deployments:
     quantization: Q4_K_M
     min_nodes: 2              # Minimum number of nodes (optional)
     max_nodes: 8              # Maximum number of nodes (optional)
-    approved: true            # Approval gate for Wave 3 gated rollouts
+    approved: true            # Approval gate for gated rollouts
 ```
 
 | Field | Type | Description |
@@ -168,7 +168,7 @@ deployments:
 | `quantization` | string | Quantization variant to serve |
 | `min_nodes` | int | Minimum node count for this deployment |
 | `max_nodes` | int | Maximum node count for this deployment |
-| `approved` | bool | Approval gate (Wave 3 gated rollouts) |
+| `approved` | bool | Approval gate for gated rollouts |
 
 ---
 
@@ -561,7 +561,7 @@ quotas:
 
 ---
 
-## Applying the file (Wave 2 preview)
+## Applying the file
 
 ```bash
 # Show what would change without modifying the cluster

@@ -3,7 +3,7 @@
 Purser v0.4 introduces a fine-grained permission system for organizations and teams.
 This page documents all permission strings, the six built-in roles, how wildcard
 matching works, backward compatibility with the legacy three-role model, and how
-to define custom roles (Wave 2 preview).
+to define custom roles (see [Custom roles](#custom-roles-preview) below).
 
 ---
 
@@ -183,11 +183,11 @@ legacy three-role model will be removed in v0.6.
 
 ---
 
-## Custom roles (Wave 2 preview)
+## Custom roles (preview)
 
 !!! warning "Not yet available"
-    Custom role creation via the API is planned for v0.4 Wave 2. The schema and
-    endpoints documented here are subject to change.
+    Custom role creation via the API is in preview and subject to change.
+    The schema and endpoints documented here may be updated before general availability.
 
 Custom roles are scoped to an organization. A member with `org:roles:create` can
 define a new role with any subset of the permissions they themselves hold.

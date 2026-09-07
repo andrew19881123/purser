@@ -291,3 +291,12 @@ The deployment approval gate satisfies this by:
 
 Combine with the [enterprise audit log](./audit-log.md) to produce a complete
 traceability record for regulatory audits.
+
+---
+
+## See also
+
+- [AI Act compliance overview](ai-act-compliance.md) — full mapping of Purser controls to EU AI Act articles
+- [Enterprise audit log](audit-log.md) — tamper-evident, hash-chained audit trail
+- [Policy-as-code (OPA)](policy-as-code.md) — enforce deployment constraints with Rego policies
+- [RBAC Permissions](../configuration/permissions.md) — roles that can approve or reject deployments
