@@ -36,6 +36,7 @@ import (
 	"github.com/purser/purser/go/controlplane/backup"
 	configpkg "github.com/purser/purser/go/controlplane/config"
 	"github.com/purser/purser/go/controlplane/fleet"
+	"github.com/purser/purser/go/controlplane/ldapauth"
 	"github.com/purser/purser/go/controlplane/orchestrator"
 	"github.com/purser/purser/go/controlplane/pki"
 	"github.com/purser/purser/go/controlplane/planning"
@@ -295,6 +296,14 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("registry ready", "db", cfg.dbPath)
 
+	// Seed built-in platform roles (idempotent — safe to run on every start).
+	if err := reg.SeedSystemRoles(migCtx); err != nil {
+		slog.Warn("failed to seed system roles", "err", err)
+		// Not fatal: system roles may already exist or the registry is read-only.
+	} else {
+		slog.Info("platform system roles seeded")
+	}
+
 	// Raft HA — optional; only started when PURSER_RAFT_NODE_ID is set.
 	// When absent the control plane runs in single-node (standalone) mode,
 	// which is the default deployment and retains full backward compatibility.
@@ -452,6 +461,19 @@ func run(logger *slog.Logger) error {
 		logger.Info("OIDC authentication disabled (set PURSER_OIDC_ISSUER to enable)")
 	}
 
+	// LDAP authentication (optional — enabled when PURSER_LDAP_URL is set).
+	// Read config from environment variables; validate and disable on error so a
+	// misconfigured LDAP setup never silently prevents startup.
+	ldapCfg := ldapauth.FromEnv()
+	if ldapCfg != nil {
+		if err := ldapCfg.Validate(); err != nil {
+			logger.Warn("LDAP configuration invalid — LDAP disabled", "err", err)
+			ldapCfg = nil
+		} else {
+			logger.Info("LDAP authentication enabled", "url", ldapCfg.URL)
+		}
+	}
+
 	// TLS setup for the management REST API.
 	// Priority: explicit cert/key files > auto mode via internal PKI > plain HTTP.
 	var tlsCertPEM, tlsKeyPEM []byte
@@ -507,6 +529,7 @@ func run(logger *slog.Logger) error {
 		RateLimitKeyRPS: cfg.rateLimitKeyRPS,
 		Reconciler:      rc,
 		SessionSecret:   sessionKey,
+		LDAPConfig:      ldapCfg,
 	}
 	if raftNode != nil {
 		srvCfg.RaftNode = raftNode

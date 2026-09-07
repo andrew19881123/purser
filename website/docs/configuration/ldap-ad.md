@@ -139,6 +139,58 @@ credential pair is served from an in-memory map without hitting LDAP again.
 
 ---
 
+## Login flow
+
+When LDAP is enabled, two additional endpoints are registered on the control-plane
+management API:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/auth/ldap-login` | Serves a minimal HTML login form (username + password). |
+| `POST` | `/auth/ldap-login` | Submits credentials; issues a session cookie on success. |
+
+Both endpoints are **public** — they bypass OIDC middleware and RBAC checks because
+they are the authentication mechanism itself. When `PURSER_LDAP_URL` is **not** set,
+`GET /auth/ldap-login` redirects to `/auth/login` (the OIDC SSO path) and
+`POST /auth/ldap-login` returns `404 Not Configured`.
+
+### How LDAP and OIDC coexist
+
+LDAP and OIDC can be active simultaneously on the same server. Each has its own
+login entry-point:
+
+- **OIDC SSO:** `GET /auth/login` → IdP redirect → `GET /auth/callback`
+- **LDAP form login:** `GET /auth/ldap-login` → POST to `/auth/ldap-login`
+
+Once authenticated via either path, the user receives an identical **`purser_session`
+cookie** (HMAC-SHA256 signed). The session middleware is completely agnostic to the
+original auth method — it validates the cookie signature and checks the session row
+in the `oidc_sessions` table.
+
+### Session persistence and auth_method
+
+Successful LDAP logins create a row in the `oidc_sessions` table with
+`auth_method = 'ldap'`. The other fields behave identically to OIDC sessions:
+
+| Field | Value |
+|-------|-------|
+| `sub` | User's full LDAP DN, e.g. `cn=alice,ou=users,dc=example,dc=com` |
+| `email` | `mail` or `userPrincipalName` attribute from the LDAP entry |
+| `idp_issuer` | `"ldap"` (constant) |
+| `auth_method` | `"ldap"` |
+| `expires_at` | `now + 8 hours` (same as OIDC sessions) |
+
+### Session duration
+
+LDAP sessions last **8 hours**, the same as OIDC sessions. This is controlled by the
+`sessionTTL` constant in the server and cannot currently be configured per-method.
+
+Sessions can be revoked explicitly via `GET /auth/logout` (clears the cookie and
+marks the DB row as revoked) or via the admin force-logout API. Revocation propagates
+to all cluster nodes because validation checks the distributed `oidc_sessions` table.
+
+---
+
 ## Fallback behaviour when LDAP is unreachable
 
 If the LDAP server is temporarily unavailable (network partition, maintenance window):

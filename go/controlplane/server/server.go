@@ -36,6 +36,7 @@ import (
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
 	"github.com/purser/purser/go/controlplane/fleet"
+	"github.com/purser/purser/go/controlplane/ldapauth"
 	"github.com/purser/purser/go/controlplane/planning"
 	"github.com/purser/purser/go/controlplane/policy"
 	"github.com/purser/purser/go/controlplane/reconciler"
@@ -123,6 +124,13 @@ const (
 	// to the key's own tenant for non-admin roles.
 	ctxKeyAPIKey
 )
+
+// LDAPAuthenticator is the authentication surface the LDAP login handlers need.
+// It is satisfied by *ldapauth.Connector and may be replaced with a test double
+// by passing a value via Config.LDAPConnector.
+type LDAPAuthenticator interface {
+	Authenticate(ctx context.Context, username, password string) (*ldapauth.UserInfo, error)
+}
 
 // OIDCConfig configures the optional OIDC authentication layer for the admin
 // UI and management REST API (/api/v1). When non-nil, every request must carry
@@ -350,6 +358,14 @@ type Config struct {
 	// expire when the process restarts). Set PURSER_SESSION_SECRET to a fixed
 	// 32-byte hex key for persistence across restarts.
 	SessionSecret []byte
+
+	// LDAPConfig, when non-nil, enables LDAP authentication (PURSER_LDAP_URL path).
+	// New() creates the connector automatically. Leave nil to disable LDAP.
+	LDAPConfig *ldapauth.Config
+	// LDAPConnector, when non-nil, overrides the connector built from LDAPConfig.
+	// Use in tests to inject a stub that does not require a real LDAP server;
+	// when set LDAPConfig is ignored.
+	LDAPConnector LDAPAuthenticator
 }
 
 // rateLimiterEntry tracks per-key sliding-window rate-limit state.
@@ -386,6 +402,8 @@ type Server struct {
 	vertexai          *importer.VertexAIClient
 	reconcilerStatus  ReconcilerStatusProvider // nil = endpoint disabled
 	raftNode          RaftNode                 // nil = standalone mode
+
+	ldapConnector LDAPAuthenticator // nil if LDAP not configured
 
 	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
 	tlsCert    string
@@ -557,6 +575,13 @@ func New(reg registry.Registry, cfg Config) *Server {
 
 	// PKCE state store: always initialised so the auth endpoints are ready.
 	s.pkceStore = newPKCEStateStore()
+
+	// LDAP connector: prefer an injected connector (tests) over building from config.
+	if cfg.LDAPConnector != nil {
+		s.ldapConnector = cfg.LDAPConnector
+	} else if cfg.LDAPConfig != nil {
+		s.ldapConnector = ldapauth.New(cfg.LDAPConfig)
+	}
 
 	s.routes()
 
@@ -781,8 +806,9 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		// 2. Auth endpoints are exempt: they ARE the login/logout flow.
 		// /auth/logout and /auth/backchannel-logout are reachable even with an
 		// already-revoked session so the browser can always clear its cookie.
+		// /auth/ldap-login is the LDAP form login — unauthenticated by definition.
 		switch r.URL.Path {
-		case "/auth/login", "/auth/callback", "/auth/logout", "/auth/backchannel-logout":
+		case "/auth/login", "/auth/callback", "/auth/logout", "/auth/backchannel-logout", "/auth/ldap-login":
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -884,12 +910,16 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 // rbacPublicPaths are the paths that bypass RBAC regardless of the key
 // presented. These are always accessible (e.g. health check, API schema).
 var rbacPublicPaths = map[string]bool{
-	"/api/v1/cluster/health": true,
-	"/api/v1/cluster/status": true,
-	"/api/v1/openapi.json":   true,
+	"/api/v1/cluster/health":  true,
+	"/api/v1/cluster/status":  true,
+	"/api/v1/openapi.json":    true,
+	"/api/v1/platform/health": true, // unauthenticated liveness probe (K8s-compatible)
 	// /auth/token is the OAuth2 client_credentials token endpoint — it IS the
 	// authentication endpoint and must be reachable without a prior credential.
 	"/auth/token": true,
+	// /auth/ldap-login is the LDAP form login endpoint — it IS the
+	// authentication endpoint and must be reachable without a prior credential.
+	"/auth/ldap-login": true,
 }
 
 // rbacMiddleware enforces role-based access control on every request based on
@@ -1064,6 +1094,24 @@ func (s *Server) rbacMiddleware(next http.Handler) http.Handler {
 		// before the role switch so all code paths see the key.
 		r = r.WithContext(context.WithValue(r.Context(), ctxKeyAPIKey, matched))
 
+		// v0.4: fine-grained permission check for routes registered in routePermission.
+		// When the route is mapped and the check passes, bypass the legacy role switch
+		// below. When the check fails, reject with 403 immediately. Routes not in
+		// routePermission fall through to the legacy role switch (safe degradation for
+		// backward compatibility with pre-v0.4 clients and keys).
+		if required := matchRoutePermission(r.Method, r.URL.Path); required != "" {
+			if !s.checkPermission(r, required) {
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":    "forbidden",
+					"message":  "insufficient permissions",
+					"required": required,
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// 5–7. Enforce role.
 		switch matched.Role {
 		case "admin":
@@ -1170,7 +1218,11 @@ func bearerToken(r *http.Request) string {
 
 // actorFromRequest extracts a displayable actor identity from the request.
 // Priority: OIDC sub claim > OIDC email claim > API key fingerprint (first 8
-// hex chars of SHA-256) > "system".
+// hex chars of SHA-256, optionally suffixed with "@team" when the key is
+// team-scoped) > "system".
+//
+// The "@team" suffix makes every audit entry immediately identifiable with
+// the team that made the call, e.g. "apikey:abc12345@team-ml".
 func actorFromRequest(r *http.Request) string {
 	if sub, ok := r.Context().Value(ctxKeyOIDCSub).(string); ok && sub != "" {
 		return "oidc:" + sub
@@ -1180,7 +1232,12 @@ func actorFromRequest(r *http.Request) string {
 	}
 	if token := bearerToken(r); token != "" {
 		sum := sha256.Sum256([]byte(token))
-		return "apikey:" + hex.EncodeToString(sum[:])[:8]
+		base := "apikey:" + hex.EncodeToString(sum[:])[:8]
+		// Append team context when the validated API key carries a Tenant field.
+		if key := apiKeyFromContext(r.Context()); key != nil && key.Tenant != "" {
+			return base + "@" + key.Tenant
+		}
+		return base
 	}
 	return "system"
 }
@@ -1313,6 +1370,11 @@ func (s *Server) routes() {
 	// /auth/token is in rbacPublicPaths so it bypasses key/RBAC checks.
 	s.mux.HandleFunc("POST /auth/token", s.handleTokenEndpoint)
 
+	// LDAP authentication (enabled only when ldapConnector is configured).
+	// /auth/ldap-login is in rbacPublicPaths and exempted by oidcMiddleware.
+	s.mux.HandleFunc("GET /auth/ldap-login", s.handleLDAPLoginForm)
+	s.mux.HandleFunc("POST /auth/ldap-login", s.handleLDAPLogin)
+
 	// Service account management (admin only).
 	s.mux.HandleFunc("POST /api/v1/service-accounts", s.handleCreateServiceAccount)
 	s.mux.HandleFunc("GET /api/v1/service-accounts", s.handleListServiceAccounts)
@@ -1393,12 +1455,72 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
 	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
 
+	// v0.4 org/team billing — enterprise-gated ("billing" feature).
+	// Teams are identified by tenant_id (naming convention: "<orgId>/<teamSlug>").
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/billing", s.handleOrgBillingReport)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/billing", s.handleTeamBillingReport)
+
 	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
 	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)
 	// GDPR Art.17 right-to-erasure — admin only, enterprise-gated ("gdpr" feature).
 	s.mux.HandleFunc("POST /api/v1/gdpr/erasure", s.handleGDPRErasure)
 	s.mux.HandleFunc("GET /api/v1/gdpr/erasure-log", s.handleGDPRErasureLog)
+
+	// Platform: Organizations
+	s.mux.HandleFunc("POST /api/v1/platform/orgs", s.handleCreateOrg)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs", s.handleListOrgs)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{id}", s.handleGetOrg)
+	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{id}", s.handleUpdateOrg)
+	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{id}", s.handleDeleteOrg)
+
+	// Platform: Teams
+	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/teams", s.handleCreateTeam)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/teams", s.handleListTeams)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{id}", s.handleGetTeam)
+	s.mux.HandleFunc("PUT /api/v1/platform/teams/{id}", s.handleUpdateTeam)
+	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{id}", s.handleDeleteTeam)
+
+	// Platform: Org members
+	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/members", s.handleAddOrgMember)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/members", s.handleListOrgMembers)
+	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/members/{userId}", s.handleUpdateOrgMember)
+	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/members/{userId}", s.handleRemoveOrgMember)
+
+	// Platform: Team members
+	s.mux.HandleFunc("POST /api/v1/platform/teams/{teamId}/members", s.handleAddTeamMember)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/members", s.handleListTeamMembers)
+	s.mux.HandleFunc("PUT /api/v1/platform/teams/{teamId}/members/{userId}", s.handleUpdateTeamMember)
+	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{teamId}/members/{userId}", s.handleRemoveTeamMember)
+
+	// Platform v0.4: Users, Custom Roles, Permissions discovery.
+	s.mux.HandleFunc("GET /api/v1/platform/users", s.handleListUsers)
+	s.mux.HandleFunc("GET /api/v1/platform/users/me", s.handleGetMe)
+	s.mux.HandleFunc("GET /api/v1/platform/users/{id}", s.handleGetUser)
+	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/roles", s.handleCreateRole)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles", s.handleListRoles)
+	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleGetRole)
+	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleUpdateRole)
+	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleDeleteRole)
+	s.mux.HandleFunc("GET /api/v1/platform/permissions", s.handleListPermissions)
+	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/my-permissions", s.handleGetMyPermissions)
+
+	// Platform: Node Pools (v0.4 multi-tenant).
+	s.mux.HandleFunc("POST /api/v1/platform/pools", s.handleCreatePool)
+	s.mux.HandleFunc("GET /api/v1/platform/pools", s.handleListPools)
+	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}", s.handleGetPool)
+	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}", s.handleUpdatePool)
+	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}", s.handleDeletePool)
+	s.mux.HandleFunc("POST /api/v1/platform/pools/{id}/nodes", s.handleAssignNodeToPool)
+	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/nodes", s.handleListPoolNodes)
+	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/nodes/{nodeId}", s.handleRemoveNodeFromPool)
+	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleUpsertPoolQuota)
+	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/quotas", s.handleListPoolQuotas)
+	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleDeletePoolQuota)
+
+	// Platform: status overview (admin) and liveness probe (public).
+	s.mux.HandleFunc("GET /api/v1/platform/status", s.handlePlatformStatus)
+	s.mux.HandleFunc("GET /api/v1/platform/health", s.handlePlatformHealth)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -2491,7 +2613,17 @@ func (s *Server) handleDeployModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case s.planner != nil:
-		produced, ok := s.planFromFleet(w, r, modelID)
+		// Resolve team pool constraints: if the request carries an API key with a
+		// non-empty Tenant, look up that team's allowed node IDs and pass them to
+		// the planner so the deployment only uses nodes from the team's pool.
+		// Backward compat: empty result means "use all nodes" (no pool assigned).
+		var poolConstraints plannerplan.Constraints
+		if key := apiKeyFromContext(r.Context()); key != nil && key.Tenant != "" {
+			if nodes, err := s.reg.GetAllowedNodeIDs(r.Context(), key.Tenant); err == nil && len(nodes) > 0 {
+				poolConstraints.AllowedNodeIDs = nodes
+			}
+		}
+		produced, ok := s.planFromFleet(w, r, modelID, poolConstraints)
 		if !ok {
 			return // planFromFleet already wrote the response
 		}
@@ -2553,8 +2685,11 @@ func (s *Server) handleDeployModel(w http.ResponseWriter, r *http.Request) {
 //   - 404 if the model is unknown;
 //   - 422 with reason/deficit/suggestions if the model does not fit the fleet;
 //   - 500 on internal/persistence errors.
-func (s *Server) planFromFleet(w http.ResponseWriter, r *http.Request, modelID string) (*purserv1.DeploymentPlan, bool) {
-	produced, err := s.planner.Plan(r.Context(), modelID, plannerplan.Constraints{})
+//
+// c carries optional planner constraints, e.g. AllowedNodeIDs from a team pool.
+// Pass plannerplan.Constraints{} for unconstrained planning.
+func (s *Server) planFromFleet(w http.ResponseWriter, r *http.Request, modelID string, c plannerplan.Constraints) (*purserv1.DeploymentPlan, bool) {
+	produced, err := s.planner.Plan(r.Context(), modelID, c)
 	if errors.Is(err, registry.ErrNotFound) {
 		s.writeError(w, http.StatusNotFound, "not_found", "model not found")
 		return nil, false

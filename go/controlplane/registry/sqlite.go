@@ -168,6 +168,10 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_dav_reviewer_approval ON deployment_approval_votes(approval_id, reviewer)`); err != nil {
 		return fmt.Errorf("registry: migrate: idx_dav_reviewer_approval: %w", err)
 	}
+	// Platform v0.4 tables: orgs, teams, custom roles, memberships.
+	if err := r.createPlatformTables(ctx); err != nil {
+		return fmt.Errorf("registry: migrate: platform tables: %w", err)
+	}
 	return nil
 }
 

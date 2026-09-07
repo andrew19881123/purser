@@ -122,8 +122,8 @@ func (s *Server) handleGDPRRecordOfProcessing(w http.ResponseWriter, r *http.Req
 					"usage patterns",
 					"network identifiers (pseudonymised)",
 				},
-				"retention_period": "730 days (configurable)",
-				"recipients":       []string{"internal compliance team"},
+				"retention_period":        "730 days (configurable)",
+				"recipients":              []string{"internal compliance team"},
 				"third_country_transfers": false,
 				"technical_measures": []string{
 					"pseudonymisation (SHA-256 hash of API key)",
@@ -133,8 +133,8 @@ func (s *Server) handleGDPRRecordOfProcessing(w http.ResponseWriter, r *http.Req
 				},
 			},
 			{
-				"name":          "API Key Management",
-				"legal_basis":   "GDPR Art.6(1)(b) - contract performance",
+				"name":        "API Key Management",
+				"legal_basis": "GDPR Art.6(1)(b) - contract performance",
 				"data_categories": []string{
 					"API key hash (not reversible)",
 					"team identifier",

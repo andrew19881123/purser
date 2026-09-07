@@ -16,6 +16,7 @@ import type {
   ClusterCapacity,
   Deployment,
   DeploymentPlan,
+  EffectivePermissions,
   EnterpriseStatus,
   ImportSource,
   JoinInfo,
@@ -26,9 +27,14 @@ import type {
   ModelHealth,
   ModelHealthStatus,
   ModelSpec,
+  NodePool,
   NodeView,
+  Organization,
   PlanPreviewResult,
+  PoolTeamQuota,
   ReconcilerStatus,
+  Team,
+  TeamMember,
   UsageSummary,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
@@ -534,5 +540,156 @@ export const mockBackend: PurserApi = {
     const stop = () => window.clearInterval(timer);
     handlers.signal?.addEventListener('abort', stop, { once: true });
     return stop;
+  },
+
+  // --- v0.4 platform model stubs -------------------------------------------
+
+  listOrganizations(): Promise<{ organizations: Organization[] }> {
+    return delay({ organizations: [] });
+  },
+
+  createOrganization(data): Promise<Organization> {
+    return delay({
+      id: `org-${Math.random().toString(36).slice(2, 10)}`,
+      name: data.name,
+      slug: data.slug,
+      description: data.description,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 400);
+  },
+
+  getOrganization(id): Promise<Organization> {
+    return delay({
+      id,
+      name: 'Mock Org',
+      slug: 'mock-org',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 200);
+  },
+
+  deleteOrganization(): Promise<void> {
+    return delay(undefined, 350);
+  },
+
+  listTeams(): Promise<{ teams: Team[] }> {
+    return delay({ teams: [] });
+  },
+
+  createTeam(orgId, data): Promise<Team> {
+    return delay({
+      id: `team-${Math.random().toString(36).slice(2, 10)}`,
+      org_id: orgId,
+      name: data.name,
+      slug: data.slug,
+      description: data.description,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 400);
+  },
+
+  getTeam(id): Promise<Team> {
+    return delay({
+      id,
+      org_id: 'mock-org',
+      name: 'Mock Team',
+      slug: 'mock-team',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 200);
+  },
+
+  deleteTeam(): Promise<void> {
+    return delay(undefined, 350);
+  },
+
+  listTeamMembers(): Promise<{ members: TeamMember[] }> {
+    return delay({ members: [] });
+  },
+
+  addTeamMember(teamId, data): Promise<TeamMember> {
+    return delay({
+      id: Math.floor(Math.random() * 10000),
+      team_id: teamId,
+      user_id: data.user_id,
+      role_id: data.role_id,
+      created_at: new Date().toISOString(),
+    }, 400);
+  },
+
+  removeTeamMember(): Promise<void> {
+    return delay(undefined, 350);
+  },
+
+  listNodePools(): Promise<{ pools: NodePool[] }> {
+    return delay({ pools: [] });
+  },
+
+  createNodePool(data): Promise<NodePool> {
+    return delay({
+      id: `pool-${Math.random().toString(36).slice(2, 10)}`,
+      name: data.name ?? 'Mock Pool',
+      description: data.description,
+      owner_type: data.owner_type ?? 'platform',
+      owner_id: data.owner_id ?? 'platform',
+      policy: data.policy ?? 'shared',
+      node_ids: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 400);
+  },
+
+  getNodePool(id): Promise<NodePool> {
+    return delay({
+      id,
+      name: 'Mock Pool',
+      owner_type: 'platform',
+      owner_id: 'platform',
+      policy: 'shared',
+      node_ids: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 200);
+  },
+
+  listPoolNodes(): Promise<{ node_ids: string[] }> {
+    return delay({ node_ids: [] });
+  },
+
+  assignNodeToPool(): Promise<void> {
+    return delay(undefined, 300);
+  },
+
+  removeNodeFromPool(): Promise<void> {
+    return delay(undefined, 300);
+  },
+
+  listPoolQuotas(): Promise<{ quotas: PoolTeamQuota[] }> {
+    return delay({ quotas: [] });
+  },
+
+  upsertPoolQuota(poolId, teamId, quota): Promise<PoolTeamQuota> {
+    return delay({
+      pool_id: poolId,
+      team_id: teamId,
+      max_deployments: quota.max_deployments ?? 10,
+      max_gpu_nodes: quota.max_gpu_nodes ?? 4,
+      priority: quota.priority ?? 1,
+    }, 350);
+  },
+
+  getMe(): Promise<{ actor: string; orgs: Organization[]; teams: Team[] }> {
+    return delay({ actor: 'mock-user', orgs: [], teams: [] }, 200);
+  },
+
+  getMyTeamPermissions(teamId): Promise<EffectivePermissions> {
+    return delay({
+      user_id: 'mock-user',
+      team_id: teamId,
+      org_id: 'mock-org',
+      permissions: ['read', 'deploy'],
+      is_org_admin: false,
+    }, 200);
   },
 };

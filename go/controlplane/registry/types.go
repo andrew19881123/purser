@@ -20,6 +20,10 @@ import (
 // entity does not exist.
 var ErrNotFound = errors.New("registry: not found")
 
+// ErrConflict is returned by Create operations when a unique constraint is
+// violated (e.g. duplicate (org_id, name) on a custom role).
+var ErrConflict = errors.New("registry: conflict")
+
 // Node is a single enrolled machine in the fleet. The full, evolving hardware
 // and liveness detail lives in HardwareProfile (a JSON-encoded
 // purserv1.HardwareProfile); the promoted columns exist for cheap querying and
@@ -443,6 +447,38 @@ type PolicyVersion struct {
 	CreatedBy  string    `json:"created_by"`
 }
 
+// TeamBillingReport is the billing aggregated for a team.
+// The team is identified by its tenant_id (the Tenant field of its API keys).
+// OrgID is set when the report is produced as part of an OrgBillingReport; it
+// is empty when the team report is requested directly via the team endpoint.
+// ByModel holds one BillingTenantUsage row per distinct model used by the team.
+type TeamBillingReport struct {
+	TeamID        string               `json:"team_id"`
+	TeamName      string               `json:"team_name,omitempty"`
+	OrgID         string               `json:"org_id,omitempty"`
+	PeriodStart   time.Time            `json:"period_start"`
+	PeriodEnd     time.Time            `json:"period_end"`
+	TotalRequests int64                `json:"total_requests"`
+	InputTokens   int64                `json:"input_tokens"`
+	OutputTokens  int64                `json:"output_tokens"`
+	TotalTokens   int64                `json:"total_tokens"`
+	TotalCostUSD  float64              `json:"total_cost_usd"`
+	ByModel       []BillingTenantUsage `json:"by_model,omitempty"`
+}
+
+// OrgBillingReport is the billing aggregated for an entire organization.
+// Teams are discovered from inference_audit_log using the naming convention
+// "<orgID>/<teamSlug>" for tenant_id values; the org report sums all team totals.
+type OrgBillingReport struct {
+	OrgID        string              `json:"org_id"`
+	OrgName      string              `json:"org_name,omitempty"`
+	PeriodStart  time.Time           `json:"period_start"`
+	PeriodEnd    time.Time           `json:"period_end"`
+	TotalCostUSD float64             `json:"total_cost_usd"`
+	TotalTokens  int64               `json:"total_tokens"`
+	Teams        []TeamBillingReport `json:"teams"`
+}
+
 // GDPRErasureLog records one GDPR Art.17 right-to-erasure operation.
 // SubjectHash is SHA-256 of the subject identifier so the log itself holds
 // no PII. ErasureType identifies which table was scrubbed (e.g.
@@ -476,3 +512,183 @@ type ServiceAccount struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
+
+// =============================================================================
+// Platform multi-tenant types (v0.4)
+// =============================================================================
+
+// Organization is a top-level tenant on the Purser platform.
+// It includes a slug for human-friendly URL segments and is managed via the
+// full org CRUD API (POST/GET/PUT/DELETE /api/v1/platform/orgs).
+type Organization struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PlatformOrg is a lightweight org record used by the roles/users subsystem.
+// It is created automatically (via UpsertPlatformOrg) when org-scoped role
+// endpoints are first called. Wave 3 will unify this with Organization.
+type PlatformOrg struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Team is a sub-unit of an Organization.
+type Team struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PlatformTeam is a lightweight team record used by the roles/permissions
+// subsystem (cross-referenced by CustomRole and TeamMember).
+// Wave 3 will unify this with Team.
+type PlatformTeam struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PlatformUser is a user identity on the Purser platform.
+type PlatformUser struct {
+	ID          string     `json:"id"` // OIDC sub or LDAP DN
+	Email       string     `json:"email"`
+	DisplayName string     `json:"display_name,omitempty"`
+	AuthMethod  string     `json:"auth_method"` // "oidc" | "ldap"
+	CreatedAt   time.Time  `json:"created_at"`
+	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
+}
+
+// OrgMember links a user to an organization with a role.
+//
+// UserSub is the canonical stable identity string ("oidc:<sub>" or
+// "apikey:<hash8>"). UserID is a read-alias that contains the same value and
+// is retained for backward-compatibility with v0.4 org handlers.
+// JoinedAt is the canonical timestamp; CreatedAt mirrors it for compat.
+type OrgMember struct {
+	OrgID     string    `json:"org_id"`
+	UserSub   string    `json:"user_sub"`          // canonical identity
+	UserID    string    `json:"user_id,omitempty"` // alias for UserSub (compat)
+	Role      string    `json:"role"`              // "org_admin" | "member"
+	InvitedBy string    `json:"invited_by,omitempty"`
+	JoinedAt  time.Time `json:"joined_at"`
+	CreatedAt time.Time `json:"created_at,omitempty"` // alias for JoinedAt (compat)
+}
+
+// TeamMember links a user to a team with a custom role.
+//
+// UserSub is canonical; UserID is a backward-compat alias. JoinedAt is
+// canonical; CreatedAt mirrors it.
+type TeamMember struct {
+	TeamID    string    `json:"team_id"`
+	UserSub   string    `json:"user_sub"`          // canonical identity
+	UserID    string    `json:"user_id,omitempty"` // alias for UserSub (compat)
+	RoleID    string    `json:"role_id"`
+	InvitedBy string    `json:"invited_by,omitempty"`
+	JoinedAt  time.Time `json:"joined_at"`
+	CreatedAt time.Time `json:"created_at,omitempty"` // alias for JoinedAt (compat)
+	// Resolved fields (not stored, populated on read)
+	User *PlatformUser `json:"user,omitempty"`
+	Role *CustomRole   `json:"role,omitempty"`
+}
+
+// CustomRole defines a named set of permission strings for an organization.
+// System roles (IsSystem=true) are seeded at startup and cannot be modified
+// or deleted. Custom roles are created by org_admin users.
+type CustomRole struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id,omitempty"` // empty = platform built-in
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Permissions []string  `json:"permissions"` // e.g. ["team:models:deploy"]
+	IsSystem    bool      `json:"is_system"`   // platform built-ins cannot be deleted
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// NodePool is a named group of GPU nodes with an access policy.
+type NodePool struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	OwnerType   string    `json:"owner_type"` // "platform" | "org" | "team"
+	OwnerID     string    `json:"owner_id"`   // org_id or team_id
+	Policy      string    `json:"policy"`     // "exclusive" | "shared"
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	// Resolved: nodes in this pool
+	NodeIDs []string `json:"node_ids,omitempty"`
+}
+
+// PoolTeamQuota defines per-team limits on a shared pool.
+type PoolTeamQuota struct {
+	PoolID         string    `json:"pool_id"`
+	TeamID         string    `json:"team_id"`
+	MaxDeployments int       `json:"max_deployments"` // 0 = unlimited
+	MaxGPUNodes    int       `json:"max_gpu_nodes"`   // 0 = unlimited
+	Priority       int       `json:"priority"`        // lower = higher precedence
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// EffectivePermissions is the resolved permission set for a user in a team
+// context. It merges fields from both the org-CRUD subsystem (UserID,
+// OrgID, IsOrgAdmin) and the roles subsystem (UserSub, RoleID, RoleName).
+type EffectivePermissions struct {
+	TeamID      string   `json:"team_id"`
+	OrgID       string   `json:"org_id,omitempty"`
+	UserID      string   `json:"user_id,omitempty"`  // compat alias
+	UserSub     string   `json:"user_sub,omitempty"` // canonical
+	RoleID      string   `json:"role_id,omitempty"`
+	RoleName    string   `json:"role_name,omitempty"`
+	Permissions []string `json:"permissions"`
+	IsOrgAdmin  bool     `json:"is_org_admin,omitempty"`
+}
+
+// Platform-level permission strings (all capabilities).
+// Fine-grained RBAC: callers check Has(perm) against EffectivePermissions.
+const (
+	// Platform-scope
+	PermPlatformOrgsCreate  = "platform:orgs:create"
+	PermPlatformOrgsDelete  = "platform:orgs:delete"
+	PermPlatformPoolsManage = "platform:pools:manage"
+	PermPlatformUsersInvite = "platform:users:invite"
+
+	// Org-scope
+	PermOrgTeamsCreate   = "org:teams:create"
+	PermOrgTeamsDelete   = "org:teams:delete"
+	PermOrgMembersInvite = "org:members:invite"
+	PermOrgMembersRemove = "org:members:remove"
+	PermOrgRolesCreate   = "org:roles:create"
+	PermOrgRolesDelete   = "org:roles:delete"
+	PermOrgPoolsRequest  = "org:pools:request"
+
+	// Team-scope
+	PermTeamModelsDeploy    = "team:models:deploy"
+	PermTeamModelsUndeploy  = "team:models:undeploy"
+	PermTeamKeysCreate      = "team:keys:create"
+	PermTeamKeysRevoke      = "team:keys:revoke"
+	PermTeamMembersView     = "team:members:view"
+	PermTeamMembersInvite   = "team:members:invite"
+	PermTeamMembersRemove   = "team:members:remove"
+	PermTeamMetricsView     = "team:metrics:view"
+	PermTeamApprovalsView   = "team:approvals:view"
+	PermTeamApprovalsReview = "team:approvals:review"
+
+	// Inference-scope
+	PermInferenceCall = "inference:call"
+)

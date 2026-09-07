@@ -11,7 +11,7 @@ planning.
 
 | Component | Requirement |
 |---|---|
-| Purser version | v0.3+ |
+| Purser version | v0.3+ (org/team reports require v0.4+) |
 | License feature | `billing` (Enterprise plan) |
 | Consumers | Admin or viewer role (read-only) |
 
@@ -157,6 +157,160 @@ header.
   "total_tokens":   18234560,
   "active_tenants": 4
 }
+```
+
+---
+
+## Per-Organization and Per-Team Reports (v0.4+)
+
+Purser v0.4 adds hierarchical billing views for organizations and teams. These
+endpoints aggregate the same `inference_audit_log` data, grouped by the
+`tenant_id` naming convention `<orgId>/<teamSlug>`.
+
+### Naming convention
+
+Teams are identified by the `tenant` field of their API keys. To use the
+hierarchical billing endpoints, set the tenant to `<orgId>/<teamSlug>`:
+
+```text
+tenant_id = "acme-corp/engineering"   →  org: acme-corp, team: engineering
+tenant_id = "acme-corp/finance"       →  org: acme-corp, team: finance
+```
+
+The slash separator prevents false matches between org IDs that share a prefix
+(e.g. `"acme"` and `"acme-corp"` are distinct organizations).
+
+---
+
+### GET /api/v1/platform/teams/{teamId}/billing
+
+Returns a billing report for a single team, identified by its `tenant_id`.
+
+**Auth:** Bearer token with `admin` or `viewer` role.  
+**Enterprise gate:** `billing` feature required (returns `402` without it).
+
+#### Path parameter
+
+| Parameter | Description |
+|---|---|
+| `teamId` | The team's `tenant_id` (e.g. `acme-corp/engineering`) |
+
+#### Query parameters
+
+Same as `/billing/report`: `start`, `end` (RFC3339, default last 30 days).
+
+#### JSON response
+
+```json
+{
+  "team_id":       "acme-corp/engineering",
+  "org_id":        "",
+  "period_start":  "2026-08-07T00:00:00Z",
+  "period_end":    "2026-09-06T00:00:00Z",
+  "total_requests": 12450,
+  "input_tokens":   5678900,
+  "output_tokens":  2345670,
+  "total_tokens":   8024570,
+  "total_cost_usd": 8.024,
+  "by_model": [
+    {
+      "tenant_id":         "acme-corp/engineering",
+      "model_id":          "qwen3-moe",
+      "request_count":     8000,
+      "prompt_tokens":     3500000,
+      "completion_tokens": 1400000,
+      "total_tokens":      4900000,
+      "avg_latency_ms":    210.5,
+      "period_start":      "2026-08-07T00:00:00Z",
+      "period_end":        "2026-09-06T00:00:00Z"
+    }
+  ]
+}
+```
+
+`total_cost_usd` is calculated from the `model_pricing` table (see
+[Usage Accounting](usage-accounting.md)). It is `0.0` when no pricing is
+configured for a model — the per-model token counts are always available
+regardless of whether pricing is set.
+
+#### Example
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/platform/teams/acme-corp%2Fengineering/billing"
+```
+
+!!! note "URL-encoding the slash"
+    The `/` in a team ID must be percent-encoded as `%2F` in the URL path.
+
+---
+
+### GET /api/v1/platform/orgs/{orgId}/billing
+
+Returns an aggregated billing report for an entire organization. All teams
+whose `tenant_id` matches the pattern `<orgId>/<teamSlug>` and had at least
+one inference event in the requested window are included.
+
+**Auth:** Bearer token with `admin` or `viewer` role.  
+**Enterprise gate:** `billing` feature required (returns `402` without it).
+
+#### Path parameter
+
+| Parameter | Description |
+|---|---|
+| `orgId` | Organization ID (prefix of team tenant IDs, e.g. `acme-corp`) |
+
+#### Query parameters
+
+Same as `/billing/report`: `start`, `end` (RFC3339, default last 30 days).
+
+#### JSON response
+
+```json
+{
+  "org_id":        "acme-corp",
+  "period_start":  "2026-08-07T00:00:00Z",
+  "period_end":    "2026-09-06T00:00:00Z",
+  "total_cost_usd": 12.034,
+  "total_tokens":   18234560,
+  "teams": [
+    {
+      "team_id":       "acme-corp/engineering",
+      "org_id":        "acme-corp",
+      "period_start":  "2026-08-07T00:00:00Z",
+      "period_end":    "2026-09-06T00:00:00Z",
+      "total_requests": 12450,
+      "input_tokens":   5678900,
+      "output_tokens":  2345670,
+      "total_tokens":   8024570,
+      "total_cost_usd": 8.024,
+      "by_model": [...]
+    },
+    {
+      "team_id":       "acme-corp/finance",
+      "org_id":        "acme-corp",
+      "total_tokens":   10209990,
+      "total_cost_usd": 4.010,
+      "by_model": [...]
+    }
+  ]
+}
+```
+
+Teams with no events in the requested window are omitted from the `teams` array
+(i.e. `GET /platform/orgs/acme-corp/billing` returns an empty `teams: []` for
+an org with no recent activity, not a 404).
+
+#### Example
+
+```bash
+# Last 30 days for the acme-corp org
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/platform/orgs/acme-corp/billing"
+
+# Custom window
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/platform/orgs/acme-corp/billing?start=2026-08-01T00:00:00Z&end=2026-09-01T00:00:00Z"
 ```
 
 ---

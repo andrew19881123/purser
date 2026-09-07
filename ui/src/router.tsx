@@ -20,6 +20,9 @@ import { AuditPage } from './pages/AuditPage';
 import { ApprovalsPage } from './pages/ApprovalsPage';
 import { ChargebackPage } from './pages/ChargebackPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { OrganizationsPage } from './pages/OrganizationsPage';
+import { TeamPage } from './pages/TeamPage';
+import { NodePoolsPage } from './pages/NodePoolsPage';
 
 export const router = createBrowserRouter([
   {
@@ -38,6 +41,10 @@ export const router = createBrowserRouter([
       { path: 'audit', element: <AuditPage /> },
       { path: 'approvals', element: <ApprovalsPage /> },
       { path: 'chargeback', element: <ChargebackPage /> },
+      // v0.4 platform model routes
+      { path: 'platform/orgs', element: <OrganizationsPage /> },
+      { path: 'platform/orgs/:orgId/teams/:teamId', element: <TeamPage /> },
+      { path: 'platform/pools', element: <NodePoolsPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

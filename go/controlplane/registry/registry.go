@@ -155,6 +155,14 @@ type Registry interface {
 	// GetBillingReport returns a chargeback report for the given time window,
 	// optionally filtered to a single tenant. An empty tenantID means all tenants.
 	GetBillingReport(ctx context.Context, start, end time.Time, tenantID string) (*BillingReport, error)
+	// GetTeamBillingReport aggregates inference_audit_log for a specific team
+	// (identified by its tenant_id). Cost is calculated from model_pricing when
+	// available; zero otherwise.
+	GetTeamBillingReport(ctx context.Context, teamID string, start, end time.Time) (*TeamBillingReport, error)
+	// GetOrgBillingReport aggregates billing for all teams belonging to orgID.
+	// Teams are discovered using the naming convention "<orgID>/<teamSlug>" for
+	// tenant_id values in the inference_audit_log.
+	GetOrgBillingReport(ctx context.Context, orgID string, start, end time.Time) (*OrgBillingReport, error)
 
 	// --- Inference audit log (AI Act Art.12) --------------------------------
 	// RecordInferenceEvent appends an inference event to the audit log.
@@ -268,4 +276,122 @@ type Registry interface {
 	// inference_audit_log rows whose api_key_hash matches subjectHash with
 	// empty/zero values. Returns the number of rows affected.
 	EraseInferenceEventsBySubject(ctx context.Context, subjectHash string) (int64, error)
+
+	// ==========================================================================
+	// Platform multi-tenant methods (v0.4)
+	// ==========================================================================
+
+	// --- Organizations (full CRUD with slug) ----------------------------------
+	CreateOrganization(ctx context.Context, org *Organization) error
+	GetOrganization(ctx context.Context, id string) (*Organization, error)
+	GetOrganizationBySlug(ctx context.Context, slug string) (*Organization, error)
+	ListOrganizations(ctx context.Context) ([]*Organization, error)
+	UpdateOrganization(ctx context.Context, org *Organization) error
+	DeleteOrganization(ctx context.Context, id string) error
+
+	// --- Platform Orgs (lightweight, used by roles/users subsystem) ----------
+	// UpsertPlatformOrg inserts or updates a PlatformOrg. Called by role
+	// handlers to ensure the org exists before creating roles inside it.
+	UpsertPlatformOrg(ctx context.Context, org *PlatformOrg) error
+	// GetPlatformOrg returns the org with the given id, or ErrNotFound.
+	GetPlatformOrg(ctx context.Context, id string) (*PlatformOrg, error)
+
+	// --- Teams (full CRUD with slug) -----------------------------------------
+	CreateTeam(ctx context.Context, team *Team) error
+	GetTeam(ctx context.Context, id string) (*Team, error)
+	GetTeamBySlug(ctx context.Context, orgID, slug string) (*Team, error)
+	ListTeamsByOrg(ctx context.Context, orgID string) ([]*Team, error)
+	UpdateTeam(ctx context.Context, team *Team) error
+	DeleteTeam(ctx context.Context, id string) error
+
+	// --- Platform Teams (lightweight, used by permissions subsystem) ----------
+	// UpsertPlatformTeam inserts or updates a PlatformTeam.
+	UpsertPlatformTeam(ctx context.Context, team *PlatformTeam) error
+	// GetPlatformTeam returns the team with the given id, or ErrNotFound.
+	GetPlatformTeam(ctx context.Context, id string) (*PlatformTeam, error)
+
+	// --- Users ----------------------------------------------------------------
+	UpsertPlatformUser(ctx context.Context, u *PlatformUser) error // create or update on login
+	GetPlatformUser(ctx context.Context, id string) (*PlatformUser, error)
+	GetPlatformUserByEmail(ctx context.Context, email string) (*PlatformUser, error)
+	ListPlatformUsers(ctx context.Context) ([]*PlatformUser, error)
+	UpdatePlatformUserLastSeen(ctx context.Context, id string, at time.Time) error
+
+	// --- Org memberships ------------------------------------------------------
+	// AddOrgMember inserts an org membership (idempotent).
+	AddOrgMember(ctx context.Context, m *OrgMember) error
+	// RemoveOrgMember deletes the membership row.
+	RemoveOrgMember(ctx context.Context, orgID, userID string) error
+	// GetOrgMember returns the membership for (orgID, userID/userSub).
+	GetOrgMember(ctx context.Context, orgID, userID string) (*OrgMember, error)
+	// ListOrgMembers returns all members of orgID.
+	ListOrgMembers(ctx context.Context, orgID string) ([]*OrgMember, error)
+	// ListUserOrgs returns all org memberships for a user.
+	ListUserOrgs(ctx context.Context, userID string) ([]*OrgMember, error)
+	// GetOrgMembershipsByUser returns all orgs the user (identified by userSub) belongs to.
+	GetOrgMembershipsByUser(ctx context.Context, userSub string) ([]*OrgMember, error)
+	// UpsertOrgMember inserts or updates an OrgMember row (used by 2B roles subsystem).
+	UpsertOrgMember(ctx context.Context, m *OrgMember) error
+
+	// --- Team memberships -----------------------------------------------------
+	// AddTeamMember inserts a team membership with upsert-on-role semantics.
+	AddTeamMember(ctx context.Context, m *TeamMember) error
+	// RemoveTeamMember deletes the membership row.
+	RemoveTeamMember(ctx context.Context, teamID, userID string) error
+	// GetTeamMember returns the membership for (teamID, userID/userSub).
+	GetTeamMember(ctx context.Context, teamID, userID string) (*TeamMember, error)
+	// ListTeamMembers returns all members of teamID.
+	ListTeamMembers(ctx context.Context, teamID string) ([]*TeamMember, error)
+	// ListUserTeams returns all team memberships for a user.
+	ListUserTeams(ctx context.Context, userID string) ([]*TeamMember, error)
+	// GetTeamMembershipsByUser returns all teams the user (identified by userSub) belongs to.
+	GetTeamMembershipsByUser(ctx context.Context, userSub string) ([]*TeamMember, error)
+	// UpsertTeamMember inserts or updates a TeamMember row.
+	UpsertTeamMember(ctx context.Context, m *TeamMember) error
+
+	// --- Custom roles ---------------------------------------------------------
+	// CreateCustomRole inserts a new custom role. Returns ErrConflict if a role
+	// with the same (org_id, name) already exists.
+	CreateCustomRole(ctx context.Context, r *CustomRole) error
+	// GetCustomRole returns the role identified by (orgID, roleID), or ErrNotFound.
+	// Pass orgID="" to look up platform built-in roles (org_id IS NULL).
+	GetCustomRole(ctx context.Context, orgID, roleID string) (*CustomRole, error)
+	// ListCustomRoles returns all roles (system and custom) for orgID.
+	ListCustomRoles(ctx context.Context, orgID string) ([]*CustomRole, error)
+	// UpdateCustomRole replaces the mutable fields of a custom role. Returns
+	// ErrNotFound when the role does not exist.
+	UpdateCustomRole(ctx context.Context, r *CustomRole) error
+	// DeleteCustomRole removes a custom role by (orgID, roleID). Returns
+	// ErrNotFound when absent. Callers must check IsCustomRoleInUse first.
+	DeleteCustomRole(ctx context.Context, orgID, roleID string) error
+	// IsCustomRoleInUse returns true when at least one team_member row references
+	// roleID. Used by the DELETE handler to return 409 Conflict.
+	IsCustomRoleInUse(ctx context.Context, roleID string) (bool, error)
+	// SeedSystemRoles inserts the built-in platform roles if not present.
+	SeedSystemRoles(ctx context.Context) error
+
+	// --- Node pools -----------------------------------------------------------
+	CreateNodePool(ctx context.Context, p *NodePool) error
+	GetNodePool(ctx context.Context, id string) (*NodePool, error)
+	ListNodePools(ctx context.Context) ([]*NodePool, error)
+	UpdateNodePool(ctx context.Context, p *NodePool) error
+	DeleteNodePool(ctx context.Context, id string) error
+	AddNodeToPool(ctx context.Context, nodeID, poolID string) error
+	RemoveNodeFromPool(ctx context.Context, nodeID string) error
+	GetNodePool_ByNode(ctx context.Context, nodeID string) (*NodePool, error)
+	ListNodesInPool(ctx context.Context, poolID string) ([]string, error)
+	// GetAllowedNodeIDs returns all node IDs accessible to a team
+	// (own exclusive pool + shared pools where the team has a quota).
+	GetAllowedNodeIDs(ctx context.Context, teamID string) ([]string, error)
+
+	// --- Pool quotas ----------------------------------------------------------
+	UpsertPoolTeamQuota(ctx context.Context, q *PoolTeamQuota) error
+	GetPoolTeamQuota(ctx context.Context, poolID, teamID string) (*PoolTeamQuota, error)
+	ListPoolTeamQuotas(ctx context.Context, poolID string) ([]*PoolTeamQuota, error)
+	DeletePoolTeamQuota(ctx context.Context, poolID, teamID string) error
+
+	// --- Effective permissions ------------------------------------------------
+	// GetEffectivePermissions resolves the full permission set for userID in
+	// the context of teamID (org membership + team role union).
+	GetEffectivePermissions(ctx context.Context, userID, teamID string) (*EffectivePermissions, error)
 }

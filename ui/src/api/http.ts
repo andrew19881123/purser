@@ -34,6 +34,7 @@ import type {
   DeploymentApproval,
   DeploymentPlan,
   DeploymentState,
+  EffectivePermissions,
   EnterpriseStatus,
   FitVerdict,
   ImportSource,
@@ -46,11 +47,16 @@ import type {
   ModelHealth,
   ModelSpec,
   NodeLoadStatus,
+  NodePool,
   NodeView,
+  Organization,
   PerfEstimate,
   PlanPreviewResult,
+  PoolTeamQuota,
   ReconcilerStatus,
   Role,
+  Team,
+  TeamMember,
   UsageSummary,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
@@ -700,5 +706,76 @@ export function createHttpApi(baseUrl: string): PurserApi {
       const qs = params.toString() ? `?${params.toString()}` : '';
       return request<BillingSummary>(`/billing/summary${qs}`);
     },
+
+    // --- v0.4 platform model: organizations ---
+    listOrganizations: () =>
+      request<{ organizations: Organization[] }>('/platform/orgs'),
+
+    createOrganization: (data) =>
+      request<Organization>('/platform/orgs', { method: 'POST', body: data }),
+
+    getOrganization: (id) =>
+      request<Organization>(`/platform/orgs/${enc(id)}`),
+
+    deleteOrganization: (id) =>
+      request<void>(`/platform/orgs/${enc(id)}`, { method: 'DELETE' }),
+
+    // --- v0.4 platform model: teams ---
+    listTeams: (orgId) =>
+      request<{ teams: Team[] }>(`/platform/orgs/${enc(orgId)}/teams`),
+
+    createTeam: (orgId, data) =>
+      request<Team>(`/platform/orgs/${enc(orgId)}/teams`, { method: 'POST', body: data }),
+
+    getTeam: (id) =>
+      request<Team>(`/platform/teams/${enc(id)}`),
+
+    deleteTeam: (id) =>
+      request<void>(`/platform/teams/${enc(id)}`, { method: 'DELETE' }),
+
+    // --- v0.4 platform model: team members ---
+    listTeamMembers: (teamId) =>
+      request<{ members: TeamMember[] }>(`/platform/teams/${enc(teamId)}/members`),
+
+    addTeamMember: (teamId, data) =>
+      request<TeamMember>(`/platform/teams/${enc(teamId)}/members`, { method: 'POST', body: data }),
+
+    removeTeamMember: (teamId, userId) =>
+      request<void>(`/platform/teams/${enc(teamId)}/members/${enc(userId)}`, { method: 'DELETE' }),
+
+    // --- v0.4 platform model: node pools ---
+    listNodePools: () =>
+      request<{ pools: NodePool[] }>('/platform/pools'),
+
+    createNodePool: (data) =>
+      request<NodePool>('/platform/pools', { method: 'POST', body: data }),
+
+    getNodePool: (id) =>
+      request<NodePool>(`/platform/pools/${enc(id)}`),
+
+    listPoolNodes: (poolId) =>
+      request<{ node_ids: string[] }>(`/platform/pools/${enc(poolId)}/nodes`),
+
+    assignNodeToPool: (poolId, nodeId) =>
+      request<void>(`/platform/pools/${enc(poolId)}/nodes/${enc(nodeId)}`, { method: 'PUT' }),
+
+    removeNodeFromPool: (poolId, nodeId) =>
+      request<void>(`/platform/pools/${enc(poolId)}/nodes/${enc(nodeId)}`, { method: 'DELETE' }),
+
+    listPoolQuotas: (poolId) =>
+      request<{ quotas: PoolTeamQuota[] }>(`/platform/pools/${enc(poolId)}/quotas`),
+
+    upsertPoolQuota: (poolId, teamId, quota) =>
+      request<PoolTeamQuota>(`/platform/pools/${enc(poolId)}/quotas/${enc(teamId)}`, {
+        method: 'PUT',
+        body: quota,
+      }),
+
+    // --- v0.4 platform model: current user ---
+    getMe: () =>
+      request<{ actor: string; orgs: Organization[]; teams: Team[] }>('/platform/me'),
+
+    getMyTeamPermissions: (teamId) =>
+      request<EffectivePermissions>(`/platform/teams/${enc(teamId)}/my-permissions`),
   };
 }
