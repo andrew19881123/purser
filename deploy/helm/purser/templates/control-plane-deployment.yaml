@@ -5,8 +5,9 @@ metadata:
   labels:
     {{- include "purser.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
 spec:
-  # Single writer: the SQLite registry + PKI CA live on one RWO volume. HA
-  # (>1 replica) requires the enterprise Registry Raft backend.
+  # When database.driver=postgres, multiple replicas are supported (the PKI CA
+  # still requires a shared PVC or an external CA for true HA).
+  # When database.driver=sqlite, keep replicas=1 — SQLite is single-writer.
   replicas: {{ .Values.replicaCount }}
   strategy:
     # Recreate avoids two pods contending for the ReadWriteOnce data volume
@@ -50,8 +51,19 @@ spec:
               value: ":{{ .Values.controlPlane.httpPort }}"
             - name: PURSER_GRPC_ADDR
               value: ":{{ .Values.controlPlane.grpcPort }}"
+            # --- Database driver selection ---
+            - name: PURSER_DB_DRIVER
+              value: {{ .Values.database.driver | default "sqlite" | quote }}
+            {{- if eq (default "sqlite" .Values.database.driver) "postgres" }}
+            {{- if .Values.database.url }}
+            - name: PURSER_DB_URL
+              value: {{ .Values.database.url | quote }}
+            {{- end }}
+            {{- else }}
+            # SQLite path (driver=sqlite only)
             - name: PURSER_DB
-              value: "{{ .Values.controlPlane.persistence.mountPath }}/purser-registry.db"
+              value: {{ .Values.database.sqlitePath | default (printf "%s/purser-registry.db" .Values.controlPlane.persistence.mountPath) | quote }}
+            {{- end }}
             - name: PURSER_PKI_DIR
               value: "{{ .Values.controlPlane.persistence.mountPath }}/pki-state"
             - name: PURSER_CLUSTER_ID

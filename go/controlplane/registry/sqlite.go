@@ -16,11 +16,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/purser/purser/go/controlplane/audit"
-
-	// modernc.org/sqlite is a pure-Go (CGO-free) SQLite driver. It registers
-	// itself under the name "sqlite". Keeping the build CGO-free is essential
-	// for air-gap and cross-compilation.
-	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -47,16 +42,19 @@ var _ Registry = (*SQLiteRegistry)(nil)
 // Open opens (creating if necessary) a SQLite-backed registry at dsn. dsn is a
 // file path (e.g. "/var/lib/purser/registry.db") or ":memory:" for tests.
 // The returned registry has not yet been migrated — call Migrate.
+//
+// Deprecated: prefer OpenFromConfig for driver-agnostic initialisation.
 func Open(dsn string) (*SQLiteRegistry, error) {
-	// Enable foreign keys, WAL journaling and a busy timeout via DSN pragmas so
-	// every connection in the pool is configured identically.
-	// WAL + synchronous=NORMAL: full durability on commit, no fsync on every
-	// page write. Safe for single-writer deployments on modern OS+hardware and
-	// gives a ~2-5x write-throughput improvement over the default FULL mode.
-	conn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn)
-	db, err := sql.Open("sqlite", conn)
+	return OpenFromConfig(DBConfig{Driver: "sqlite", DSN: dsn})
+}
+
+// OpenFromConfig opens the registry using the given database configuration.
+// Supports both SQLite (dev/test) and PostgreSQL (production). The returned
+// registry has not yet been migrated — call Migrate.
+func OpenFromConfig(cfg DBConfig) (*SQLiteRegistry, error) {
+	db, err := OpenDB(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("registry: open sqlite: %w", err)
+		return nil, fmt.Errorf("registry: open: %w", err)
 	}
 	return &SQLiteRegistry{db: db}, nil
 }
