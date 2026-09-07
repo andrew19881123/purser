@@ -15,6 +15,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,15 +67,29 @@ func (l *registryLister) CurrentDeploymentModelIDs(ctx context.Context) ([]strin
 }
 
 // CurrentOrgIDs returns the org IDs currently registered.
-// The registry does not yet track orgs; this stub satisfies config.Lister.
-func (l *registryLister) CurrentOrgIDs(_ context.Context) ([]string, error) {
-	return nil, nil
+func (l *registryLister) CurrentOrgIDs(ctx context.Context) ([]string, error) {
+	orgs, err := l.r.ListOrganizations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(orgs))
+	for i, o := range orgs {
+		ids[i] = o.ID
+	}
+	return ids, nil
 }
 
 // CurrentNodePoolIDs returns the node pool IDs currently registered.
-// The registry does not yet track pools; this stub satisfies config.Lister.
-func (l *registryLister) CurrentNodePoolIDs(_ context.Context) ([]string, error) {
-	return nil, nil
+func (l *registryLister) CurrentNodePoolIDs(ctx context.Context) ([]string, error) {
+	pools, err := l.r.ListNodePools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(pools))
+	for i, p := range pools {
+		ids[i] = p.ID
+	}
+	return ids, nil
 }
 
 // ApplyResult summarises the mutations made by ApplyClusterConfig.
@@ -82,6 +97,8 @@ type ApplyResult struct {
 	ModelsAdded      int `json:"models_added"`
 	DeploymentsAdded int `json:"deployments_added"`
 	QuotasUpserted   int `json:"quotas_upserted"`
+	OrgsAdded        int `json:"orgs_added"`
+	NodePoolsAdded   int `json:"node_pools_added"`
 }
 
 // ApplyClusterConfig reconciles the live cluster state towards cfg.
@@ -168,6 +185,86 @@ func (s *Server) ApplyClusterConfig(ctx context.Context, cfg *config.ClusterConf
 			"count", len(diff.QuotasToUpsert))
 	}
 
+	// --- Organizations ---
+	for _, orgSpec := range cfg.Orgs {
+		existingOrg, err := s.reg.GetOrganizationBySlug(ctx, orgSpec.Slug)
+		if errors.Is(err, registry.ErrNotFound) {
+			// Create new org
+			newOrg := &registry.Organization{
+				ID:          orgSpec.ID,
+				Name:        orgSpec.Name,
+				Slug:        orgSpec.Slug,
+				Description: orgSpec.Description,
+			}
+			if err := s.reg.CreateOrganization(ctx, newOrg); err != nil {
+				// Log and continue — don't fail entire apply
+				s.log.Warn("config apply: create org failed", "org", orgSpec.ID, "err", err)
+				continue
+			}
+			result.OrgsAdded++
+
+			// Create teams within org
+			for _, teamSpec := range orgSpec.Teams {
+				newTeam := &registry.Team{
+					ID:    teamSpec.ID,
+					OrgID: newOrg.ID,
+					Name:  teamSpec.Name,
+					Slug:  teamSpec.Slug,
+				}
+				if err := s.reg.CreateTeam(ctx, newTeam); err != nil {
+					s.log.Warn("config apply: create team failed", "team", teamSpec.ID, "err", err)
+				}
+			}
+		} else if err == nil {
+			// Org already exists — update if needed
+			existingOrg.Name = orgSpec.Name
+			existingOrg.Description = orgSpec.Description
+			_ = s.reg.UpdateOrganization(ctx, existingOrg)
+		} else {
+			s.log.Warn("config apply: check org failed", "org", orgSpec.Slug, "err", err)
+		}
+	}
+
+	// --- Node Pools ---
+	for _, poolSpec := range cfg.NodePools {
+		_, err := s.reg.GetNodePool(ctx, poolSpec.ID)
+		if errors.Is(err, registry.ErrNotFound) {
+			newPool := &registry.NodePool{
+				ID:          poolSpec.ID,
+				Name:        poolSpec.Name,
+				Description: poolSpec.Description,
+				OwnerType:   poolSpec.OwnerType,
+				OwnerID:     poolSpec.OwnerID,
+				Policy:      poolSpec.Policy,
+			}
+			if err := s.reg.CreateNodePool(ctx, newPool); err != nil {
+				s.log.Warn("config apply: create pool failed", "pool", poolSpec.ID, "err", err)
+				continue
+			}
+			result.NodePoolsAdded++
+
+			// Assign nodes to the pool
+			for _, nodeID := range poolSpec.Nodes {
+				if err := s.reg.AddNodeToPool(ctx, nodeID, newPool.ID); err != nil {
+					s.log.Warn("config apply: assign node to pool failed",
+						"node", nodeID, "pool", newPool.ID, "err", err)
+				}
+			}
+
+			// Set quotas for shared pools
+			for _, quota := range poolSpec.Quotas {
+				_ = s.reg.UpsertPoolTeamQuota(ctx, &registry.PoolTeamQuota{
+					PoolID:         newPool.ID,
+					TeamID:         quota.TeamID,
+					MaxDeployments: quota.MaxDeployments,
+					MaxGPUNodes:    quota.MaxGPUNodes,
+					Priority:       quota.Priority,
+				})
+			}
+		}
+		// existing pools: skip update (idempotent apply)
+	}
+
 	return result, nil
 }
 
@@ -202,6 +299,8 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		"models_added", result.ModelsAdded,
 		"deployments_added", result.DeploymentsAdded,
 		"quotas_upserted", result.QuotasUpserted,
+		"orgs_added", result.OrgsAdded,
+		"node_pools_added", result.NodePoolsAdded,
 		slog.String("cluster", cfg.Cluster.ID),
 	)
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/purser/purser/go/controlplane/config"
 	"github.com/purser/purser/go/controlplane/registry"
 	"github.com/purser/purser/go/controlplane/server"
 )
@@ -223,5 +224,223 @@ func TestHandleConfigApply_Idempotent(t *testing.T) {
 			t.Fatalf("iteration %d: status = %d, want 200; body=%s",
 				i, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// orgOnlyYAML is a minimal valid purser.yaml that declares one org and one team.
+const orgOnlyYAML = `apiVersion: purser/v1
+kind: ClusterConfig
+orgs:
+  - id: acme
+    name: "Acme Corp"
+    slug: acme
+    teams:
+      - id: ml-team
+        name: "ML Team"
+        slug: ml-team
+`
+
+// nodePoolOnlyYAML is a minimal valid purser.yaml that declares one node pool.
+const nodePoolOnlyYAML = `apiVersion: purser/v1
+kind: ClusterConfig
+node_pools:
+  - id: gpu-lab
+    name: "GPU Lab"
+    owner_type: team
+    owner_id: ml-team
+    policy: exclusive
+`
+
+// orgAndPoolYAML is a valid purser.yaml with one org and one node pool.
+const orgAndPoolYAML = `apiVersion: purser/v1
+kind: ClusterConfig
+orgs:
+  - id: acme-combined
+    name: "Acme Combined"
+    slug: acme-combined
+    teams:
+      - id: eng-team
+        name: "Engineering"
+        slug: eng-team
+node_pools:
+  - id: eng-gpu-pool
+    name: "Engineering GPU Pool"
+    owner_type: team
+    owner_id: eng-team
+    policy: exclusive
+`
+
+// TestApplyClusterConfig_CreatesOrg verifies that ApplyClusterConfig creates the
+// declared org and its nested team when they do not already exist in the registry.
+func TestApplyClusterConfig_CreatesOrg(t *testing.T) {
+	reg := newReg(t)
+	srv := server.New(reg, server.Config{})
+	ctx := context.Background()
+
+	cfg, err := config.Load([]byte(orgOnlyYAML))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	result, err := srv.ApplyClusterConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("ApplyClusterConfig: %v", err)
+	}
+	if result.OrgsAdded != 1 {
+		t.Errorf("orgs_added = %d, want 1", result.OrgsAdded)
+	}
+
+	// Verify the org was created with the correct name.
+	org, err := reg.GetOrganizationBySlug(ctx, "acme")
+	if err != nil {
+		t.Fatalf("GetOrganizationBySlug(acme): %v", err)
+	}
+	if org.Name != "Acme Corp" {
+		t.Errorf("org.Name = %q, want \"Acme Corp\"", org.Name)
+	}
+
+	// Verify the nested team was created.
+	team, err := reg.GetTeam(ctx, "ml-team")
+	if err != nil {
+		t.Fatalf("GetTeam(ml-team): %v", err)
+	}
+	if team.OrgID != org.ID {
+		t.Errorf("team.OrgID = %q, want %q", team.OrgID, org.ID)
+	}
+}
+
+// TestApplyClusterConfig_CreatesNodePool verifies that ApplyClusterConfig creates
+// the declared node pool when it does not already exist in the registry.
+func TestApplyClusterConfig_CreatesNodePool(t *testing.T) {
+	reg := newReg(t)
+	srv := server.New(reg, server.Config{})
+	ctx := context.Background()
+
+	cfg, err := config.Load([]byte(nodePoolOnlyYAML))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	result, err := srv.ApplyClusterConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("ApplyClusterConfig: %v", err)
+	}
+	if result.NodePoolsAdded != 1 {
+		t.Errorf("node_pools_added = %d, want 1", result.NodePoolsAdded)
+	}
+
+	// Verify the pool was created with the correct attributes.
+	pool, err := reg.GetNodePool(ctx, "gpu-lab")
+	if err != nil {
+		t.Fatalf("GetNodePool(gpu-lab): %v", err)
+	}
+	if pool.Name != "GPU Lab" {
+		t.Errorf("pool.Name = %q, want \"GPU Lab\"", pool.Name)
+	}
+	if pool.Policy != "exclusive" {
+		t.Errorf("pool.Policy = %q, want exclusive", pool.Policy)
+	}
+}
+
+// TestApplyClusterConfig_IdempotentOrg verifies that applying the same YAML twice
+// produces no error and no duplicate org on the second call.
+func TestApplyClusterConfig_IdempotentOrg(t *testing.T) {
+	reg := newReg(t)
+	srv := server.New(reg, server.Config{})
+	ctx := context.Background()
+
+	cfg, err := config.Load([]byte(orgOnlyYAML))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	// First apply: org should be created.
+	r1, err := srv.ApplyClusterConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("first ApplyClusterConfig: %v", err)
+	}
+	if r1.OrgsAdded != 1 {
+		t.Errorf("first apply: orgs_added = %d, want 1", r1.OrgsAdded)
+	}
+
+	// Second apply: org already exists — no error, orgs_added = 0.
+	r2, err := srv.ApplyClusterConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("second ApplyClusterConfig: %v", err)
+	}
+	if r2.OrgsAdded != 0 {
+		t.Errorf("second apply: orgs_added = %d, want 0 (idempotent)", r2.OrgsAdded)
+	}
+
+	// Only one org in the registry.
+	orgs, err := reg.ListOrganizations(ctx)
+	if err != nil {
+		t.Fatalf("ListOrganizations: %v", err)
+	}
+	count := 0
+	for _, o := range orgs {
+		if o.Slug == "acme" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("found %d orgs with slug=acme, want exactly 1", count)
+	}
+}
+
+// TestHandleConfigApply_WithOrgsAndPools verifies that POST /api/v1/config/apply
+// with an org and a node pool in the YAML returns HTTP 200 with the correct
+// orgs_added=1 and node_pools_added=1 counters in the response.
+func TestHandleConfigApply_WithOrgsAndPools(t *testing.T) {
+	reg := newReg(t)
+	adminToken := seedKeyWithRole(t, reg, "key-admin-orgpool", "admin-orgpool", "admin")
+	srv := server.New(reg, server.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/apply",
+		bytes.NewBufferString(orgAndPoolYAML))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/yaml")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Applied struct {
+			ModelsAdded    int `json:"models_added"`
+			OrgsAdded      int `json:"orgs_added"`
+			NodePoolsAdded int `json:"node_pools_added"`
+		} `json:"applied"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v; raw=%s", err, rec.Body.String())
+	}
+	if body.Applied.OrgsAdded != 1 {
+		t.Errorf("applied.orgs_added = %d, want 1; body=%s", body.Applied.OrgsAdded, rec.Body.String())
+	}
+	if body.Applied.NodePoolsAdded != 1 {
+		t.Errorf("applied.node_pools_added = %d, want 1; body=%s", body.Applied.NodePoolsAdded, rec.Body.String())
+	}
+	if body.Applied.ModelsAdded != 0 {
+		t.Errorf("applied.models_added = %d, want 0; body=%s", body.Applied.ModelsAdded, rec.Body.String())
+	}
+
+	// Verify org and pool are actually in the registry.
+	ctx := context.Background()
+	org, err := reg.GetOrganizationBySlug(ctx, "acme-combined")
+	if err != nil {
+		t.Fatalf("GetOrganizationBySlug(acme-combined) after apply: %v", err)
+	}
+	if org.Name != "Acme Combined" {
+		t.Errorf("org.Name = %q, want \"Acme Combined\"", org.Name)
+	}
+	pool, err := reg.GetNodePool(ctx, "eng-gpu-pool")
+	if err != nil {
+		t.Fatalf("GetNodePool(eng-gpu-pool) after apply: %v", err)
+	}
+	if pool.Policy != "exclusive" {
+		t.Errorf("pool.Policy = %q, want exclusive", pool.Policy)
 	}
 }
