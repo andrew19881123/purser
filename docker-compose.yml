@@ -1,4 +1,4 @@
-# Purser demo stack — mock engine, no GPU required
+# Purser demo stack — mock engine (DEMO ONLY, no GPU required)
 # Usage: docker compose up
 # Everything served from ONE port via nginx reverse proxy:
 #   http://localhost:3000          → UI Dashboard
@@ -6,6 +6,12 @@
 #   http://localhost:3000/v1       → Gateway (OpenAI-compatible)
 #
 # Single-origin design avoids CORS issues in the browser.
+#
+# NOTE — engine backend:
+#   PURSER_ENGINE_BACKEND=mock is set here for the demo stack (no GPU needed).
+#   In production, agents are configured with PURSER_ENGINE_BACKEND=llamacpp
+#   (the Helm chart default). Mock returns canned responses only — do NOT use
+#   it in production.
 
 services:
   control-plane:

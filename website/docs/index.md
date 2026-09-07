@@ -57,7 +57,7 @@ If you know Kubernetes, the mental model is familiar:
 └──────┬─────┘
        │
        ▼
-┌─────────────────────────── Control-plane side ───────────────────────────┐
+┌─────────────────────────── Control Plane ────────────────────────────────┐
 │                                                                          │
 │   ┌──────────────┐        ┌──────────────────────────────────────────┐   │
 │   │ API Gateway  │◀──────▶│              Control Plane               │   │
@@ -66,21 +66,22 @@ If you know Kubernetes, the mental model is familiar:
 │   └──────────────┘        └──────────────────────────────────────────┘   │
 │                                                │                         │
 └────────────────────────────────────────────────┼─────────────────────────┘
-                                                  │  gRPC + mTLS — control plane
-                                                  │  (low volume: enroll, plan,
+                                                  │  gRPC + mTLS
+                                                  │  (enroll, plan,
                                                   ▼   StartEngine, heartbeats)
-              ┌──────────────────────────────┴────────┐
-              │                                       │
- ┌──────────────────────────┐         ┌──────────────────────────┐
- │      Node / Agent        │         │      Node / Agent        │
- │  probe · linkbench       │         │  probe · linkbench       │
- │  supervisor · model cache│         │  supervisor · model cache│
- │  Engine Adapter → engine │         │  Engine Adapter → engine │
- └──────────────────────────┘         └──────────────────────────┘
-              ▲                                       ▲
-              └───────────────────────────────────────┘
-  DATA PLANE: engine↔engine activations (~KB/token) over the
-  trusted subnet — only activations cross the net (the pipeline)
+┌─────────────────────────── Data Plane ───────────────────────────────────┐
+│                                                                          │
+│  ┌──────────────────────────┐         ┌──────────────────────────┐       │
+│  │      Node / Agent        │         │      Node / Agent        │       │
+│  │  probe · linkbench       │         │  probe · linkbench       │       │
+│  │  supervisor · model cache│         │  supervisor · model cache│       │
+│  │  Engine Adapter          │         │  Engine Adapter          │       │
+│  │  → llama.cpp (default)   │         │  → llama.cpp (default)   │       │
+│  └──────────────────────────┘         └──────────────────────────┘       │
+│              ▲                                       ▲                   │
+│              └───────────────────────────────────────┘                   │
+│   activations (~KB/token) over the trusted subnet — pipeline parallelism │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Request flow:** Client → API Gateway `/v1/chat/completions` → the gateway routes to the pipeline **host** → tokens stream back to the client over SSE. When the model is split, the host coordinates the downstream worker stage(s); only activations cross the network.
