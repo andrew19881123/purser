@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "purser-cp.fullname" . }}
+  labels:
+    {{- include "purser-cp.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Set type=LoadBalancer or NodePort to expose the REST API (port
+  # {{ .Values.service.httpPort }}) and gRPC RegistrationService (port
+  # {{ .Values.service.grpcPort }}) to out-of-cluster Agents and Data Planes.
+  # Default ClusterIP = in-cluster only.
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "purser-cp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.httpNodePort }}
+      nodePort: {{ .Values.service.httpNodePort }}
+      {{- end }}
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.grpcNodePort }}
+      nodePort: {{ .Values.service.grpcNodePort }}
+      {{- end }}

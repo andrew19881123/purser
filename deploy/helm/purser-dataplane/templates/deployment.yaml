@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "purser-dp.fullname" . }}
+  labels:
+    {{- include "purser-dp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "purser-dp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "purser-dp.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "purser-dp.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.port }}
+          env:
+            # Host / port bindings.
+            - name: PURSER_GATEWAY_HOST
+              value: "0.0.0.0"
+            - name: PURSER_GATEWAY_PORT
+              value: {{ .Values.gateway.port | quote }}
+            # Control Plane connection.
+            - name: PURSER_CONTROL_PLANE_URL
+              value: {{ .Values.controlPlane.url | quote }}
+            - name: PURSER_DATAPLANE_ID
+              value: {{ .Values.controlPlane.dataplaneId | quote }}
+            # Join token — prefer an existing secret; fall back to inline chart secret.
+            - name: PURSER_GATEWAY_JOIN_TOKEN
+              {{- if .Values.controlPlane.joinTokenSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controlPlane.joinTokenSecret | quote }}
+                  key: join-token
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "purser-dp.secretName" . }}
+                  key: join-token
+              {{- end }}
+            # Inference engine backend.
+            - name: PURSER_ENGINE_BACKEND
+              value: {{ .Values.agent.engineBackend | quote }}
+            # API keys for inference clients (optional; empty => open dev mode).
+            {{- if or .Values.apiKeys .Values.apiKeysSecret }}
+            - name: PURSER_GATEWAY_API_KEYS
+              {{- if .Values.apiKeysSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiKeysSecret | quote }}
+                  key: api-keys
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "purser-dp.secretName" . }}
+                  key: api-keys
+              {{- end }}
+            {{- end }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.gateway.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
