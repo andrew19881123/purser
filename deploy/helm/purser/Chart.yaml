@@ -1,19 +1,24 @@
 apiVersion: v2
 name: purser
-description: >-
-  Purser enterprise control plane — Control Plane (registry + PKI +
-  RegistrationService), API Gateway (OpenAI-compatible) and Operator UI. Agents
-  run OUTSIDE the cluster as host packages and join the Control Plane over
-  gRPC/mTLS; expose the Control Plane via LoadBalancer/NodePort to reach them.
+description: >
+  Purser: zero-config LLM inference orchestrator for distributed GPU fleets.
+  Supports multi-tenant platform model (Organizations, Teams, Node Pools),
+  Control Plane / Data Plane separation, PostgreSQL for HA deployment,
+  and OpenAI + Anthropic-compatible inference endpoints.
 type: application
 # Chart version — bump on any change to the chart itself.
-version: 0.2.0
+version: 0.5.0
 # Version of the Purser application shipped by this chart (image tag default).
-appVersion: "0.2.0"
+appVersion: "0.5.0"
 keywords:
   - purser
   - llm
   - inference
+  - ai
+  - gpu
+  - orchestration
+  - multi-tenant
+  - enterprise
   - control-plane
   - gateway
 home: https://github.com/purser/purser

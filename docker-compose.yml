@@ -1,4 +1,4 @@
-# Purser demo stack — mock engine, no GPU required
+# Purser demo stack — mock engine (DEMO ONLY, no GPU required)
 # Usage: docker compose up
 # Everything served from ONE port via nginx reverse proxy:
 #   http://localhost:3000          → UI Dashboard
@@ -10,6 +10,10 @@
 # Database: PostgreSQL is the default for this stack (PURSER_DB_DRIVER=postgres).
 # For SQLite-only local development, set PURSER_DB_DRIVER=sqlite and
 # PURSER_DB=/data/registry.db, then remove the postgres depends_on / env vars.
+#
+# Engine backend: PURSER_ENGINE_BACKEND=mock is set here for the demo stack
+# (no GPU needed). Production agents use llamacpp (the Helm chart default).
+# Mock returns canned responses only — do NOT use in production.
 
 services:
   # PostgreSQL — production database for the control plane.
