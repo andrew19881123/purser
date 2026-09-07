@@ -19,6 +19,8 @@
 // reconstructed if the backend returns the leaner proto messages instead.
 // ---------------------------------------------------------------------------
 import type {
+  AccessLogParams,
+  AccessLogResponse,
   ApiKey,
   ApiKeyWithSecret,
   Assignment,
@@ -28,6 +30,7 @@ import type {
   BillingReport,
   BillingSummary,
   CatalogEntry,
+  ChainVerifyResponse,
   ClusterCapacity,
   DeployOverrides,
   Deployment,
@@ -38,6 +41,8 @@ import type {
   EnterpriseStatus,
   FitVerdict,
   ImportSource,
+  InferenceAuditParams,
+  InferenceAuditResponse,
   JoinInfo,
   JoinTokenResult,
   KeyUsage,
@@ -777,5 +782,29 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     getMyTeamPermissions: (teamId) =>
       request<EffectivePermissions>(`/platform/teams/${enc(teamId)}/my-permissions`),
+
+    // --- inference audit ---
+    listInferenceAudit: (params: InferenceAuditParams = {}): Promise<InferenceAuditResponse> => {
+      const p = new URLSearchParams();
+      if (params.limit != null) p.set('limit', String(params.limit));
+      if (params.offset != null) p.set('offset', String(params.offset));
+      if (params.modelId) p.set('model_id', params.modelId);
+      if (params.tenant) p.set('tenant', params.tenant);
+      if (params.since) p.set('since', params.since);
+      if (params.until) p.set('until', params.until);
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      return request<InferenceAuditResponse>(`/inference-audit${qs}`);
+    },
+
+    verifyAuditChain: (): Promise<ChainVerifyResponse> =>
+      request<ChainVerifyResponse>('/inference-audit/verify'),
+
+    listAccessLog: (params: AccessLogParams = {}): Promise<AccessLogResponse> => {
+      const p = new URLSearchParams();
+      if (params.limit != null) p.set('limit', String(params.limit));
+      if (params.apiKeyId) p.set('api_key_id', params.apiKeyId);
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      return request<AccessLogResponse>(`/logs/access${qs}`);
+    },
   };
 }

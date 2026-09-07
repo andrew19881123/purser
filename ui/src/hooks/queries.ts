@@ -16,7 +16,13 @@ import {
 import { api, type CreateApiKeyInput } from '../api/client';
 import { config } from '../api/config';
 import type { ChatClient } from '../api/openai';
-import type { DeployOverrides, ImportSource, MetricsSnapshot } from '../api/types';
+import type {
+  AccessLogParams,
+  DeployOverrides,
+  ImportSource,
+  InferenceAuditParams,
+  MetricsSnapshot,
+} from '../api/types';
 
 export const qk = {
   capacity: ['capacity'] as const,
@@ -383,6 +389,31 @@ export function useAuditLog(limit = 100) {
   return useQuery({
     queryKey: ['auditLog', limit],
     queryFn: () => api.getAuditLog(limit),
+  });
+}
+
+// --- inference audit --------------------------------------------------------
+
+export function useInferenceAudit(params: InferenceAuditParams = {}) {
+  return useQuery({
+    queryKey: ['inferenceAudit', params],
+    queryFn: () => api.listInferenceAudit(params),
+  });
+}
+
+export function useAuditChainVerify() {
+  return useQuery({
+    queryKey: ['auditChainVerify'],
+    queryFn: () => api.verifyAuditChain(),
+    // Don't auto-refetch — operator triggers verification explicitly.
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useAccessLog(params: AccessLogParams = {}) {
+  return useQuery({
+    queryKey: ['accessLog', params],
+    queryFn: () => api.listAccessLog(params),
   });
 }
 

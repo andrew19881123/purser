@@ -6,6 +6,7 @@
 // React Query polls. No network, no external calls — pure offline simulation.
 // ---------------------------------------------------------------------------
 import type {
+  AccessLogResponse,
   ApiKey,
   ApiKeyWithSecret,
   AuditEntry,
@@ -13,12 +14,14 @@ import type {
   BillingReport,
   BillingSummary,
   CatalogEntry,
+  ChainVerifyResponse,
   ClusterCapacity,
   Deployment,
   DeploymentPlan,
   EffectivePermissions,
   EnterpriseStatus,
   ImportSource,
+  InferenceAuditResponse,
   JoinInfo,
   JoinTokenResult,
   KeyUsage,
@@ -691,5 +694,43 @@ export const mockBackend: PurserApi = {
       permissions: ['read', 'deploy'],
       is_org_admin: false,
     }, 200);
+  },
+
+  // --- inference audit ---
+
+  listInferenceAudit(params = {}): Promise<InferenceAuditResponse> {
+    const now = Date.now();
+    const allEvents = [
+      { seq: 1, modelId: 'llama3-8b', modelRevision: 'main', modelQuantization: 'Q4_K_M', tenant: 'acme', apiKeyId: 'key-abc123', nodeId: 'node-1', inferenceEngine: 'llamacpp', inputTokens: 512, outputTokens: 128, latencyMs: 1240, status: 'ok', createdAt: new Date(now - 3600000).toISOString(), hash: 'abc123', prevHash: '000000' },
+      { seq: 2, modelId: 'qwen3-235b', modelRevision: 'main', modelQuantization: 'Q8_0', tenant: 'beta', apiKeyId: 'key-def456', nodeId: 'node-2', inferenceEngine: 'llamacpp', inputTokens: 1024, outputTokens: 256, latencyMs: 3800, status: 'ok', createdAt: new Date(now - 1800000).toISOString(), hash: 'def456', prevHash: 'abc123' },
+      { seq: 3, modelId: 'llama3-8b', modelRevision: 'main', modelQuantization: 'Q4_K_M', tenant: 'acme', apiKeyId: 'key-abc123', nodeId: 'node-1', inferenceEngine: 'llamacpp', inputTokens: 200, outputTokens: 50, latencyMs: 640, status: 'error', createdAt: new Date(now - 600000).toISOString(), hash: 'ghi789', prevHash: 'def456' },
+    ];
+    const { limit = 50, offset = 0 } = params;
+    const filtered = allEvents.filter((e) => {
+      if (params.modelId && e.modelId !== params.modelId) return false;
+      if (params.tenant && e.tenant !== params.tenant) return false;
+      return true;
+    });
+    return delay({ events: filtered.slice(offset, offset + limit), total: filtered.length });
+  },
+
+  verifyAuditChain(): Promise<ChainVerifyResponse> {
+    return delay({
+      verified: true,
+      blockCount: 1420,
+      lastVerifiedAt: new Date().toISOString(),
+      brokenAtSeq: null,
+    });
+  },
+
+  listAccessLog(params = {}): Promise<AccessLogResponse> {
+    const now = Date.now();
+    const allEntries = [
+      { id: 4812, apiKeyId: 'key-abc123', method: 'POST', path: '/v1/chat/completions', ipPrefix: '10.0.1.0/24', userAgent: 'python-httpx/0.27.2', statusCode: 200, requestAt: new Date(now - 3600000).toISOString() },
+      { id: 4813, apiKeyId: 'key-def456', method: 'POST', path: '/v1/chat/completions', ipPrefix: '192.168.0.0/24', userAgent: 'curl/8.7.1', statusCode: 401, requestAt: new Date(now - 1800000).toISOString() },
+    ];
+    const { limit = 50, apiKeyId } = params;
+    const filtered = apiKeyId ? allEntries.filter((e) => e.apiKeyId === apiKeyId) : allEntries;
+    return delay({ entries: filtered.slice(0, limit), count: filtered.length });
   },
 };

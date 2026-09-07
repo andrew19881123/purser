@@ -1,260 +1,277 @@
-# Tamper-Evident Audit Log
+# Audit Log Dashboard
 
-The Purser audit log records every administrative event with a cryptographic hash chain. Any tampering — content mutation, reordering, insertion, or deletion — is detectable by re-verifying the chain.
+Purser provides two complementary audit views in the operator dashboard, accessible from the sidebar under **Audit Log**:
 
-This is an **Enterprise feature** gated on `PURSER_LICENSE_KEY` with the `"audit"` feature entitlement. Without a valid license, `GET /api/v1/enterprise/audit-log` returns `402 Payment Required`.
+| Tab | Description |
+|---|---|
+| **Inference Audit** | Tamper-evident per-request log of every inference call — model, tenant, token counts, latency, and cryptographic hash chain. |
+| **Access Log** | Gateway HTTP access log — endpoint, method, IP prefix, user agent, and status code. |
 
----
-
-## What gets logged
-
-The audit log records:
-
-| Event | `action` field | When |
-|---|---|---|
-| Model registered | `model.created` | `POST /api/v1/models` succeeds |
-| Model deleted | `model.deleted` | `DELETE /api/v1/models/{id}` succeeds |
-| API key created | `apikey.created` | `POST /api/v1/apikeys` succeeds |
-| API key revoked | `apikey.deleted` | `DELETE /api/v1/apikeys/{id}` succeeds |
-| Join token minted | `join_token.minted` | `POST /api/v1/join-token` succeeds |
-| Node drain | `fleet.node.draining` | `POST /api/v1/nodes/{id}/drain` succeeds |
-| Node decommission | `fleet.node.decommissioned` | `DELETE /api/v1/nodes/{id}` succeeds |
-
-All events carry:
-- `actor` — the API client identity (currently `"api"`)
-- `action` — the verb
-- `target` — the affected resource ID
-- `details` — optional structured context (key→value map)
+Both tabs are always visible. The **Chain Integrity Panel** sits above the tabs and is persistent — it reports the cryptographic health of the inference hash chain at a glance.
 
 ---
 
-## How the hash chain works
+## Chain Integrity Panel
 
-Every audit entry is immutably chained with SHA-256:
-
-```mermaid
-graph LR
-    G["Genesis\nPrevHash = 0000...0000"]
-    E1["Entry seq=1\naction: join_token.minted\nhash: a3f8..."]
-    E2["Entry seq=2\naction: model.created\nhash: 9c21..."]
-    E3["Entry seq=3\naction: apikey.created\nhash: 7b44..."]
-    G -->|"SHA-256( 0000...0000 || content₁ )"| E1
-    E1 -->|"SHA-256( a3f8... || content₂ )"| E2
-    E2 -->|"SHA-256( 9c21... || content₃ )"| E3
-```
+This panel is Purser's unique differentiator. No other AI inference platform provides cryptographic hash-chain verification directly in the operator dashboard.
 
 ```
-Hash = SHA-256( rawBytes(PrevHash) || CanonicalBytes(content) )
+┌─ Chain Integrity ─────────────────────────────────────────────────────────┐
+│  [Chain verified ✓]  Block count: 1,420  Last verified: Sep 8 2026 14:00  │
+│                                                               [Verify Now] │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+### What it shows
+
+| Field | Description |
+|---|---|
+| **Chain verified** (green badge) | All hash links are intact — no tampering detected. |
+| **Chain broken at seq N** (orange badge) | A hash mismatch, broken link, or sequence gap was found at entry `N`. Compliance alert: investigate immediately. |
+| **Block count** | Number of chained rows in the log. |
+| **Last verified** | Timestamp of the last successful verification run. |
+
+### Verify Now button
+
+Click **Verify Now** to trigger a fresh `GET /api/v1/inference-audit/verify` call. The badge and metadata update immediately with the latest result.
+
+The page calls the verify endpoint automatically on mount. Auto-refresh on window focus is disabled to prevent unnecessary load on long-running deployments with large chains.
+
+---
+
+## Inference Audit Tab
+
+The default tab shows the per-request inference log, paginated and filterable.
+
+### Columns
+
+| Column | Description |
+|---|---|
+| **#** | Sequential entry number (`seq`). |
+| **Model** | Model ID that served the request. |
+| **Tenant** | Tenant identifier from the API key record. |
+| **API Key** | API key ID that issued the request. |
+| **Latency** | End-to-end latency in milliseconds. |
+| **Tokens (in/out)** | Input / output token counts. |
+| **Status** | `ok` (green) or `error` (red). |
+| **Time** | Wall-clock timestamp in the browser's local timezone. |
+
+### Filters
+
+| Filter | Behaviour |
+|---|---|
+| **Model** | Dropdown populated with model IDs from the current page. |
+| **Tenant** | Dropdown populated with tenants from the current page. |
+| **Since / Until** | Date range inputs — narrow results to a specific window. |
+
+All filter changes reset the page offset to 0.
+
+### Pagination
+
+**Prev** / **Next** buttons advance through the log 50 events at a time. The current position (`from–to / total`) is shown between the two buttons.
+
+### CSV Export
+
+Click **Export CSV** to download the current page's events as a comma-separated file. The CSV contains: `seq`, `model_id`, `tenant`, `api_key_id`, `input_tokens`, `output_tokens`, `latency_ms`, `status`, `created_at`.
+
+The export is client-side (no server round-trip). To export the full log, use the API directly with a large `limit`.
+
+---
+
+## Access Log Tab
+
+The Access Log tab shows the gateway's HTTP access log — useful for security review and debugging authentication failures.
+
+### Columns
+
+| Column | Description |
+|---|---|
+| **API Key** | API key ID associated with the request. |
+| **Method** | HTTP method (`POST`, `GET`, etc.). |
+| **Path** | Request path, e.g. `/v1/chat/completions`. |
+| **IP Prefix** | CIDR `/24` prefix of the client IP — full IP is never stored. |
+| **User Agent** | HTTP `User-Agent` header value. |
+| **Status** | HTTP response code, colour-coded: green for 2xx, orange for 4xx, red for 5xx. |
+| **Time** | Request timestamp in the browser's local timezone. |
+
+### Filter
+
+Enter any part of an API key ID in the filter input to narrow the results. Leave blank to show all entries.
+
+### Refresh
+
+Click **Refresh** to reload the access log. Entries are fetched on tab mount; they do not auto-refresh.
+
+---
+
+## Audit Chain — how it works
+
+Every new inference event extends a SHA-256 hash chain stored in the `inference_audit_log` table:
+
+```
+Hash = SHA-256( rawBytes(PrevHash) || CanonicalBytes(event) )
 ```
 
 Where:
-- `PrevHash` for the first entry is `0000...0000` (64 hex zeros — `GenesisPrevHash`)
-- `PrevHash` for each subsequent entry is the `Hash` of the previous entry
-- `CanonicalBytes(content)` is a deterministic length-prefixed encoding of `Seq`, `TimeUnixNano`, `Actor`, `Action`, `Target`, and `Details` (with map keys sorted). It deliberately excludes `PrevHash` and `Hash`.
-- All hashes are hex-encoded SHA-256
+- `PrevHash` for the genesis entry is `0000…0000` (64 hex zeros).
+- `PrevHash` for each subsequent entry is the `Hash` of the previous entry.
+- `CanonicalBytes(event)` is a deterministic, length-prefixed encoding of the covered fields (see `inference-audit.md` for the full spec).
 
-This means changing any historical entry — its content, order, or membership — invalidates every hash that follows.
+This means changing any historical entry — its content, order, or membership — invalidates every hash that follows, making tampering immediately detectable.
 
-### What the chain catches
+### What "Chain broken at seq N" means
 
-- Content mutation (changing any field)
-- Entry reordering (sequential `Seq` numbers must be contiguous)
-- Deletion (gap in `Seq` sequence)
-- Insertion (downstream hashes become invalid)
-- Broken `PrevHash` links
+The verify endpoint re-walks every chained row and recomputes each hash. If it finds a discrepancy at row `N`, it returns `verified: false, broken_at_seq: N`. This indicates one of:
 
-### What it cannot catch alone
+- Content of row `N` was modified after the fact.
+- Row `N` (or a row before it) was deleted, inserted, or reordered.
+- The `hash` column was overwritten with a different value.
 
-Rewriting the **most recent** entry and recomputing its hash produces an internally consistent chain. To close this gap, publish the head `Hash` to an external trusted anchor (append-only log, HSM, or Merkle tree) and compare it against the last entry's `Hash` on each retrieval.
+Investigate row `N` and the entries immediately before it in the database. Correlate with your operational logs to determine whether this was a legitimate administrative action or an integrity breach.
 
 ---
 
-## Entry fields
+## API reference
+
+### List inference events
+
+```
+GET /api/v1/inference-audit
+Authorization: Bearer <admin-or-viewer-key>
+```
+
+**Query parameters** (all optional):
+
+| Parameter | Description |
+|---|---|
+| `limit` | Page size (default 50, max 1000) |
+| `offset` | Number of events to skip |
+| `model_id` | Filter by model |
+| `tenant` | Filter by tenant |
+| `since` | ISO-8601 inclusive lower bound on `created_at` |
+| `until` | ISO-8601 inclusive upper bound on `created_at` |
+
+**Response** (`200 OK`):
 
 ```json
 {
-  "seq": 42,
-  "time_unix_nano": 1725494400000000000,
-  "actor": "api",
-  "action": "model.created",
-  "target": "llama-8b",
-  "details": {},
-  "prev_hash": "a3f8...",
-  "hash": "9c21..."
+  "events": [
+    {
+      "seq": 1,
+      "model_id": "llama3-8b",
+      "model_revision": "main",
+      "model_quantization": "Q4_K_M",
+      "tenant": "acme",
+      "api_key_id": "key-abc123",
+      "node_id": "node-1",
+      "inference_engine": "llamacpp",
+      "input_tokens": 512,
+      "output_tokens": 128,
+      "latency_ms": 1240,
+      "status": "ok",
+      "created_at": "2026-09-08T14:23:07Z",
+      "hash": "abc123...",
+      "prev_hash": "def456..."
+    }
+  ],
+  "total": 1420
+}
+```
+
+Returns `402 Payment Required` without an `inference_audit` enterprise feature license.
+
+---
+
+### Verify the hash chain
+
+```
+GET /api/v1/inference-audit/verify
+Authorization: Bearer <admin-or-viewer-key>
+```
+
+**Response** (`200 OK` — even when the chain is broken):
+
+```json
+{
+  "verified": true,
+  "block_count": 1420,
+  "last_verified_at": "2026-09-08T14:00:00Z",
+  "broken_at_seq": null
 }
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `seq` | `uint64` | 1-based position in the chain. Genesis = 1. Must be contiguous. |
-| `time_unix_nano` | `int64` | Wall-clock time as Unix nanoseconds. |
-| `actor` | `string` | Who performed the action. |
-| `action` | `string` | Verb (e.g. `model.created`, `apikey.deleted`). |
-| `target` | `string` | Affected resource ID. |
-| `details` | `object` | Optional structured context. Keys sorted in canonical encoding. |
-| `prev_hash` | `string` | Hex SHA-256 of the preceding entry's `hash` (or `GenesisPrevHash` for seq=1). |
-| `hash` | `string` | Hex SHA-256 of `rawBytes(PrevHash) || CanonicalBytes(content)`. |
+| `verified` | boolean | `true` when every entry is consistent. |
+| `block_count` | integer | Number of chained rows examined. |
+| `last_verified_at` | string | ISO-8601 timestamp of this verification run. |
+| `broken_at_seq` | integer or null | `seq` of the first broken entry; `null` when `verified=true`. |
+
+Returns `402 Payment Required` without a valid license.
 
 ---
 
-## Reading the audit log
+### List access log entries
 
-```bash
-GET /api/v1/enterprise/audit-log
+```
+GET /api/v1/logs/access
+Authorization: Bearer <admin-or-viewer-key>
 ```
 
-Query parameters:
-- `limit` — number of entries to return (default 100, override with `?limit=N`)
+**Query parameters** (all optional):
 
-Returns entries in ascending `seq` order (oldest first). Requires a valid Enterprise license with the `"audit"` feature.
+| Parameter | Description |
+|---|---|
+| `limit` | Page size (default 50) |
+| `api_key_id` | Filter by API key ID |
 
-### Response shape
+**Response** (`200 OK`):
 
 ```json
 {
-  "feature": "audit",
-  "licensee": "Acme Corp",
   "entries": [
     {
-      "seq": 1,
-      "time_unix_nano": 1725494400000000000,
-      "actor": "api",
-      "action": "join_token.minted",
-      "target": "default",
-      "details": null,
-      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-      "hash": "a3f8..."
-    },
-    {
-      "seq": 2,
-      "time_unix_nano": 1725494401000000000,
-      "actor": "api",
-      "action": "model.created",
-      "target": "llama-8b",
-      "details": null,
-      "prev_hash": "a3f8...",
-      "hash": "9c21..."
+      "id": 4812,
+      "api_key_id": "key-abc123",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "ip_prefix": "10.0.1.0/24",
+      "user_agent": "python-httpx/0.27.2",
+      "status_code": 200,
+      "request_at": "2026-09-08T14:23:07Z"
     }
   ],
-  "chain": {
-    "verified": true,
-    "length": 2
-  }
+  "count": 1
 }
 ```
 
-When the chain is intact, `chain.verified` is `true`.
-
-When tampering is detected, `chain.verified` is `false` and a `break` object identifies the first failing entry:
-
-```json
-{
-  "chain": {
-    "verified": false,
-    "length": 5,
-    "break": {
-      "index": 2,
-      "seq": 3,
-      "kind": "hash",
-      "msg": "stored hash 'abc...' does not match recomputed hash 'def...'"
-    }
-  }
-}
-```
-
-`kind` values:
-- `"seq"` — `Seq` is not the expected contiguous value (reorder, delete, or insert)
-- `"link"` — `PrevHash` does not equal the previous entry's `Hash` (broken chain link)
-- `"hash"` — stored `Hash` does not match the recomputed value (content tampering)
-
-A failed verification is **never** a 500 error — it is a 200 with `verified: false`.
-
 ---
 
-## Dashboard
+## Enabling the audit features
 
-The Purser operator dashboard exposes the audit log through a dedicated **Audit Log** page, accessible from the navigation sidebar under **Use → Audit Log**.
-
-### What you see
-
-The page shows a table of audit entries with the following columns:
-
-| Column | Description |
-|---|---|
-| **#** | Sequential entry number (`seq`). |
-| **Timestamp** | Wall-clock time the event was recorded, in your browser's local timezone. |
-| **Actor** | API client identity (currently `"api"`). |
-| **Action** | Event verb, colour-coded by category — green for `*.created`/`*.minted`, grey for `*.deleted`, orange for `fleet.*` events. |
-| **Target** | Affected resource identifier. |
-| **Details** | Optional structured context as `key=value` pairs. |
-
-### Chain verification badge
-
-A badge in the page header reports chain integrity at a glance:
-
-- **Chain verified** (green) — all hashes and links are intact; no tampering detected in the returned window.
-- **Chain integrity broken at seq N** (orange) — a hash mismatch, broken link, or sequence gap was found at entry `N`. This is a compliance alert: investigate the entry and surrounding context immediately.
-
-The badge updates on every refresh. The control plane re-runs the full chain on every request, so the badge reflects the current state of the database.
-
-### Limit selector
-
-Use the **Show** dropdown (50 / 100 / 200) to control how many recent entries are fetched and verified. Larger windows verify more history but are slower for long-lived deployments.
-
-### Enterprise license gate
-
-Without a valid Enterprise license the page displays an **"Enterprise license required"** empty state with a link to this documentation. The Audit Log nav item is always visible so operators can discover the feature and understand what license is needed.
-
-### Screenshot walkthrough
-
-```
-+--------------------------------------------------+
-| Audit Log              [Chain verified ✓]  [100▾] [↺] |
-+--------------------------------------------------+
-|  #  | Timestamp           | Actor | Action        | Target        | Details       |
-|  1  | 2024-09-01 12:00:00 | api   | model.created | llama-8b      | source=hf     |
-|  2  | 2024-09-01 13:00:00 | api   | apikey.created| dev-key-1     | team=eng      |
-|  3  | 2024-09-01 14:00:00 | api   | fleet.node.draining | node-02 |               |
-+--------------------------------------------------+
-```
-
-Action badge colour key:
-
-- `model.created`, `apikey.created`, `join_token.minted` → **green** (success)
-- `model.deleted`, `apikey.deleted`, `fleet.node.decommissioned` → **grey** (neutral)
-- `fleet.node.draining` → **orange** (warning)
-
----
-
-## Enabling the audit log
-
-Set `PURSER_LICENSE_KEY` to a key with the `"audit"` feature entitlement:
+Both the inference audit log and access log require an enterprise license key with the `inference_audit` feature. Set `PURSER_LICENSE_KEY`:
 
 ```bash
 # Environment variable
 export PURSER_LICENSE_KEY=<your-enterprise-key>
 
 # Helm
-helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
+helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
   --set license.key="<your-enterprise-key>"
 ```
 
 Verify the feature is active:
 
 ```bash
-curl -s http://<control-plane>:8080/api/v1/enterprise/status
-# "features": ["audit", ...]
+curl -s http://<control-plane>:8080/api/v1/enterprise/status | jq '.features'
+# ["inference_audit", ...]
 ```
 
 ---
 
-## OTEL export for SIEM (Splunk / Elastic)
+## SIEM export
 
-When OTel log export is available (see [OpenTelemetry](../configuration/otel.md)), audit events are forwarded as structured log records with the `purser.audit` instrumentation scope. Each record includes the full entry fields.
-
-For direct SIEM integration without OTel, poll `GET /api/v1/enterprise/audit-log?limit=1000` and forward to Splunk HEC or Elastic Bulk API. The `seq` field provides a reliable monotonic cursor — store the last seen `seq` and request `?limit=N` on subsequent polls.
-
-Example Splunk HEC forwarder (shell):
+To forward inference events to Splunk, Elastic, or any SIEM, poll the API and use the `seq` field as a monotonic cursor:
 
 ```bash
 #!/bin/bash
@@ -262,31 +279,28 @@ LAST_SEQ=0
 CP=http://cp.internal:8080
 
 while true; do
-  RESULT=$(curl -s "$CP/api/v1/enterprise/audit-log?limit=500")
-  # Filter entries with seq > LAST_SEQ and POST to Splunk HEC
-  # ... (parse with jq, POST to Splunk)
+  # Fetch 500 events at a time, skipping already-seen rows
+  RESULT=$(curl -s "$CP/api/v1/inference-audit?limit=500&offset=$LAST_SEQ")
+  EVENTS=$(echo "$RESULT" | jq '.events | length')
+  if [ "$EVENTS" -gt 0 ]; then
+    # POST to your SIEM
+    echo "$RESULT" | jq '.events[]' | siem-ingest
+    LAST_SEQ=$((LAST_SEQ + EVENTS))
+  fi
   sleep 60
 done
 ```
 
+The `hash` and `prev_hash` fields are included in the API response so your SIEM can independently verify chain integrity on ingestion.
+
 ---
 
-## Integrity verification (standalone)
+## Privacy
 
-To verify the audit chain independently of the API (e.g. from a compliance script):
+| Field | Stored value |
+|---|---|
+| Prompt / completion text | **Never stored** |
+| Full client IP address | **Never stored** — only the `/24` CIDR prefix |
+| API key secret | **Never stored** — only the key ID prefix |
 
-```bash
-# Fetch all entries
-curl -s "http://<cp>:8080/api/v1/enterprise/audit-log?limit=10000" > audit.json
-
-# Check the chain.verified field
-python3 -c "import json, sys; d=json.load(open('audit.json')); print('OK' if d['chain']['verified'] else f'TAMPERED: {d[\"chain\"][\"break\"]}')"
-```
-
-The server-side verification re-runs the full chain on every request. You can also re-implement the chain rule independently:
-
-```
-Hash = hex(SHA-256(hex_decode(PrevHash) || CanonicalBytes(content)))
-```
-
-where `CanonicalBytes` is the length-prefixed encoding described in `go/controlplane/audit/audit.go`.
+Purser records only the metadata necessary for compliance (AI Act Art. 12) and security review. Operators are responsible for meeting further data-retention and deletion obligations under applicable law.
