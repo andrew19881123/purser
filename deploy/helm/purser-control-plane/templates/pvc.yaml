@@ -1,0 +1,21 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-data" (include "purser-cp.fullname" .) }}
+  labels:
+    {{- include "purser-cp.labels" . | nindent 4 }}
+  {{- if and .Values.security.encryptedPVC .Values.security.encryptionAnnotations }}
+  annotations:
+    {{- toYaml .Values.security.encryptionAnnotations | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

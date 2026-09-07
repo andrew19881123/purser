@@ -1,0 +1,45 @@
+Purser Control Plane {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Service: {{ include "purser-cp.fullname" . }}  (HTTP :{{ .Values.service.httpPort }}, gRPC :{{ .Values.service.grpcPort }})
+
+{{- if eq .Values.service.type "ClusterIP" }}
+
+NOTE: service.type is ClusterIP — the Control Plane is NOT reachable by out-of-cluster Agents or Data Planes.
+Upgrade with:
+  helm upgrade {{ .Release.Name }} oci://ghcr.io/andrew19881123/charts/purser-control-plane \
+    --set service.type=LoadBalancer
+{{- else if eq .Values.service.type "NodePort" }}
+
+NodePort — discover the assigned ports:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "purser-cp.fullname" . }}
+{{- else }}
+
+LoadBalancer — discover the external IP/hostname:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "purser-cp.fullname" . }} -w
+{{- end }}
+
+## Registering a Data Plane
+
+Once the Control Plane is reachable, register a Data Plane and obtain a join token:
+
+  CP_URL=http://<control-plane-host>:{{ .Values.service.httpPort }}
+
+  # Create a Data Plane entry
+  DP_ID=$(curl -sS -X POST "$CP_URL/api/v1/data-planes" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"prod-dp","region":"us-east-1"}' | jq -r .id)
+
+  # Mint a join token for that Data Plane
+  curl -sS -X POST "$CP_URL/api/v1/data-planes/$DP_ID/join-token" | jq -r .token
+
+Then deploy the Data Plane chart:
+  helm upgrade --install dp-prod \
+    oci://ghcr.io/andrew19881123/charts/purser-dataplane \
+    --set controlPlane.url=$CP_URL \
+    --set controlPlane.dataplaneId=$DP_ID \
+    --set controlPlane.joinToken=<token> \
+    --set apiKeys="sk-your-key-here"
+
+## Check status
+  helm -n {{ .Release.Namespace }} status {{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} get deploy,svc,pvc -l app.kubernetes.io/instance={{ .Release.Name }}

@@ -1,0 +1,148 @@
+# Default values for the purser-control-plane chart.
+# Enterprise-grade deployment of the Purser Control Plane only.
+# Data Planes connect via the purser-dataplane chart.
+
+# -- Replicas. Keep at 1 unless using the HA Raft backend (enterprise).
+# The SQLite registry is single-writer; >1 replicas without Raft corrupts state.
+replicaCount: 1
+
+# Override the generated resource name (defaults to the release name).
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/andrew19881123/purser-control-plane
+  # Defaults to .Chart.AppVersion when left empty.
+  tag: "0.5.0"
+  pullPolicy: IfNotPresent
+
+# Secrets for pulling from a private registry, e.g. [{ name: regcred }].
+imagePullSecrets: []
+
+service:
+  # Set to LoadBalancer or NodePort to expose the REST API and gRPC
+  # RegistrationService to out-of-cluster Agents and Data Planes.
+  type: ClusterIP
+  httpPort: 8080    # management REST API (/api/v1)
+  grpcPort: 9443    # RegistrationService gRPC (Agent enroll/heartbeat, mTLS)
+  # NodePorts (only applied when type=NodePort; leave empty for auto-assign).
+  httpNodePort: ""
+  grpcNodePort: ""
+  annotations: {}
+
+# -- Database configuration.
+# driver: "sqlite" (default, single-replica) or "postgres" (HA enterprise).
+database:
+  driver: sqlite
+  # REQUIRED when driver=postgres. Set via PURSER_DB_URL env or a secret.
+  # Example: "postgres://purser:password@postgres.internal:5432/purser?sslmode=require"
+  url: ""
+  # Name of an existing Kubernetes Secret with key "db-url" (takes precedence
+  # over database.url when set).
+  urlSecret: ""
+
+# Control Plane tuning.
+controlPlane:
+  clusterId: "default"    # echoed in join tokens (PURSER_CLUSTER_ID)
+  # AgentService port the orchestrator dials on each host node (0 = default 50151).
+  agentPort: 0
+  # Extra env passed verbatim to the container ([{name, value}]).
+  extraEnv: []
+  resources: {}
+    # requests: { cpu: 100m, memory: 128Mi }
+    # limits:   { cpu: "1",  memory: 512Mi }
+
+persistence:
+  # Stores the PKI CA key/cert (and SQLite registry when driver=sqlite).
+  enabled: true
+  size: 1Gi
+  # Empty => cluster default StorageClass.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  # Mount point inside the container.
+  mountPath: /data
+  # Reuse a pre-existing PVC instead of creating one (empty => chart creates it).
+  existingClaim: ""
+
+# -- Pre-registered Data Planes created at startup.
+# Each entry is written to the registry on first boot.
+# See website/docs/install/kubernetes-enterprise.md for the schema.
+dataplanes: []
+# - id: dp-prod
+#   name: "Production DP"
+#   region: "us-east-1"
+
+# Enterprise license (offline-verified; no phone-home). Optional.
+# When set, stored in a Secret exposed as PURSER_LICENSE_KEY.
+# Empty => community edition.
+license:
+  key: ""
+  # Name of an existing Secret with key "license-key" (takes precedence over
+  # license.key when set).
+  existingSecret: ""
+
+# -- Optional Kubernetes Ingress.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []
+
+# -- TLS / cert-manager integration for the gRPC mTLS endpoint.
+tls:
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: "ClusterIssuer"
+    duration: "8760h"
+    renewBefore: "720h"
+
+# -- External Secrets Operator (ESO) integration.
+externalSecrets:
+  enabled: false
+  secretStoreRef:
+    name: ""
+    kind: "ClusterSecretStore"
+  remoteRefs:
+    dbUrl: ""         # e.g. "secret/data/purser/db-url"
+    licenseKey: ""    # e.g. "secret/data/purser/license-key"
+
+# --- Security: encryption at rest ---
+security:
+  integrityCheckOnStart: false  # PRAGMA integrity_check at startup (~1s for large DBs)
+  encryptedPVC: false           # add annotations requesting encrypted PVC storage
+  encryptionAnnotations: {}     # cloud-provider annotations (e.g. AWS KMS ARN)
+
+# -- Container-level security context applied to every container.
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Pod-level security context.
+podSecurityContext:
+  fsGroup: 65532
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Optional Kubernetes NetworkPolicy.
+networkPolicy:
+  enabled: false
+
+# Annotations applied to all pods.
+podAnnotations: {}
+
+# nodeSelector / tolerations / affinity applied to all workloads.
+nodeSelector: {}
+tolerations: []
+affinity: {}
