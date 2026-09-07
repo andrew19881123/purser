@@ -1779,6 +1779,17 @@ func (s *Server) handleReconcilerStatus(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleListNodes returns all nodes known to the registry.
+//
+// Tenant isolation policy: INTENTIONALLY GLOBAL. Nodes are infrastructure
+// resources owned by the platform operator, not by individual tenants. All
+// authenticated users — regardless of tenant or role — can read the full node
+// list. This is necessary for:
+//   - Admins performing fleet management and capacity planning.
+//   - Viewers understanding cluster topology when debugging deployments.
+//
+// If per-tenant node visibility is required in future (e.g. isolated
+// single-tenant node pools), add a ListNodesByTenant registry method and call
+// extractRequestTenant here, mirroring handleListDeployments.
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.reg.ListNodes(r.Context())
 	if err != nil {
@@ -1977,6 +1988,13 @@ type modelWithFit struct {
 // entry is annotated with a fit verdict (deployable / node count + estimated
 // tok/s range, or the deficit) so the UI can render the "Runs / Doesn't fit"
 // badge without a second round-trip.
+//
+// Tenant isolation policy: INTENTIONALLY GLOBAL. The model catalog is a shared
+// library of available LLM architectures. Tenants must be able to discover all
+// registered models before deploying them; a tenant-scoped catalog would prevent
+// users from seeing models they are entitled to deploy. Read access to the
+// catalog does not grant deployment rights — those are enforced separately when
+// a deployment is requested (see handleListDeployments for tenant-scoped resources).
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.reg.ListModels(r.Context())
 	if err != nil {
