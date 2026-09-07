@@ -256,12 +256,69 @@ type BillingTenantUsage struct {
 
 // BillingReport is the full chargeback report for a configurable time window.
 // It is returned by GetBillingReport and served by GET /api/v1/billing/report.
+//
+// SLAStats is populated only when the caller supplies a sla_threshold_ms query
+// parameter; it contains one row per distinct tenant showing the fraction of
+// requests whose latency_ms was below the requested threshold.
 type BillingReport struct {
 	PeriodStart   time.Time            `json:"period_start"`
 	PeriodEnd     time.Time            `json:"period_end"`
 	Tenants       []BillingTenantUsage `json:"tenants"`
 	TotalRequests int64                `json:"total_requests"`
 	TotalTokens   int64                `json:"total_tokens"`
+	// SLA compliance — present only when sla_threshold_ms is requested.
+	SLAStats []TenantSLAStat `json:"sla_stats,omitempty"`
+}
+
+// TenantSLAStat holds the SLA compliance rate for one tenant over the
+// billing window. It is embedded in BillingReport.SLAStats.
+type TenantSLAStat struct {
+	TenantID          string  `json:"tenant_id"`
+	SLAComplianceRate float64 `json:"sla_compliance_rate"` // 0.0–1.0
+	SLAThresholdMs    float64 `json:"sla_threshold_ms"`
+}
+
+// BillingForecastEntry is a burn-rate projection for one tenant in the
+// current billing period. It is returned by GetBillingForecast and served
+// by GET /api/v1/billing/forecast.
+//
+// OrgID / TeamID are derived from the tenant_id naming convention:
+// "orgId/teamSlug" → OrgID=orgId, TeamID=teamSlug; plain "tenantId" → OrgID=tenantId, TeamID="".
+type BillingForecastEntry struct {
+	OrgID               string    `json:"org_id"`
+	TeamID              string    `json:"team_id,omitempty"`
+	PeriodStart         time.Time `json:"period_start"`
+	PeriodEnd           time.Time `json:"period_end"`
+	DaysElapsed         int       `json:"days_elapsed"`
+	DaysInPeriod        int       `json:"days_in_period"`
+	CostUsedUSD         float64   `json:"cost_used_usd"`
+	BudgetUSD           *float64  `json:"budget_usd,omitempty"`
+	BurnRateDailyUSD    float64   `json:"burn_rate_daily_usd"`
+	ProjectedMonthlyUSD float64   `json:"projected_monthly_usd"`
+	BudgetRemainingUSD  *float64  `json:"budget_remaining_usd,omitempty"`
+	DaysUntilExhaustion *float64  `json:"days_until_exhaustion,omitempty"`
+	QuotaUtilizationPct *float64  `json:"quota_utilization_pct,omitempty"`
+}
+
+// ModelAdoptionBucket is one time bucket in a model-adoption time-series.
+type ModelAdoptionBucket struct {
+	Date      string `json:"date"`
+	Requests  int64  `json:"requests"`
+	TokensOut int64  `json:"tokens_out"`
+}
+
+// ModelAdoptionSeries is the request time-series for a single model,
+// grouped into daily or weekly buckets.
+type ModelAdoptionSeries struct {
+	ModelID string                `json:"model_id"`
+	Buckets []ModelAdoptionBucket `json:"buckets"`
+}
+
+// ModelAdoptionResponse is returned by GET /api/v1/billing/models/adoption.
+type ModelAdoptionResponse struct {
+	Window string                `json:"window"`
+	Days   int                   `json:"days"`
+	Series []ModelAdoptionSeries `json:"series"`
 }
 
 // Cert tracks a certificate issued by the internal CA (see package pki).

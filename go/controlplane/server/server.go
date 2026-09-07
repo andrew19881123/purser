@@ -1481,6 +1481,9 @@ func (s *Server) routes() {
 	// feature); GET /billing/summary is open for all viewer/admin roles.
 	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
 	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
+	// FinOps extensions (v0.5) — enterprise-gated ("billing" feature).
+	s.mux.HandleFunc("GET /api/v1/billing/forecast", s.handleBillingForecast)
+	s.mux.HandleFunc("GET /api/v1/billing/models/adoption", s.handleModelAdoption)
 
 	// v0.4 org/team billing — enterprise-gated ("billing" feature).
 	// Teams are identified by tenant_id (naming convention: "<orgId>/<teamSlug>").

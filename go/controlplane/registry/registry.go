@@ -163,6 +163,20 @@ type Registry interface {
 	// Teams are discovered using the naming convention "<orgID>/<teamSlug>" for
 	// tenant_id values in the inference_audit_log.
 	GetOrgBillingReport(ctx context.Context, orgID string, start, end time.Time) (*OrgBillingReport, error)
+	// GetBillingForecast computes daily burn rate and projected monthly spend for
+	// every tenant with inference activity in the current calendar-month billing
+	// period. Budget data is sourced from tenant_quotas when available.
+	// now is used as the reference point for computing days-elapsed and period end.
+	GetBillingForecast(ctx context.Context, now time.Time) ([]BillingForecastEntry, error)
+	// GetModelAdoptionSeries returns a request-count time-series grouped by model
+	// and bucketed by date (window="daily") or ISO week (window="weekly").
+	// days controls how far back from now to query; max 90.
+	GetModelAdoptionSeries(ctx context.Context, window string, days int, now time.Time) (*ModelAdoptionResponse, error)
+	// GetSLAComplianceByTenant returns the fraction of requests whose latency_ms
+	// is below thresholdMs for each tenant in the given billing window.
+	// Only rows where latency_ms > 0 are counted (unrecorded latency is excluded).
+	// Returns an empty slice when no qualifying rows exist.
+	GetSLAComplianceByTenant(ctx context.Context, start, end time.Time, thresholdMs float64) ([]TenantSLAStat, error)
 
 	// --- Inference audit log (AI Act Art.12) --------------------------------
 	// RecordInferenceEvent appends an inference event to the audit log.
