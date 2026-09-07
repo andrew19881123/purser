@@ -590,6 +590,16 @@ func New(reg registry.Registry, cfg Config) *Server {
 		s.reloadPolicies(context.Background())
 	}
 
+	// Initialise Prometheus /metrics exporter. This installs a new global
+	// sdkmetric.MeterProvider backed by a Prometheus pull reader so that all
+	// OTEL instruments created below appear at GET /metrics. Must be called
+	// before otel.Meter() calls so the instruments land on the correct provider.
+	// Errors are non-fatal: if the exporter cannot be created the server starts
+	// without Prometheus export (OTLP still works if telemetry.Init was called).
+	if _, err := initPromExporter(); err != nil {
+		logger.Warn("Prometheus exporter init failed — /metrics will return 404", "err", err)
+	}
+
 	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
 	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
 	// so this is always safe to call even without a collector.
@@ -626,7 +636,18 @@ func New(reg registry.Registry, cfg Config) *Server {
 	// processing) → OTEL (distributed tracing) → OIDC (human-user auth) →
 	// rate-limit → RBAC (API key role enforcement) → mux. CORS and OTEL are
 	// transparent no-ops when not configured; OIDC is a no-op when unconfigured.
-	s.handler = s.corsMiddleware(otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux)))))
+	innerHandler := s.corsMiddleware(otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux)))))
+
+	// Prometheus /metrics is served OUTSIDE the middleware chain so that
+	// Prometheus scrapers can reach it without an Authorization header.
+	// metrics endpoint — no auth, expose only on trusted networks.
+	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/metrics" {
+			promHTTPHandler().ServeHTTP(w, r)
+			return
+		}
+		innerHandler.ServeHTTP(w, r)
+	})
 
 	// Build the underlying http.Server. For in-memory TLS (auto mode) the PEM
 	// bytes are pre-parsed into a tls.Certificate and attached via TLSConfig so

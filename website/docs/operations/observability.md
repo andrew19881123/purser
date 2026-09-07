@@ -1,24 +1,37 @@
 # Observability
 
-Purser exposes Prometheus metrics from two components: the **gateway** and
-each **agent node**. Both endpoints serve the standard Prometheus text-exposition
-format and are unauthenticated — expose them only inside a trusted network
-(a dedicated scrape VLAN, a service-mesh sidecar, or a Prometheus pod with
-network policies applied).
+Purser exposes three complementary observability surfaces:
+
+1. **Gateway `/metrics`** — Prometheus scrape of inference request metrics from each gateway instance.
+2. **Agent `/metrics`** — Prometheus scrape of per-node hardware and engine metrics from each agent.
+3. **Control Plane `/metrics`** — Prometheus scrape of cluster health, node status, and deployment counts from the CP.
+4. **OpenTelemetry traces** — Distributed traces for every inference request, enriched with the [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/).
+
+All Prometheus endpoints are unauthenticated. Restrict access using network policy or a firewall — do not expose them to the public internet.
 
 ---
 
 ## Gateway metrics
 
-The gateway serves `GET /metrics` on the same port as the inference API (default
-`8080`). All gateway metrics carry `model` and `tenant` labels so you can slice
-dashboards by model or by customer.
+The gateway serves `GET /metrics` on its main HTTP port (default `8080`). All request metrics carry `model` and `tenant` labels.
+
+### Prometheus scrape configuration
+
+```yaml
+scrape_configs:
+  - job_name: purser-gateway
+    static_configs:
+      - targets:
+          - gateway.internal:8080
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
 
 ### Core request metrics
 
 | Metric | Type | Description |
 |---|---|---|
-| `purser_gateway_requests_total{model,tenant,status}` | Counter | Total inference requests, broken down by HTTP status. |
+| `purser_gateway_requests_total{model,tenant,status}` | Counter | Total inference requests broken down by HTTP status. |
 | `purser_gateway_request_duration_seconds{model,tenant}` | Histogram | End-to-end request latency. |
 | `purser_gateway_tokens_input_total{model,tenant}` | Counter | Prompt tokens consumed. |
 | `purser_gateway_tokens_output_total{model,tenant}` | Counter | Completion tokens generated. |
@@ -28,12 +41,12 @@ dashboards by model or by customer.
 
 | Metric | Type | Description |
 |---|---|---|
-| `purser_gateway_time_to_first_token_seconds{model,tenant}` | Histogram | Time from request dispatch to first SSE token (TTFT). Use `p50`/`p99` as primary SLO indicators. |
-| `purser_gateway_inter_token_latency_seconds{model,tenant}` | Histogram | Inter-token latency (TBT) — wall-clock time between successive SSE chunks. |
-| `purser_gateway_active_streams{model,tenant}` | Gauge | Number of currently active SSE streaming connections. Decremented via RAII guard — a permanently non-zero value after all requests complete indicates a resource leak. |
+| `purser_gateway_time_to_first_token_seconds{model,tenant}` | Histogram | TTFT — time from request dispatch to first SSE token. Use p50/p99 as primary SLO indicators. |
+| `purser_gateway_inter_token_latency_seconds{model,tenant}` | Histogram | TBT — wall-clock time between successive SSE chunks. |
+| `purser_gateway_active_streams{model,tenant}` | Gauge | Concurrent SSE streaming connections. |
 | `purser_gateway_errors_total{model,tenant,error_type}` | Counter | Typed error count. `error_type` ∈ `timeout_upstream`, `node_unavailable`, `auth_failure`, `quota_exceeded`, `bad_request`, `rate_limited`. |
-| `purser_gateway_queue_wait_seconds{model}` | Histogram | Time a request spent waiting to acquire a per-model semaphore slot. |
-| `purser_gateway_model_queue_depth{model}` | Gauge | In-flight requests currently holding a per-model semaphore permit. |
+| `purser_gateway_queue_wait_seconds{model}` | Histogram | Time spent waiting for a per-model semaphore slot. |
+| `purser_gateway_model_queue_depth{model}` | Gauge | In-flight requests holding a per-model semaphore permit. |
 
 ### Example Grafana queries (gateway)
 
@@ -48,32 +61,24 @@ histogram_quantile(0.99,
   rate(purser_gateway_inter_token_latency_seconds_bucket[5m])
 )
 
-# Request error rate
-rate(purser_gateway_errors_total[5m])
+# 5xx error rate
+rate(purser_gateway_errors_total{error_type!="auth_failure"}[5m])
 
-# Output tokens per second
-rate(purser_gateway_tokens_output_total[5m])
+# Output tokens per second (fleet throughput)
+sum(rate(purser_gateway_tokens_output_total[5m]))
 ```
 
 ---
 
 ## Agent metrics
 
-Each agent daemon exposes a dedicated Prometheus endpoint at
-`GET http://<agent-host>:9091/metrics` (port configurable via
-`PURSER_AGENT_METRICS_PORT`).
-
-The agent scrapes `EngineMetrics` from the supervised inference engine every
-`PURSER_HEALTH_INTERVAL_SECS` seconds (default: 5 s) and updates the gauges.
-All agent metrics carry a `node_id` label that matches the node's identity in the
-control-plane registry.
+Each agent exposes `GET /metrics` on port `9091` (configurable via `PURSER_AGENT_METRICS_PORT`). Metrics are updated every `PURSER_HEALTH_INTERVAL_SECS` seconds (default 5 s).
 
 ### Prometheus scrape configuration
 
 ```yaml
 scrape_configs:
   - job_name: purser-agents
-    # Assumes Consul service discovery or a static list of agent hosts.
     static_configs:
       - targets:
           - agent-host-1:9091
@@ -85,84 +90,143 @@ scrape_configs:
 
 | Metric | Type | Description |
 |---|---|---|
-| `purser_node_decode_tokens_per_second{node_id}` | Gauge | Decode (auto-regressive generation) throughput in tokens per second as reported by the engine. |
-| `purser_node_prefill_tokens_per_second{node_id}` | Gauge | Prefill (prompt-processing) throughput in tokens per second. |
-| `purser_node_vram_used_gb{node_id}` | Gauge | VRAM / GPU memory currently consumed by the engine, in GiB. |
-| `purser_node_queue_depth{node_id}` | Gauge | Number of inference requests currently in the engine queue. |
-| `purser_node_inference_port_alive{node_id}` | Gauge | `1.0` when the engine is in the RUNNING phase (serving requests); `0.0` otherwise. |
-| `purser_node_kv_cache_usage_ratio{node_id}` | Gauge | KV-cache hit ratio (0.0–1.0). **Stub: always `0.0`** — hardware KV-cache sampling is not yet implemented. |
-| `purser_node_gpu_utilization{node_id}` | Gauge | GPU SM utilization ratio (0.0–1.0). **Stub: always `0.0`** — GPU utilization requires NVML on real hardware and is not yet wired. |
+| `purser_node_decode_tokens_per_second{node_id}` | Gauge | Decode (auto-regressive) throughput in tokens/s. |
+| `purser_node_prefill_tokens_per_second{node_id}` | Gauge | Prefill (prompt-processing) throughput in tokens/s. |
+| `purser_node_vram_used_gb{node_id}` | Gauge | VRAM currently consumed by the engine in GiB. |
+| `purser_node_queue_depth{node_id}` | Gauge | Inference requests in the engine queue. |
+| `purser_node_inference_port_alive{node_id}` | Gauge | `1.0` = engine serving; `0.0` = engine down. |
+| `purser_node_kv_cache_usage_ratio{node_id}` | Gauge | KV-cache occupancy (0–1). **Stub `0.0`** until NVML wired. |
+| `purser_node_gpu_utilization{node_id}` | Gauge | GPU SM utilization (0–1). **Stub `0.0`** until NVML wired. |
 
-!!! note "GPU utilization stub"
-    `purser_node_gpu_utilization` and `purser_node_kv_cache_usage_ratio` report
-    `0.0` on all current deployments. These metrics are reserved for future NVML
-    integration and hardware-level KV-cache sampling. Dashboard alerts should
-    **not** fire on these gauges until the stubs are replaced.
+!!! note "GPU stubs"
+    `purser_node_gpu_utilization` and `purser_node_kv_cache_usage_ratio` always report `0.0` until
+    NVML integration on real GPU hardware is implemented. Do not alert on these gauges yet.
 
-### Example Grafana queries (agent)
+---
+
+## Control Plane metrics
+
+The CP exposes `GET /metrics` on its HTTP port (default `8080`). No authentication required.
+
+### Prometheus scrape configuration
+
+```yaml
+scrape_configs:
+  - job_name: purser-control-plane
+    static_configs:
+      - targets:
+          - cp.internal:8080
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+### CP metrics reference
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `purser_cp_info` | Gauge | `version` | Always 1. Confirms endpoint is live; carries build version. |
+| `purser_deployments_active` | Gauge | — | Deployments in `ACTIVE` state. |
+| `purser_nodes_ready` | Gauge | — | Nodes in `READY` or `RUNNING` state. |
+| `purser_nodes_total` | Gauge | — | Total registered nodes. |
+| `purser_node_cpu_utilization` | Gauge | `node_id` | CPU utilisation % from node heartbeat. |
+| `purser_node_gpu_utilization` | Gauge | `node_id` | GPU utilisation % from node heartbeat. |
+| `purser_node_mem_bandwidth_utilization` | Gauge | `node_id` | Memory-bandwidth utilisation %. |
+| `purser_node_tokens_per_second` | Gauge | `node_id` | Tokens/s currently processed by the node. |
+| `purser_node_inference_port_alive` | Gauge | `node_id` | `1` = inference port responding, `0` otherwise. |
+
+### Example PromQL queries (CP)
 
 ```promql
-# Decode throughput across all nodes
-purser_node_decode_tokens_per_second
+# Fleet readiness ratio
+purser_nodes_ready / purser_nodes_total
 
-# Identify nodes with a dead engine (alive = 0)
+# Dead inference ports
 purser_node_inference_port_alive == 0
 
-# VRAM used per node
-purser_node_vram_used_gb
+# Aggregate fleet throughput
+sum(purser_node_tokens_per_second)
 
-# Average queue depth across the fleet
-avg(purser_node_queue_depth)
+# Control-plane version
+purser_cp_info
 ```
 
 ---
 
-## Inter-token latency (TBT)
+## OTLP traces (OpenTelemetry)
 
-The gateway records the wall-clock gap between every pair of successive SSE
-chunks as `purser_gateway_inter_token_latency_seconds`. This is the Time Between
-Tokens (TBT) histogram, also known as inter-token latency.
+### Enabling OTLP export
 
-TBT is distinct from TTFT: TTFT measures how long the user waits for the **first**
-token; TBT measures how smoothly tokens **flow** after that. A high p99 TBT
-(while p50 is low) typically indicates GPU memory pressure or head-of-line
-blocking in the engine's batch scheduler.
+**Control plane:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.internal:4318
+export OTEL_SERVICE_NAME=purser-control-plane
+```
 
-### Recommended dashboard panels
+**Gateway:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.internal:4317  # gRPC
+export OTEL_SERVICE_NAME=purser-gateway
+```
 
-| Panel | PromQL |
-|---|---|
-| p50 TBT | `histogram_quantile(0.50, rate(purser_gateway_inter_token_latency_seconds_bucket[5m]))` |
-| p99 TBT | `histogram_quantile(0.99, rate(purser_gateway_inter_token_latency_seconds_bucket[5m]))` |
-| p99 TTFT | `histogram_quantile(0.99, rate(purser_gateway_time_to_first_token_seconds_bucket[5m]))` |
-| Error rate | `rate(purser_gateway_errors_total[5m])` |
+When unset, OTLP export is a zero-overhead no-op.
 
-### Alerting example (Prometheus rules)
+### GenAI span attributes on inference traces
+
+Every inference request produces a span named `purser.gateway.inference` with [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/):
+
+| Attribute | Value | When set |
+|---|---|---|
+| `gen_ai.system` | `"purser"` | Always |
+| `gen_ai.operation.name` | `"chat"` or `"completion"` | Always |
+| `gen_ai.request.model` | model ID string | After request body parse |
+| `gen_ai.usage.input_tokens` | estimated prompt token count | Before upstream call |
+| `gen_ai.usage.output_tokens` | actual completion token count | After response consumed |
+| `gen_ai.response.finish_reasons` | `"stop"` or `"error"` | After response consumed |
+
+The legacy `model.id` attribute is preserved for backward compatibility.
+
+### Querying traces in Grafana Explore (Tempo)
+
+```
+{ resource.service.name = "purser-gateway" }
+  | select(gen_ai.request.model, gen_ai.usage.output_tokens, gen_ai.response.finish_reasons)
+```
+
+---
+
+## Alerting examples
 
 ```yaml
 groups:
   - name: purser-slo
     rules:
-      - alert: HighP99TBT
+      - alert: PurserHighTTFTp99
+        expr: |
+          histogram_quantile(0.99,
+            rate(purser_gateway_time_to_first_token_seconds_bucket[5m])
+          ) > 2.0
+        for: 5m
+        labels: { severity: warning }
+
+      - alert: PurserHighTBTp99
         expr: |
           histogram_quantile(0.99,
             rate(purser_gateway_inter_token_latency_seconds_bucket[5m])
           ) > 0.5
         for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "p99 inter-token latency > 500 ms"
-          description: "Model {{ $labels.model }} — p99 TBT is {{ $value | humanizeDuration }}"
+        labels: { severity: warning }
 
-      - alert: NodeEngineDown
+      - alert: PurserNodeEngineDown
         expr: purser_node_inference_port_alive == 0
         for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Purser agent engine is down"
-          description: "Node {{ $labels.node_id }} engine is not serving (alive=0)"
+        labels: { severity: critical }
+
+      - alert: PurserHighErrorRate
+        expr: |
+          rate(purser_gateway_errors_total[5m]) /
+          rate(purser_gateway_requests_total[5m]) > 0.05
+        for: 2m
+        labels: { severity: critical }
 ```
 
 ---
@@ -171,5 +235,7 @@ groups:
 
 | Variable | Component | Default | Description |
 |---|---|---|---|
-| `PURSER_AGENT_METRICS_PORT` | Agent | `9091` | TCP port the agent's Prometheus `/metrics` endpoint binds to. |
-| `PURSER_HEALTH_INTERVAL_SECS` | Agent | `5` | Cadence (seconds) at which the agent updates its Prometheus gauges from the engine. |
+| `PURSER_AGENT_METRICS_PORT` | Agent | `9091` | Port for agent Prometheus `/metrics` endpoint. |
+| `PURSER_HEALTH_INTERVAL_SECS` | Agent | `5` | Cadence (s) for updating Prometheus gauges from engine. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | CP + Gateway | unset | OTLP collector endpoint; unset disables push. |
+| `OTEL_SERVICE_NAME` | CP + Gateway | component default | Override the `service.name` span resource attribute. |
