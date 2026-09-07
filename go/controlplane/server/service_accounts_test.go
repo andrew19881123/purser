@@ -30,7 +30,7 @@ func TestCreateServiceAccount_ReturnsClientSecret(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
-		strings.NewReader(`{"name":"ci-bot","role":"inference"}`))
+		strings.NewReader(`{"name":"ci-bot","role":"inference","team_id":"team-ml"}`))
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
@@ -72,7 +72,7 @@ func TestTokenEndpoint_ValidCredentials(t *testing.T) {
 	createRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(createRec,
 		httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
-			strings.NewReader(`{"name":"ci-bot","role":"inference"}`)))
+			strings.NewReader(`{"name":"ci-bot","role":"inference","team_id":"team-ml"}`)))
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create SA: status=%d body=%s", createRec.Code, createRec.Body.String())
 	}
@@ -119,7 +119,7 @@ func TestTokenEndpoint_InvalidSecret_Returns401(t *testing.T) {
 	createRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(createRec,
 		httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
-			strings.NewReader(`{"name":"ci-bot","role":"inference"}`)))
+			strings.NewReader(`{"name":"ci-bot","role":"inference","team_id":"team-ml"}`)))
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create SA: status=%d body=%s", createRec.Code, createRec.Body.String())
 	}
@@ -158,7 +158,7 @@ func TestServiceAccount_Token_AuthenticatesRequest(t *testing.T) {
 	// Create an admin-role service account using the admin key.
 	createRec := httptest.NewRecorder()
 	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
-		strings.NewReader(`{"name":"ci-admin","role":"admin"}`))
+		strings.NewReader(`{"name":"ci-admin","role":"admin","team_id":"team-ops"}`))
 	createReq.Header.Set("Authorization", "Bearer "+adminToken)
 	srv.Handler().ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusCreated {
@@ -195,5 +195,84 @@ func TestServiceAccount_Token_AuthenticatesRequest(t *testing.T) {
 	}
 	if nodesRec.Code != http.StatusOK {
 		t.Fatalf("expected 200 from GET /api/v1/nodes, got %d; body=%s", nodesRec.Code, nodesRec.Body.String())
+	}
+}
+
+// TestCreateServiceAccount_RequiresTeamID verifies that a POST without team_id
+// (and without the legacy tenant field) returns 400 Bad Request.
+func TestCreateServiceAccount_RequiresTeamID(t *testing.T) {
+	reg := newReg(t)
+	srv := server.New(reg, server.Config{SessionSecret: fixedSecret()})
+
+	// No team_id and no tenant → 400.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
+		strings.NewReader(`{"name":"ci-bot","role":"inference"}`))
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when team_id is missing, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	errCode, _ := body["error"].(string)
+	if errCode != "bad_request" {
+		t.Errorf("error code = %q, want %q", errCode, "bad_request")
+	}
+}
+
+// TestCreateServiceAccount_WithTeamID_Returns201 verifies that a POST with a
+// valid team_id succeeds and the returned record carries the correct team_id.
+func TestCreateServiceAccount_WithTeamID_Returns201(t *testing.T) {
+	reg := newReg(t)
+	srv := server.New(reg, server.Config{SessionSecret: fixedSecret()})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
+		strings.NewReader(`{"name":"litellm-bot","role":"inference","team_id":"team-ml"}`))
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	teamID, _ := body["team_id"].(string)
+	if teamID != "team-ml" {
+		t.Errorf("team_id = %q, want %q", teamID, "team-ml")
+	}
+	// Legacy tenant field must also reflect team_id for backward compat.
+	tenant, _ := body["tenant"].(string)
+	if tenant != "team-ml" {
+		t.Errorf("tenant (compat alias) = %q, want %q", tenant, "team-ml")
+	}
+}
+
+// TestCreateServiceAccount_LegacyTenant_StillWorks verifies backward
+// compatibility: passing only the legacy tenant field (without team_id) still
+// creates the service account with status 201.
+func TestCreateServiceAccount_LegacyTenant_StillWorks(t *testing.T) {
+	reg := newReg(t)
+	srv := server.New(reg, server.Config{SessionSecret: fixedSecret()})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/service-accounts",
+		strings.NewReader(`{"name":"legacy-bot","role":"inference","tenant":"legacy-team"}`))
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with legacy tenant field, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tenant, _ := body["tenant"].(string)
+	if tenant != "legacy-team" {
+		t.Errorf("tenant = %q, want %q", tenant, "legacy-team")
 	}
 }

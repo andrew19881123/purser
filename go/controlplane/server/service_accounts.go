@@ -47,28 +47,52 @@ type saTokenClaims struct {
 // handleCreateServiceAccount creates a service account for CI/CD machine auth.
 // POST /api/v1/service-accounts
 // Admin only. Returns client_id + client_secret (shown once).
+//
+// From v0.5 onwards service accounts are team-scoped: team_id is required.
+// The legacy tenant field is still accepted for backward compatibility but
+// callers should prefer team_id going forward.
 func (s *Server) handleCreateServiceAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string   `json:"name"`
-		Tenant    string   `json:"tenant"`
-		Role      string   `json:"role"` // default "inference"
-		Scopes    []string `json:"scopes"`
-		ExpiresAt string   `json:"expires_at"` // RFC3339, optional
+		Name        string   `json:"name"`
+		TeamID      string   `json:"team_id"`     // required (v0.5+)
+		Tenant      string   `json:"tenant"`      // deprecated: use team_id
+		Description string   `json:"description"` // optional human description
+		Role        string   `json:"role"`        // default "inference"
+		Scopes      []string `json:"scopes"`
+		ExpiresAt   string   `json:"expires_at"` // RFC3339, optional
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		s.writeError(w, http.StatusBadRequest, "bad_request", "name required")
 		return
 	}
+
+	// team_id is required — service accounts belong to teams, not individual users.
+	// tenant is accepted for backward compatibility with clients that have not
+	// yet migrated to team_id.
+	if req.TeamID == "" && req.Tenant == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request",
+			"team_id is required for service accounts (service accounts belong to teams, not individual users)")
+		return
+	}
+
 	if req.Role == "" {
 		req.Role = "inference"
 	}
 
+	// Resolve the effective team/tenant: prefer team_id if provided, fall back
+	// to the legacy tenant field for backward compatibility.
+	effectiveTenant := req.TeamID
+	if effectiveTenant == "" {
+		effectiveTenant = req.Tenant
+	}
+
 	sa := &registry.ServiceAccount{
-		Name:   req.Name,
-		Tenant: req.Tenant,
-		Role:   req.Role,
-		Scopes: req.Scopes,
+		Name:        req.Name,
+		Tenant:      effectiveTenant,
+		Description: req.Description,
+		Role:        req.Role,
+		Scopes:      req.Scopes,
 	}
 	if req.ExpiresAt != "" {
 		t, err := time.Parse(time.RFC3339, req.ExpiresAt)
@@ -96,7 +120,8 @@ func (s *Server) handleCreateServiceAccount(w http.ResponseWriter, r *http.Reque
 		"client_id":     sa.ClientID,
 		"client_secret": clientSecret,
 		"role":          sa.Role,
-		"tenant":        sa.Tenant,
+		"team_id":       sa.Tenant,
+		"tenant":        sa.Tenant, // backward compat alias
 		"message":       "Copy the client_secret now — it is shown only once.",
 	})
 }

@@ -405,10 +405,10 @@ func (r *SQLiteRegistry) CreateServiceAccount(ctx context.Context, sa *ServiceAc
 
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO service_accounts
-		 (id, name, tenant, role, scopes, client_id, client_secret_hash,
+		 (id, name, tenant, description, role, scopes, client_id, client_secret_hash,
 		  enabled, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-		sa.ID, sa.Name, sa.Tenant, sa.Role, scopesJSON(sa.Scopes),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		sa.ID, sa.Name, sa.Tenant, sa.Description, sa.Role, scopesJSON(sa.Scopes),
 		sa.ClientID, sa.ClientSecretHash,
 		fmtNullTimePtr(sa.ExpiresAt), fmtTime(now), fmtTime(now),
 	)
@@ -422,7 +422,7 @@ func (r *SQLiteRegistry) CreateServiceAccount(ctx context.Context, sa *ServiceAc
 // with the given client_id. Returns ErrNotFound when no matching row exists.
 func (r *SQLiteRegistry) GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT id, name, tenant, role, scopes, client_id, client_secret_hash,
+		`SELECT id, name, tenant, description, role, scopes, client_id, client_secret_hash,
 		        enabled, expires_at, last_used_at, created_at, updated_at
 		 FROM service_accounts
 		 WHERE client_id=? AND enabled=1
@@ -436,7 +436,7 @@ func (r *SQLiteRegistry) GetServiceAccountByClientID(ctx context.Context, client
 // When tenant is empty, all accounts (across all tenants) are returned.
 // Results are ordered by created_at DESC (newest first).
 func (r *SQLiteRegistry) ListServiceAccounts(ctx context.Context, tenant string) ([]*ServiceAccount, error) {
-	const cols = `id, name, tenant, role, scopes, client_id, client_secret_hash,
+	const cols = `id, name, tenant, description, role, scopes, client_id, client_secret_hash,
 	              enabled, expires_at, last_used_at, created_at, updated_at`
 	var (
 		rows *sql.Rows
@@ -655,19 +655,21 @@ func (r *SQLiteRegistry) RecordGDPRErasure(ctx context.Context, log *GDPRErasure
 // both *sql.Row and *sql.Rows via the common Scan interface.
 func scanServiceAccount(s interface{ Scan(...any) error }) (*ServiceAccount, error) {
 	var (
-		sa         ServiceAccount
-		scopes     string
-		enabled    int64
-		expiresAt  sql.NullString
-		lastUsedAt sql.NullString
-		createdAt  sql.NullString
-		updatedAt  sql.NullString
+		sa          ServiceAccount
+		scopes      string
+		description string
+		enabled     int64
+		expiresAt   sql.NullString
+		lastUsedAt  sql.NullString
+		createdAt   sql.NullString
+		updatedAt   sql.NullString
 	)
 	err := s.Scan(
-		&sa.ID, &sa.Name, &sa.Tenant, &sa.Role, &scopes, &sa.ClientID,
+		&sa.ID, &sa.Name, &sa.Tenant, &description, &sa.Role, &scopes, &sa.ClientID,
 		&sa.ClientSecretHash, &enabled, &expiresAt, &lastUsedAt,
 		&createdAt, &updatedAt,
 	)
+	sa.Description = description
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound

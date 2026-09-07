@@ -110,8 +110,9 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		// Expiry timestamp for the approval request (NULL = no expiry).
 		{"deployment_approvals", "expires_at", "TEXT"},
 		// CP/DP separation (v0.5): assign fleet nodes to a named Data Plane.
-		// NULL = default / unassigned (backward compat for existing databases).
 		{"nodes", "dataplane_id", "TEXT"},
+		// Service account description (v0.5). Team-scoped from v0.5 onwards.
+		{"service_accounts", "description", "TEXT NOT NULL DEFAULT ''"}
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
