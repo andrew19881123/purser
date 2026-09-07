@@ -224,3 +224,73 @@ Content-Type: application/json
 A user may hold multiple roles; the effective permission set is the union of all
 assigned role permissions, deduplicated and sorted. Use `permissions.Merge()` in
 Go code when combining sets programmatically.
+
+---
+
+## Tenant Isolation Guarantees
+
+Purser enforces tenant isolation at the list endpoint level. The rule is simple:
+**resources owned by a tenant are only visible to that tenant** (and to admin keys).
+Two endpoints are intentionally exempt from this rule because they expose shared
+infrastructure, not tenant-owned data.
+
+### Tenant-scoped endpoints
+
+These endpoints filter results by the requesting API key's tenant. A non-admin key
+for tenant `acme` will **never** see records belonging to `beta`.
+
+| Endpoint | Resource | Mechanism |
+|---|---|---|
+| `GET /api/v1/deployments` | Deployments | `registry.ListDeploymentsByTenant(tenant)` |
+| `GET /api/v1/apikeys` | API keys | `registry.ListAPIKeysByTenant(tenant)` |
+
+Admin keys (`role: admin`) always receive the unfiltered view across all tenants.
+
+### Intentionally global endpoints (read-only)
+
+These endpoints return the same result to every authenticated user, regardless of
+tenant. This is a deliberate design decision, not an oversight.
+
+| Endpoint | Resource | Reason |
+|---|---|---|
+| `GET /api/v1/models` | Model catalog | Tenants must discover all available LLM architectures before deploying. Read access to the catalog does not grant deployment rights. |
+| `GET /api/v1/nodes` | Fleet nodes | All users need cluster topology visibility for capacity planning and deployment debugging. Nodes are owned by the platform operator, not by tenants. |
+
+### How `extractRequestTenant` works
+
+Every tenant-scoped list handler calls `extractRequestTenant(r)` before querying
+the registry. The function:
+
+1. If the request carries an API key with `role != admin`, returns that key's
+   `tenant` field (set at key creation time).
+2. If the request carries an OIDC session with `role = viewer` and a non-empty
+   `tenant` claim, returns that claim.
+3. Otherwise returns `""` — the registry interprets an empty tenant as "all
+   tenants" (admin / unauthenticated dev-mode view).
+
+```go
+// Simplified excerpt from server/server.go
+func (s *Server) extractRequestTenant(r *http.Request) string {
+    if key := apiKeyFromContext(r.Context()); key != nil && key.Role != "admin" {
+        return key.Tenant
+    }
+    if oidcRole, _ := r.Context().Value(ctxKeyOIDCRole).(string); oidcRole == "viewer" {
+        if oidcTenant, _ := r.Context().Value(ctxKeyOIDCTenant).(string); oidcTenant != "" {
+            return oidcTenant
+        }
+    }
+    return ""
+}
+```
+
+### Adding tenant isolation to a new list endpoint
+
+Follow the pattern used by `handleListDeployments`:
+
+1. Add a `ListXByTenant(ctx, tenant string)` method to the `Registry` interface
+   (and its SQLite implementation).
+2. Call `s.extractRequestTenant(r)` at the top of the handler.
+3. Pass the returned tenant string to the scoped list method.
+4. Add a `TestTenantIsolation_X` test in
+   `go/controlplane/server/tenant_isolation_test.go` covering admin, own-tenant,
+   and cross-tenant cases.
