@@ -13,12 +13,14 @@ graph TD
         CP["Control Plane Pod\n(purser-control-plane)"]
         GW["Gateway Pod\n(purser-gateway)"]
         UI["UI Pod\n(purser-ui, nginx)"]
-        PVC[("PVC /data\nSQLite registry\n+ PKI CA key")]
+        PVC[("PVC /data\nPKI CA key")]
+        DB[("PostgreSQL\n(external or bundled)")]
         SVC_CP["Service: control-plane\nHTTP :8080 / gRPC :9443"]
         SVC_GW["Service: gateway\nHTTP :8080"]
         SVC_UI["Service: ui\nHTTP :8080"]
         ING["Ingress (optional)\npurser.example.com"]
         CP --- PVC
+        CP --- DB
         SVC_CP --> CP
         SVC_GW --> GW
         SVC_UI --> UI
@@ -37,7 +39,11 @@ graph TD
     Operator["Operator\nbrowser"] --> SVC_UI
 ```
 
-`replicaCount` is kept at 1 — SQLite is single-writer. Set the Control Plane Service type to `LoadBalancer` or `NodePort` so LAN agents can reach it.
+With `database.driver=postgres` (the recommended production setting), `replicaCount`
+can be greater than 1. With `database.driver=sqlite` (the default, for local
+development), keep `replicaCount=1` — SQLite is single-writer. See
+[Database Configuration](../operations/database.md) for the full setup guide. Set the
+Control Plane Service type to `LoadBalancer` or `NodePort` so LAN agents can reach it.
 
 ## Prerequisites
 
@@ -84,7 +90,10 @@ helm install purser deploy/helm/purser \
 
 | Value | Default | Description |
 |---|---|---|
-| `replicaCount` | `1` | **Keep at 1.** SQLite Registry and internal PKI are single-writer. Multi-replica HA needs the Enterprise Raft backend. |
+| `replicaCount` | `1` | Keep at 1 when `database.driver=sqlite`. With `database.driver=postgres` (and an external PostgreSQL), values >1 are supported. |
+| `database.driver` | `sqlite` | Database backend: `sqlite` (dev/test) or `postgres` (production). See [Database Configuration](../operations/database.md). |
+| `database.url` | `""` | PostgreSQL connection URL. Required when `database.driver=postgres`. Use a Kubernetes Secret; see [Database Configuration](../operations/database.md). |
+| `database.postgresql.enabled` | `false` | Deploy a bundled PostgreSQL for quick-start. Not recommended for production. |
 | `service.type` | `ClusterIP` | Global default Service type; each component inherits unless overridden. |
 | `controlPlane.httpPort` | `8080` | Management REST API listen port. |
 | `controlPlane.grpcPort` | `9443` | RegistrationService gRPC (Agent enrollment and heartbeat). |
@@ -207,9 +216,14 @@ helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
 
 ## Persistence
 
-The Control Plane requires a PVC for:
-- The SQLite registry file (`PURSER_DB`, default `/data/purser-registry.db`)
+The Control Plane always requires a PVC for:
 - The internal CA key and certificate (`PURSER_PKI_DIR`, default `/data/pki-state`)
+
+When `database.driver=sqlite` (default), the PVC also holds:
+- The SQLite registry file (`PURSER_DB`, default `/data/purser-registry.db`)
+
+When `database.driver=postgres`, the PVC is used only for the PKI CA. The registry
+data lives in PostgreSQL. See [Database Configuration](../operations/database.md).
 
 The chart creates a PVC with the configured StorageClass (`controlPlane.persistence.storageClass`). Use an existing claim with `controlPlane.persistence.existingClaim`.
 

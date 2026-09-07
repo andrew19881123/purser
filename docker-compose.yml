@@ -6,12 +6,33 @@
 #   http://localhost:3000/v1       → Gateway (OpenAI-compatible)
 #
 # Single-origin design avoids CORS issues in the browser.
+#
+# Database: PostgreSQL is the default for this stack (PURSER_DB_DRIVER=postgres).
+# For SQLite-only local development, set PURSER_DB_DRIVER=sqlite and
+# PURSER_DB=/data/registry.db, then remove the postgres depends_on / env vars.
 
 services:
+  # PostgreSQL — production database for the control plane.
+  # For local development you can set PURSER_DB_DRIVER=sqlite instead.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: purser
+      POSTGRES_PASSWORD: purser
+      POSTGRES_DB: purser
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U purser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   control-plane:
     image: ghcr.io/andrew19881123/purser-control-plane:latest
     environment:
-      PURSER_DB: /data/registry.db
+      PURSER_DB_DRIVER: postgres
+      PURSER_DB_URL: "postgres://purser:purser@postgres:5432/purser?sslmode=disable"
       PURSER_ADDR: ":8080"
       PURSER_GRPC_ADDR: ":9443"
       PURSER_PKI_DIR: /data/pki
@@ -19,7 +40,10 @@ services:
       PURSER_GATEWAY_ADDR: "http://gateway:8081"
       PURSER_GATEWAY_TOKEN: demo-internal-token
     volumes:
-      - purser-data:/data
+      - purser-pki:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/cluster/health || exit 1"]
       interval: 5s
@@ -61,4 +85,7 @@ services:
       - gateway
 
 volumes:
-  purser-data:
+  # PKI CA key/cert persist on a dedicated volume (no DB data here when using postgres).
+  purser-pki:
+  # PostgreSQL data volume.
+  postgres_data:
