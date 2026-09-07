@@ -536,9 +536,12 @@ Mints a new Gateway API key. The plaintext key is returned once; only its SHA-25
   "name": "my-key",
   "tenant": "team-a",
   "role": "viewer",
-  "key": "psk_..."
+  "key": "sk-a3f8bc12de456789abcdef0123456789abcdef01"
 }
 ```
+
+Since v0.5 the returned key uses the `sk-<40 hex>` format. Legacy `psk_` keys
+created before v0.5 continue to work unchanged.
 
 ### `GET /api/v1/apikeys`
 
@@ -566,6 +569,47 @@ Permanently revokes an API key.
 **Response `204`:** No content. Key revoked.
 
 **Response `404`:** Key not found.
+
+---
+
+## Access Log
+
+### `GET /api/v1/logs/access` _(v0.5+)_
+
+Returns API key access-log entries, newest first. Requires `admin` or `viewer` role.
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `api_key_id` | Filter by key ID (optional; omit to return entries for all keys) |
+| `limit` | Maximum entries (default `100`, max `1000`) |
+
+**Response `200`:**
+
+```json
+{
+  "entries": [
+    {
+      "id": 4812,
+      "api_key_id": "key-a1b2c3d4",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "ip_prefix": "10.0.1.0/24",
+      "user_agent": "python-httpx/0.27.2",
+      "status_code": 200,
+      "request_at": "2026-09-01T14:23:07Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### `GET /api/v1/apikeys/{id}/access-log` _(deprecated)_
+
+Issues a `301 Moved Permanently` redirect to `GET /api/v1/logs/access?api_key_id={id}`.
+Clients should follow the redirect or migrate to the new endpoint.
+This legacy URL will be removed in v0.6.
 
 ---
 
@@ -949,7 +993,10 @@ Serves the embedded OpenAPI 3.0 specification as JSON. The spec is compiled from
 | GET | `/api/v1/apikeys` | List gateway API keys (metadata only) |
 | POST | `/api/v1/apikeys` | Mint a gateway API key |
 | DELETE | `/api/v1/apikeys/{id}` | Revoke an API key |
+| POST | `/api/v1/apikeys/{id}/rotate` | Atomic rotation: new key + disable old |
 | GET | `/api/v1/apikeys/{id}/usage` | Aggregate token usage for a key |
+| GET | `/api/v1/logs/access` | Unified API key access-log (v0.5+) |
+| GET | `/api/v1/apikeys/{id}/access-log` | **Deprecated** — 301 redirect to `/api/v1/logs/access` |
 | POST | `/api/v1/join-token` | Mint a cluster join token |
 | GET | `/api/v1/enrollment-bundle` | Download pre-filled enrollment env file |
 | GET | `/api/v1/metrics` | Live hardware metrics (Server-Sent Events, 2 s cadence) |

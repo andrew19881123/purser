@@ -151,6 +151,9 @@ type APIKey struct {
 	// Scopes is a JSON-backed list of fine-grained permission strings.
 	// An empty slice means the key's permissions are governed by Role alone.
 	Scopes []string `json:"scopes,omitempty"`
+	// CreatedBy is the actor (OIDC sub or API key fingerprint) who created this
+	// key. Empty for keys created before this field was introduced (v0.5).
+	CreatedBy string `json:"created_by,omitempty"`
 }
 
 // Session records an inference session for metrics/attribution.

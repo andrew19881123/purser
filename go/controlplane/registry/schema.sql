@@ -98,7 +98,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at   TEXT,                       -- NULL = never used; throttled writes
     predecessor_id TEXT    NOT NULL DEFAULT '', -- rotation chain; '' if no predecessor
     rotated_at     TEXT,                       -- when replaced by a successor; NULL if active
-    scopes         TEXT    NOT NULL DEFAULT '[]' -- JSON array of permission strings
+    scopes         TEXT    NOT NULL DEFAULT '[]', -- JSON array of permission strings
+    -- created_by: actor (OIDC sub or apikey fingerprint) who created this key.
+    -- NULL for keys created before v0.5.
+    created_by     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant);
 

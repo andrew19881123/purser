@@ -515,11 +515,10 @@ func (r *SQLiteRegistry) HasAnyAPIKey(ctx context.Context) (bool, error) {
 	return count > 0, err
 }
 
-// ListAPIKeyAccessLog returns the most recent access-log entries for the given
-// API key, newest first, capped at limit (limit <= 0 → default 50, max 1000).
-// This method is not on the core Registry interface; callers that need it
-// may type-assert to *SQLiteRegistry or use the accessLogQuerier local
-// interface in the server package.
+// ListAPIKeyAccessLog returns access-log entries newest-first, capped at
+// limit (limit <= 0 → default 50, max 1000). When apiKeyID is non-empty only
+// entries for that key are returned; an empty string returns all entries.
+// Now implements the core Registry interface (added in v0.5).
 func (r *SQLiteRegistry) ListAPIKeyAccessLog(ctx context.Context, apiKeyID string, limit int) ([]*APIKeyAccessEntry, error) {
 	if limit <= 0 {
 		limit = 50
@@ -527,12 +526,25 @@ func (r *SQLiteRegistry) ListAPIKeyAccessLog(ctx context.Context, apiKeyID strin
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, api_key_id, key_hash, method, path, ip_prefix, user_agent, status_code, request_at
-		 FROM api_key_access_log WHERE api_key_id = ?
-		 ORDER BY request_at DESC LIMIT ?`,
-		apiKeyID, limit,
+	var (
+		rows *sql.Rows
+		err  error
 	)
+	if apiKeyID != "" {
+		rows, err = r.db.QueryContext(ctx,
+			`SELECT id, api_key_id, key_hash, method, path, ip_prefix, user_agent, status_code, request_at
+			 FROM api_key_access_log WHERE api_key_id = ?
+			 ORDER BY request_at DESC LIMIT ?`,
+			apiKeyID, limit,
+		)
+	} else {
+		rows, err = r.db.QueryContext(ctx,
+			`SELECT id, api_key_id, key_hash, method, path, ip_prefix, user_agent, status_code, request_at
+			 FROM api_key_access_log
+			 ORDER BY request_at DESC LIMIT ?`,
+			limit,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("registry: list_api_key_access_log: %w", err)
 	}

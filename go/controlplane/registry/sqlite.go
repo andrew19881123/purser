@@ -97,6 +97,8 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"api_keys", "predecessor_id", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "rotated_at", "TEXT"},
 		{"api_keys", "scopes", "TEXT NOT NULL DEFAULT '[]'"},
+		// created_by: actor who created the key (v0.5). NULL for older keys.
+		{"api_keys", "created_by", "TEXT"},
 		// AI Act Art.12(1)(a): version tracking for inference events. Default
 		// empty string preserves backward compat for pre-feature rows.
 		{"inference_audit_log", "model_revision", "TEXT NOT NULL DEFAULT ''"},
@@ -692,10 +694,10 @@ func (r *SQLiteRegistry) CreateAPIKey(ctx context.Context, k *APIKey) error {
 		role = "admin"
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO api_keys (id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.ID, k.Name, k.KeyHash, k.Tenant, role, k.Quota, boolToInt(k.Enabled),
-		fmtTime(k.CreatedAt), fmtTime(k.UpdatedAt))
+		fmtTime(k.CreatedAt), fmtTime(k.UpdatedAt), k.CreatedBy)
 	if err != nil {
 		return fmt.Errorf("registry: create api_key %q: %w", k.ID, err)
 	}
@@ -703,21 +705,23 @@ func (r *SQLiteRegistry) CreateAPIKey(ctx context.Context, k *APIKey) error {
 	return nil
 }
 
-const apiKeyCols = `id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at`
+const apiKeyCols = `id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at, created_by`
 
 func scanAPIKey(s interface{ Scan(...any) error }) (*APIKey, error) {
 	var (
-		k       APIKey
-		enabled int64
-		created sql.NullString
-		updated sql.NullString
+		k         APIKey
+		enabled   int64
+		created   sql.NullString
+		updated   sql.NullString
+		createdBy sql.NullString
 	)
-	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Role, &k.Quota, &enabled, &created, &updated); err != nil {
+	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Role, &k.Quota, &enabled, &created, &updated, &createdBy); err != nil {
 		return nil, err
 	}
 	k.Enabled = enabled != 0
 	k.CreatedAt = parseTime(created)
 	k.UpdatedAt = parseTime(updated)
+	k.CreatedBy = createdBy.String
 	return &k, nil
 }
 
