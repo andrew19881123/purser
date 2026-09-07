@@ -531,6 +531,8 @@ fn stream_response(
         tokio::pin!(upstream);
         let mut out_tokens: u64 = 0;
         let mut ttft_recorded = false;
+        // Tracks the arrival time of the previous chunk for TBT measurement.
+        let mut last_chunk_time: Option<Instant> = None;
 
         loop {
             match tokio::time::timeout(idle, upstream.next()).await {
@@ -555,6 +557,15 @@ fn stream_response(
                         );
                         ttft_recorded = true;
                     }
+                    // Record TBT for each chunk after the first.
+                    if let Some(last) = last_chunk_time {
+                        crate::metrics::record_inter_token_latency(
+                            &model,
+                            &tenant,
+                            last.elapsed().as_secs_f64(),
+                        );
+                    }
+                    last_chunk_time = Some(Instant::now());
                     out_tokens += count_sse_tokens(&chunk);
                     yield Ok(chunk);
                 }

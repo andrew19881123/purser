@@ -16,6 +16,9 @@
 //! **LLM-specific metrics (Obs-01):**
 //! * `purser_gateway_time_to_first_token_seconds{model,tenant}` — TTFT
 //!   histogram; p50/p99 are key SLO indicators.
+//! * `purser_gateway_inter_token_latency_seconds{model,tenant}` — TBT
+//!   (time-between-tokens / inter-token latency) histogram; measures the
+//!   wall-clock gap between successive SSE chunks.
 //! * `purser_gateway_active_streams{model,tenant}` — gauge of concurrent SSE
 //!   connections; decremented via RAII `StreamGauge` so no leaks on errors.
 //! * `purser_gateway_errors_total{model,tenant,error_type}` — typed error
@@ -80,11 +83,16 @@ pub fn describe_gateway_metrics() {
         "Token generation throughput histogram (tokens/second)."
     );
 
-    // LLM-specific metrics (Obs-01).
+    // LLM-specific metrics (Obs-01 / Obs-02).
     metrics::describe_histogram!(
         "purser_gateway_time_to_first_token_seconds",
         "Time from request dispatch to first SSE token received (TTFT). \
          Use p50/p99 as primary SLO indicators."
+    );
+    metrics::describe_histogram!(
+        "purser_gateway_inter_token_latency_seconds",
+        "Inter-token latency in seconds (time between successive SSE chunks). \
+         Use histogram_quantile(0.99, rate(...[5m])) to derive p99 TBT."
     );
     metrics::describe_gauge!(
         "purser_gateway_active_streams",
@@ -228,4 +236,52 @@ pub fn record_queue_depth(model: &str, depth: f64) {
         "model" => model.to_owned(),
     )
     .set(depth);
+}
+
+/// Record the inter-token latency (TBT) for a streaming response.
+///
+/// `latency_secs` is the wall-clock time between the previous SSE chunk and
+/// this one. Called for every chunk received **after** the first so the
+/// distribution captures the engine's steady-state generation cadence.
+///
+/// Grafana / PromQL: `histogram_quantile(0.99, rate(purser_gateway_inter_token_latency_seconds_bucket[5m]))`
+pub fn record_inter_token_latency(model: &str, tenant: &str, latency_secs: f64) {
+    metrics::histogram!(
+        "purser_gateway_inter_token_latency_seconds",
+        "model" => model.to_owned(),
+        "tenant" => tenant.to_owned(),
+    )
+    .record(latency_secs);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `describe_gateway_metrics` registers the TBT metric and
+    /// that `record_inter_token_latency` does not panic.
+    #[test]
+    fn test_inter_token_latency_is_recorded() {
+        // Install the recorder (idempotent across tests in the same binary).
+        let _handle = prometheus_handle();
+
+        // Calling describe_gateway_metrics() again is safe — it was already
+        // called from prometheus_handle(); calling it here verifies the
+        // inter_token_latency description is included.
+        describe_gateway_metrics();
+
+        // Recording a sample must not panic.
+        record_inter_token_latency("test-model", "test-tenant", 0.042);
+
+        // The rendered output must mention the histogram.
+        let output = _handle.render();
+        assert!(
+            output.contains("purser_gateway_inter_token_latency_seconds"),
+            "rendered metrics must contain inter_token_latency_seconds; output:\n{output}"
+        );
+    }
 }
