@@ -153,9 +153,11 @@ jobs:
         if: always() && hashFiles('trivy-gateway.sarif') != ''
         with:
           sarif_file: trivy-gateway.sarif
+          category: trivy-gateway
 
       - name: Upload control-plane SARIF
         uses: github/codeql-action/upload-sarif@6f5948dfacef28e207b48d0905cf90c03365536d  # v3
         if: always() && hashFiles('trivy-cp.sarif') != ''
         with:
           sarif_file: trivy-cp.sarif
+          category: trivy-controlplane
