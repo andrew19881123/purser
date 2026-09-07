@@ -394,4 +394,38 @@ type Registry interface {
 	// GetEffectivePermissions resolves the full permission set for userID in
 	// the context of teamID (org membership + team role union).
 	GetEffectivePermissions(ctx context.Context, userID, teamID string) (*EffectivePermissions, error)
+
+	// ==========================================================================
+	// Data Planes (v0.5 CP/DP architectural separation)
+	// ==========================================================================
+
+	// CreateDataPlane generates a join token, stores its hash, and returns the
+	// plaintext token exactly once. dp.ID, dp.JoinTokenHash, dp.CreatedAt and
+	// dp.UpdatedAt are written back into dp.
+	CreateDataPlane(ctx context.Context, dp *DataPlane) (joinToken string, err error)
+	// GetDataPlane returns the data plane with the given id, or ErrNotFound.
+	GetDataPlane(ctx context.Context, id string) (*DataPlane, error)
+	// ListDataPlanes returns all registered data planes, ordered by name.
+	ListDataPlanes(ctx context.Context) ([]*DataPlane, error)
+	// UpdateDataPlane replaces the mutable fields of a data plane. Returns
+	// ErrNotFound when absent.
+	UpdateDataPlane(ctx context.Context, dp *DataPlane) error
+	// DeleteDataPlane removes a data plane by id. Returns ErrNotFound when absent.
+	DeleteDataPlane(ctx context.Context, id string) error
+	// RecordDataPlaneHeartbeat updates the status and last_heartbeat of a DP.
+	RecordDataPlaneHeartbeat(ctx context.Context, hb *DataPlaneHeartbeat) error
+	// GetDataPlaneConfigSnapshot returns the current config snapshot for a DP.
+	// Returns an empty snapshot (not ErrNotFound) when none has been set yet.
+	GetDataPlaneConfigSnapshot(ctx context.Context, id string) (*DataPlaneConfigSnapshot, error)
+	// UpdateDataPlaneConfigSnapshot replaces the config snapshot for a DP.
+	UpdateDataPlaneConfigSnapshot(ctx context.Context, id string, snapshot *DataPlaneConfigSnapshot) error
+	// AssignNodeToDataPlane assigns a fleet node to a specific data plane.
+	// Pass dataplaneID="" to unassign (set back to NULL / default DP).
+	AssignNodeToDataPlane(ctx context.Context, nodeID, dataplaneID string) error
+	// ListNodesByDataPlane returns nodes belonging to a specific data plane.
+	// When dataplaneID is "", nodes with no data plane assignment are returned.
+	ListNodesByDataPlane(ctx context.Context, dataplaneID string) ([]*Node, error)
+	// ValidateDataPlaneToken returns the DataPlane whose join_token_hash matches
+	// the SHA-256 of joinToken, or ErrNotFound. Used by the DP config-pull endpoint.
+	ValidateDataPlaneToken(ctx context.Context, joinToken string) (*DataPlane, error)
 }

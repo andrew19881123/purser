@@ -75,6 +75,7 @@ nav:
     - Model Sources (S3 / GCS / Azure): configuration/model-sources.md
     - SWIM Gossip Discovery: configuration/swim.md
     - Webhook Notifications: configuration/webhook.md
+    - Data Planes (CP/DP): configuration/data-plane.md
   - Enterprise:
     - Open-Core Model: enterprise/overview.md
     - Licensing & Key Management: enterprise/licensing.md
