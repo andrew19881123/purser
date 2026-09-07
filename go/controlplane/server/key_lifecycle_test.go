@@ -90,7 +90,7 @@ func TestRotateAPIKey_Happy(t *testing.T) {
 		t.Fatalf("decode response: %v; raw=%s", err, rec.Body.String())
 	}
 
-	// Response must carry old_id, new_id and a psk_ prefixed plaintext key.
+	// Response must carry old_id, new_id and a sk- prefixed plaintext key.
 	if resp["old_id"] != "key-rotate-src" {
 		t.Errorf("old_id = %v, want key-rotate-src", resp["old_id"])
 	}
@@ -99,8 +99,8 @@ func TestRotateAPIKey_Happy(t *testing.T) {
 		t.Fatalf("new_id missing or empty; body=%s", rec.Body.String())
 	}
 	plaintext, _ := resp["key"].(string)
-	if len(plaintext) < 4 || plaintext[:4] != "psk_" {
-		t.Errorf("key = %q, want psk_ prefix", plaintext)
+	if len(plaintext) != 43 || plaintext[:3] != "sk-" {
+		t.Errorf("key = %q, want sk- prefix and 43 chars (sk-<40 hex>)", plaintext)
 	}
 
 	// Old key must now be disabled.

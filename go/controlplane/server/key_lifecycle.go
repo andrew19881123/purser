@@ -8,7 +8,6 @@ package server
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,10 +20,15 @@ import (
 // generateAPIKey creates a fresh API key pair. It returns the plaintext token
 // (shown to the caller exactly once) and the SHA-256 hex hash (persisted in
 // the database — the plaintext is never stored).
+//
+// Format: "sk-" + 40 lowercase hex characters (20 random bytes).
+// Example: sk-a3f8bc12de456789abcdef0123456789abcdef01
+// This follows the OpenAI / Anthropic convention. The psk_ legacy format is
+// no longer generated but continues to be accepted for backward compatibility.
 func generateAPIKey() (plaintext, keyHash string) {
-	secret := make([]byte, 24)
+	secret := make([]byte, 20) // 20 bytes → 40 hex chars
 	_, _ = rand.Read(secret)
-	plaintext = "psk_" + base64.RawURLEncoding.EncodeToString(secret)
+	plaintext = "sk-" + hex.EncodeToString(secret)
 	sum := sha256.Sum256([]byte(plaintext))
 	keyHash = hex.EncodeToString(sum[:])
 	return
@@ -67,6 +71,7 @@ func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Scopes:        old.Scopes,
 		ExpiresAt:     old.ExpiresAt, // inherit expiry
 		PredecessorID: oldID,
+		CreatedBy:     actorFromRequest(r),
 	}
 
 	if err := s.reg.RotateAPIKey(r.Context(), oldID, newKey); err != nil {

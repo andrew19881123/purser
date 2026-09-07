@@ -238,6 +238,10 @@ type Registry interface {
 	ListAPIKeysExpiringBefore(ctx context.Context, before time.Time) ([]*APIKey, error)
 	// RecordAPIKeyAccess appends one row to api_key_access_log.
 	RecordAPIKeyAccess(ctx context.Context, entry *APIKeyAccessEntry) error
+	// ListAPIKeyAccessLog returns access-log entries newest-first, capped at
+	// limit (limit <= 0 → default 50, max 1000). When apiKeyID is non-empty
+	// only entries for that key are returned; empty string returns all entries.
+	ListAPIKeyAccessLog(ctx context.Context, apiKeyID string, limit int) ([]*APIKeyAccessEntry, error)
 	// HasAnyAPIKey: see declaration above (deduped).
 
 	// --- Model Pricing ---------------------------------------------------------

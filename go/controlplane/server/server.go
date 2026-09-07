@@ -13,7 +13,6 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	_ "embed"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1405,7 +1404,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
 	s.mux.HandleFunc("POST /api/v1/apikeys/{id}/rotate", s.handleRotateAPIKey)
-	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/access-log", s.handleListAPIKeyAccess)
+	// Legacy per-key access-log endpoint — 301 redirect to unified /logs/access.
+	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/access-log", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		http.Redirect(w, r, "/api/v1/logs/access?api_key_id="+id, http.StatusMovedPermanently)
+	})
+	// Unified access-log endpoint (v0.5+).
+	s.mux.HandleFunc("GET /api/v1/logs/access", s.handleListAccessLogs)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
 
@@ -2955,22 +2960,17 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := make([]byte, 24)
-	if _, err := rand.Read(secret); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "keygen_failed", err.Error())
-		return
-	}
-	plaintext := "psk_" + base64.RawURLEncoding.EncodeToString(secret)
-	sum := sha256.Sum256([]byte(plaintext))
+	plaintext, keyHash := generateAPIKey()
 	id := "key-" + randHex(8)
 	key := &registry.APIKey{
-		ID:      id,
-		Name:    body.Name,
-		KeyHash: hex.EncodeToString(sum[:]),
-		Tenant:  body.Tenant,
-		Role:    role,
-		Quota:   body.Quota,
-		Enabled: true,
+		ID:        id,
+		Name:      body.Name,
+		KeyHash:   keyHash,
+		Tenant:    body.Tenant,
+		Role:      role,
+		Quota:     body.Quota,
+		Enabled:   true,
+		CreatedBy: actorFromRequest(r),
 	}
 	if err := s.reg.CreateAPIKey(r.Context(), key); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "create_apikey_failed", err.Error())
