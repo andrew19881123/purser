@@ -1,0 +1,35 @@
+{{- /*
+Optional ConfigMap that embeds the four Purser Grafana dashboard JSONs.
+
+Enable with:
+  grafana:
+    provisioning:
+      enabled: true
+
+The ConfigMap is labelled so the Grafana sidecar (kube-prometheus-stack) picks
+it up automatically and imports the dashboards into the "Purser" folder.
+
+Dashboard JSON files live under files/dashboards/ inside this chart so that
+Helm's Files.Get can embed them without Go-template interference (Grafana uses
+{{ }} in legendFormat strings which would otherwise be mis-parsed).
+*/ -}}
+{{- if .Values.grafana.provisioning.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "purser-cp.fullname" . }}-grafana-dashboards
+  labels:
+    {{- include "purser-cp.labels" . | nindent 4 }}
+    {{ .Values.grafana.provisioning.sidecarLabel }}: {{ .Values.grafana.provisioning.sidecarLabelValue | quote }}
+  annotations:
+    grafana_folder: {{ .Values.grafana.provisioning.folder | quote }}
+data:
+  gateway-overview.json: |
+    {{- .Files.Get "files/dashboards/gateway-overview.json" | nindent 4 }}
+  node-hardware.json: |
+    {{- .Files.Get "files/dashboards/node-hardware.json" | nindent 4 }}
+  token-economics.json: |
+    {{- .Files.Get "files/dashboards/token-economics.json" | nindent 4 }}
+  compliance-audit.json: |
+    {{- .Files.Get "files/dashboards/compliance-audit.json" | nindent 4 }}
+{{- end }}

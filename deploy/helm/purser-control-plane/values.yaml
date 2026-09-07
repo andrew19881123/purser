@@ -146,3 +146,12 @@ podAnnotations: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Grafana dashboard provisioning via ConfigMap sidecar.
+# Set grafana.provisioning.enabled=true when deploying alongside kube-prometheus-stack.
+grafana:
+  provisioning:
+    enabled: false
+    sidecarLabel: grafana_dashboard
+    sidecarLabelValue: "1"
+    folder: Purser
