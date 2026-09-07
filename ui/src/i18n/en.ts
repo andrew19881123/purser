@@ -401,6 +401,7 @@ export const en = {
   'settings.license.community.desc': 'You are running the MIT-licensed community edition. Upgrade for HA, RBAC, OIDC, audit log, and more.',
   'settings.license.community.link': 'See Enterprise features →',
   'settings.license.no.features': 'None',
+  'settings.license.daysRemaining': 'days remaining',
 
   'error.billing': 'Could not load the billing report.',
 

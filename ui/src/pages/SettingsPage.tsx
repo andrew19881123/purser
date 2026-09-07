@@ -299,18 +299,19 @@ function UsageSummaryCard({ t }: { t: TFunc }) {
 }
 
 function LicenseCard({ t }: { t: TFunc }) {
-  const { data, isLoading, isError, error, refetch } = useEnterpriseStatus();
+  const { data, isLoading, isError } = useEnterpriseStatus();
 
   if (isLoading) return <Card title={t('settings.license.title')}><LoadingBlock /></Card>;
-  if (isError) return (
-    <Card title={t('settings.license.title')}>
-      <ErrorState message={errorMessage(error, t, 'error.apikeys')} onRetry={() => refetch()} />
-    </Card>
-  );
-  if (!data) return null;
 
-  const isCommunity = data.edition === 'community';
-  const isExpired = data.expires ? new Date(data.expires) < new Date() : false;
+  // 404 / API error or no license data → fall through to MIT Core community mode gracefully.
+  const isCommunity = isError || !data || data.edition === 'community';
+  const isExpired = data?.expires ? new Date(data.expires) < new Date() : false;
+
+  // Days remaining until expiry (only meaningful for non-expired enterprise licenses).
+  const daysRemaining =
+    data?.expires && !isExpired
+      ? Math.ceil((new Date(data.expires).getTime() - Date.now()) / 86_400_000)
+      : null;
 
   return (
     <Card title={t('settings.license.title')}>
@@ -325,7 +326,7 @@ function LicenseCard({ t }: { t: TFunc }) {
               <Badge tone="success">{t('settings.license.edition.enterprise')}</Badge>
             </span>
           )}
-          {isExpired && (
+          {!isCommunity && isExpired && (
             <span data-testid="expired-badge">
               <Badge tone="danger">{t('settings.license.expired')}</Badge>
             </span>
@@ -333,7 +334,7 @@ function LicenseCard({ t }: { t: TFunc }) {
         </div>
 
         {isCommunity ? (
-          <p className="muted">
+          <p className="muted" data-testid="mit-core-desc">
             {t('settings.license.community.desc')}{' '}
             <a href="/docs/enterprise/overview" className="link">
               {t('settings.license.community.link')}
@@ -342,14 +343,14 @@ function LicenseCard({ t }: { t: TFunc }) {
         ) : (
           <dl className="license-details">
             <dt>{t('settings.license.licensee')}</dt>
-            <dd>{data.licensee}</dd>
+            <dd data-testid="license-licensee">{data!.licensee}</dd>
 
             <dt>{t('settings.license.features')}</dt>
             <dd className="feature-badges" data-testid="feature-badges">
-              {data.features.length === 0 ? (
+              {data!.features.length === 0 ? (
                 <span className="muted">{t('settings.license.no.features')}</span>
               ) : (
-                data.features.map((f) => (
+                data!.features.map((f) => (
                   <Badge key={f} tone="info">
                     {f}
                   </Badge>
@@ -357,13 +358,18 @@ function LicenseCard({ t }: { t: TFunc }) {
               )}
             </dd>
 
-            {data.expires && (
+            {data?.expires && (
               <>
                 <dt>{t('settings.license.expires')}</dt>
                 <dd>
-                  <span className={isExpired ? 'text--danger' : undefined}>
+                  <span className={isExpired ? 'text--danger' : undefined} data-testid="license-expiry">
                     {new Date(data.expires).toLocaleDateString()}
                   </span>
+                  {daysRemaining !== null && (
+                    <span className="muted" data-testid="days-remaining">
+                      {' '}({daysRemaining} {t('settings.license.daysRemaining')})
+                    </span>
+                  )}
                 </dd>
               </>
             )}

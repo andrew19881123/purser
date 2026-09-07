@@ -344,6 +344,7 @@ export const it: Record<StringKey, string> = {
   'settings.license.community.desc': 'Stai usando l\'edizione community con licenza MIT. Passa a Enterprise per HA, RBAC, OIDC, audit log e altro.',
   'settings.license.community.link': 'Vedi funzionalità Enterprise →',
   'settings.license.no.features': 'Nessuna',
+  'settings.license.daysRemaining': 'giorni rimanenti',
 
   // audit log enterprise
   'nav.audit': 'Audit Log',

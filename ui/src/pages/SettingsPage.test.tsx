@@ -261,3 +261,184 @@ describe('shows_expiry_warning_when_expired', () => {
     expect(queryByTestId('expired-badge')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// SettingsPage — API Keys tab (task spec tests)
+// ---------------------------------------------------------------------------
+
+// Helper: minimal valid API key fixture.
+function mkKey(overrides: Partial<{
+  id: string;
+  name: string;
+  team: string;
+  prefix: string;
+  role: 'admin' | 'viewer' | 'inference';
+  createdAt: string;
+  lastUsedAt: string | null;
+  monthlyQuota: number | null;
+  usedThisMonth: number;
+  revoked: boolean;
+}> = {}) {
+  return {
+    id: 'key_test',
+    name: 'Test key',
+    team: 'team-x',
+    prefix: 'sk-purser-test',
+    role: 'admin' as const,
+    createdAt: new Date().toISOString(),
+    lastUsedAt: null,
+    monthlyQuota: null,
+    usedThisMonth: 0,
+    revoked: false,
+    ...overrides,
+  };
+}
+
+describe('SettingsPage — API Keys tab', () => {
+  it('renders key table with name, tenant, role columns', () => {
+    mq.useApiKeys.mockReturnValue(success([mkKey()]));
+    mq.useKeyUsage.mockReturnValue(idle());
+
+    const { getByText } = renderPage();
+
+    // Column headers (mock t() returns the key string as-is)
+    expect(getByText('settings.col.name')).toBeDefined();
+    expect(getByText('settings.col.team')).toBeDefined();
+    expect(getByText('settings.col.role')).toBeDefined();
+    expect(getByText('settings.col.lastUsed')).toBeDefined();
+    expect(getByText('settings.col.status')).toBeDefined();
+  });
+
+  it('shows quota progress bar with correct percentage', () => {
+    mq.useApiKeys.mockReturnValue(
+      success([mkKey({ id: 'key_quota', monthlyQuota: 1000, usedThisMonth: 800 })]),
+    );
+    mq.useKeyUsage.mockReturnValue(idle());
+
+    const { container } = renderPage();
+
+    const meter = container.querySelector('[role="meter"]');
+    expect(meter).not.toBeNull();
+    // 800 / 1000 = 80 %
+    expect(meter!.getAttribute('aria-valuenow')).toBe('80');
+  });
+
+  it('shows "never" when last_used_at is null', () => {
+    mq.useApiKeys.mockReturnValue(
+      success([mkKey({ id: 'key_never', lastUsedAt: null })]),
+    );
+    mq.useKeyUsage.mockReturnValue(idle());
+
+    const { getByText } = renderPage();
+
+    expect(getByText('settings.usage.never')).toBeDefined();
+  });
+
+  it('shows revoked badge when key is disabled', () => {
+    mq.useApiKeys.mockReturnValue(
+      success([mkKey({ id: 'key_revoked', revoked: true })]),
+    );
+    mq.useKeyUsage.mockReturnValue(idle());
+
+    const { getByText } = renderPage();
+
+    expect(getByText('settings.status.revoked')).toBeDefined();
+  });
+
+  it('shows usage tokens after async load', () => {
+    mq.useApiKeys.mockReturnValue(success([mkKey({ id: 'key_async' })]));
+    mq.useKeyUsage.mockImplementation((keyId: string | undefined) => {
+      if (keyId === 'key_async') {
+        return success({
+          apiKeyId: 'key_async',
+          totalRequests: 5,
+          inputTokens: 5000,
+          outputTokens: 2500,
+        });
+      }
+      return idle();
+    });
+
+    const { getByTestId } = renderPage();
+
+    // formatTokenCount(5000) => "5.0K", formatTokenCount(2500) => "2.5K"
+    expect(getByTestId('key-token-usage')).toHaveTextContent('5.0K in / 2.5K out');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SettingsPage — License tile (task spec tests)
+// ---------------------------------------------------------------------------
+
+describe('SettingsPage — License tile', () => {
+  it('shows MIT Core mode when no license endpoint or 404', () => {
+    mq.useEnterpriseStatus.mockReturnValue({
+      isLoading: false,
+      isError: true,
+      error: new Error('HTTP 404'),
+      data: undefined,
+      refetch: vi.fn(),
+    });
+
+    const { getByTestId, queryByTestId } = renderPage();
+
+    expect(getByTestId('community-badge')).toBeDefined();
+    expect(getByTestId('mit-core-desc')).toBeDefined();
+    expect(queryByTestId('enterprise-badge')).toBeNull();
+  });
+
+  it('shows Enterprise plan name and expiry when license present', () => {
+    mq.useEnterpriseStatus.mockReturnValue(
+      success({
+        edition: 'enterprise',
+        licensee: 'Acme Corp',
+        features: ['audit'],
+        expires: '2030-06-15T00:00:00Z',
+      }),
+    );
+
+    const { getByTestId } = renderPage();
+
+    expect(getByTestId('enterprise-badge')).toBeDefined();
+    expect(getByTestId('license-licensee').textContent).toBe('Acme Corp');
+    expect(getByTestId('license-expiry')).toBeDefined();
+  });
+
+  it('shows days remaining correctly', () => {
+    // Expiry 30 days in the future.
+    const futureExpiry = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    mq.useEnterpriseStatus.mockReturnValue(
+      success({
+        edition: 'enterprise',
+        licensee: 'Acme Corp',
+        features: [],
+        expires: futureExpiry,
+      }),
+    );
+
+    const { getByTestId } = renderPage();
+
+    const daysEl = getByTestId('days-remaining');
+    expect(daysEl).toBeDefined();
+    // Text should contain a number (the days count).
+    expect(daysEl.textContent).toMatch(/\d+/);
+  });
+
+  it('lists active feature gates', () => {
+    mq.useEnterpriseStatus.mockReturnValue(
+      success({
+        edition: 'enterprise',
+        licensee: 'FeatureCorp',
+        features: ['raft_ha', 'opa_policies', 'chargeback'],
+        expires: '2099-01-01T00:00:00Z',
+      }),
+    );
+
+    const { getByTestId } = renderPage();
+
+    const badges = getByTestId('feature-badges');
+    expect(badges.textContent).toContain('raft_ha');
+    expect(badges.textContent).toContain('opa_policies');
+    expect(badges.textContent).toContain('chargeback');
+  });
+});
