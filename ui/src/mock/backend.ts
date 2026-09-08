@@ -506,6 +506,16 @@ export const mockBackend: PurserApi = {
     return 'data:text/csv;charset=utf-8,tenant_id%2Cmodel_id%2Crequest_count%0A';
   },
 
+  getBillingXlsxUrl(): string {
+    // In mock mode, return an empty data URL placeholder.
+    return 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,';
+  },
+
+  getBillingPdfUrl(): string {
+    // In mock mode, return an empty data URL placeholder.
+    return 'data:application/pdf;base64,';
+  },
+
   getBillingSummary(): Promise<BillingSummary> {
     const now = new Date().toISOString();
     return Promise.resolve({

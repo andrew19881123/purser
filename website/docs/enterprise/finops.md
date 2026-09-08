@@ -195,6 +195,79 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
+---
+
+## Export formats
+
+**`GET /api/v1/billing/report?format=<format>`**
+
+The chargeback report can be downloaded in three machine-readable formats via the `format` query parameter. All other parameters (`start`, `end`, `tenant_id`, `sla_threshold_ms`) are supported alongside `format`.
+
+| Format | MIME type | Description |
+|---|---|---|
+| `json` (default) | `application/json` | Full JSON report (existing behaviour). |
+| `csv` | `text/csv` | Flat CSV, one row per tenant+model. |
+| `xlsx` | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | Multi-sheet Excel workbook (see below). |
+| `pdf` | `application/pdf` | Single-page PDF summary table. |
+
+All formats require the **`billing`** enterprise feature and return `402 Payment Required` without a valid license.
+
+### XLSX workbook structure
+
+The XLSX file contains three sheets:
+
+| Sheet | Contents |
+|---|---|
+| **Summary** | One row per tenant — `org_id`, `team_id`, `period`, `request_count`, `input_tokens`, `output_tokens`, `cost_usd`, `sla_compliance_rate` (if SLA stats were requested). |
+| **By Model** | Aggregated per model — `model_id`, `request_count`, `tokens_in`, `tokens_out`, `cost_usd`. |
+| **Key Usage** | Tenant-level proxy for API key usage — `key_id`, `name`, `tenant`, `request_count`, `total_tokens`, `last_used_at`. For per-key granularity, combine with `GET /api/v1/apikeys/{id}/usage`. |
+
+Headers are formatted in bold white text on a Purser-green (`#2D6A4F`) background for readability in Excel and Google Sheets.
+
+### PDF report structure
+
+The PDF is a single A4 page containing:
+
+- **Title**: "Purser Billing Report — YYYY-MM" in Purser brand green.
+- **Summary table**: one row per tenant+model with request count, token counts, and average latency.
+- **Totals row**: aggregated total requests and total tokens.
+- **Footer**: generation timestamp and control-plane version.
+
+### Download examples
+
+```bash
+# Download XLSX for the last 30 days
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://cp.example.com/api/v1/billing/report?format=xlsx" \
+  --output purser-billing.xlsx
+
+# Download XLSX for a specific window
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://cp.example.com/api/v1/billing/report?format=xlsx&start=2026-09-01T00:00:00Z&end=2026-10-01T00:00:00Z" \
+  --output purser-billing-september.xlsx
+
+# Download PDF summary
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://cp.example.com/api/v1/billing/report?format=pdf" \
+  --output purser-billing.pdf
+
+# PDF with SLA compliance at 2-second threshold
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://cp.example.com/api/v1/billing/report?format=pdf&sla_threshold_ms=2000" \
+  --output purser-billing-sla.pdf
+```
+
+### Finance system integration (SAP / Oracle)
+
+The XLSX format is designed for direct import into ERP systems such as SAP S/4HANA or Oracle Fusion Financials:
+
+1. **Download** the monthly XLSX via the API or the Chargeback page "Export XLSX" button.
+2. **Import** into SAP using the Standard File Import wizard (transaction code `FARE`) or Oracle via Data Management → Import → Spreadsheet.
+3. Map columns to your cost-centre structure using the `org_id` / `team_id` columns for GL segment mapping.
+4. The `cost_usd` column is populated when model pricing is configured; ensure `PUT /api/v1/billing/pricing` entries are up to date before each month-end close.
+
+---
+
 ## Requirements
 
 - Enterprise license with the **`billing`** feature.

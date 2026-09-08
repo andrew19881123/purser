@@ -71,7 +71,10 @@ func (s *Server) handleBillingReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if format == "csv" {
+	switch format {
+	case "", "json":
+		s.writeJSON(w, http.StatusOK, report)
+	case "csv":
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", `attachment; filename="billing-report.csv"`)
 		cw := csv.NewWriter(w)
@@ -91,10 +94,14 @@ func (s *Server) handleBillingReport(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		cw.Flush()
-		return
+	case "xlsx":
+		writeBillingXLSX(w, report)
+	case "pdf":
+		writeBillingPDF(w, report)
+	default:
+		s.writeError(w, http.StatusBadRequest, "bad_format",
+			fmt.Sprintf("unknown format %q; supported: json, csv, xlsx, pdf", format))
 	}
-
-	s.writeJSON(w, http.StatusOK, report)
 }
 
 // handleBillingSummary serves GET /api/v1/billing/summary.

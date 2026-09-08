@@ -101,19 +101,43 @@ function UsageTable({ rows }: { rows: BillingTenantUsage[] }) {
 export function ChargebackPage() {
   const t = useT();
   const [days, setDays] = useState<number>(30);
+  const [downloadingXlsx, setDownloadingXlsx] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const { data: report, isLoading, error } = useBillingReport({ days });
+
+  function triggerDownload(url: string, filename: string) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
 
   function handleExportCsv() {
     const end = new Date().toISOString();
     const start = new Date(Date.now() - days * 86400000).toISOString();
     const url = api.getBillingCsvUrl(start, end);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `billing-report-${days}d.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    triggerDownload(url, `billing-report-${days}d.csv`);
+  }
+
+  function handleExportXlsx() {
+    setDownloadingXlsx(true);
+    const end = new Date().toISOString();
+    const start = new Date(Date.now() - days * 86400000).toISOString();
+    const url = api.getBillingXlsxUrl(start, end);
+    triggerDownload(url, `billing-report-${days}d.xlsx`);
+    setTimeout(() => setDownloadingXlsx(false), 1500);
+  }
+
+  function handleExportPdf() {
+    setDownloadingPdf(true);
+    const end = new Date().toISOString();
+    const start = new Date(Date.now() - days * 86400000).toISOString();
+    const url = api.getBillingPdfUrl(start, end);
+    triggerDownload(url, `billing-report-${days}d.pdf`);
+    setTimeout(() => setDownloadingPdf(false), 1500);
   }
 
   // Enterprise gate: 402 → show upgrade prompt.
@@ -145,6 +169,12 @@ export function ChargebackPage() {
       </select>
       <Button onClick={handleExportCsv} disabled={!report}>
         {t('chargeback.action.exportCsv')}
+      </Button>
+      <Button onClick={handleExportXlsx} disabled={!report || downloadingXlsx}>
+        {downloadingXlsx ? t('chargeback.action.downloading') : t('chargeback.action.exportXlsx')}
+      </Button>
+      <Button onClick={handleExportPdf} disabled={!report || downloadingPdf}>
+        {downloadingPdf ? t('chargeback.action.downloading') : t('chargeback.action.exportPdf')}
       </Button>
     </div>
   );
