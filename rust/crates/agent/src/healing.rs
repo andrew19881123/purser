@@ -681,7 +681,7 @@ mod tests {
         let mut der = Vec::new();
 
         // Helper closures to write TLV.
-        let mut push_tlv = |tag: u8, value: &[u8], out: &mut Vec<u8>| {
+        let push_tlv = |tag: u8, value: &[u8], out: &mut Vec<u8>| {
             out.push(tag);
             out.push(value.len() as u8);
             out.extend_from_slice(value);
