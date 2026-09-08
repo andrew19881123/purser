@@ -98,10 +98,11 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	// integration (Wave 3). For now we expose what we know: the stable
 	// actor string derived from the auth credential and the membership lists.
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"actor": actor,
-		"orgs":  orgMemberships,
-		"teams": teamMemberships,
-		"note":  "full user profile requires OIDC/LDAP integration (Wave 3)",
+		"actor":                 actor,
+		"orgs":                  orgMemberships,
+		"teams":                 teamMemberships,
+		"note":                  "full user profile requires OIDC/LDAP integration (Wave 3)",
+		"service_accounts_note": "service_accounts are team-level credentials for machine-to-machine auth (LiteLLM, CI/CD)",
 	})
 }
 

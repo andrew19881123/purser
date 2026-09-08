@@ -13,12 +13,14 @@ graph TD
         CP["Control Plane Pod\n(purser-control-plane)"]
         GW["Gateway Pod\n(purser-gateway)"]
         UI["UI Pod\n(purser-ui, nginx)"]
-        PVC[("PVC /data\nSQLite registry\n+ PKI CA key")]
+        PVC[("PVC /data\nPKI CA key")]
+        DB[("PostgreSQL\n(external or bundled)")]
         SVC_CP["Service: control-plane\nHTTP :8080 / gRPC :9443"]
         SVC_GW["Service: gateway\nHTTP :8080"]
         SVC_UI["Service: ui\nHTTP :8080"]
         ING["Ingress (optional)\npurser.example.com"]
         CP --- PVC
+        CP --- DB
         SVC_CP --> CP
         SVC_GW --> GW
         SVC_UI --> UI
@@ -37,7 +39,11 @@ graph TD
     Operator["Operator\nbrowser"] --> SVC_UI
 ```
 
-`replicaCount` is kept at 1 — SQLite is single-writer. Set the Control Plane Service type to `LoadBalancer` or `NodePort` so LAN agents can reach it.
+With `database.driver=postgres` (the recommended production setting), `replicaCount`
+can be greater than 1. With `database.driver=sqlite` (the default, for local
+development), keep `replicaCount=1` — SQLite is single-writer. See
+[Database Configuration](../operations/database.md) for the full setup guide. Set the
+Control Plane Service type to `LoadBalancer` or `NodePort` so LAN agents can reach it.
 
 ## Prerequisites
 
@@ -84,7 +90,10 @@ helm install purser deploy/helm/purser \
 
 | Value | Default | Description |
 |---|---|---|
-| `replicaCount` | `1` | **Keep at 1.** SQLite Registry and internal PKI are single-writer. Multi-replica HA needs the Enterprise Raft backend. |
+| `replicaCount` | `1` | Keep at 1 when `database.driver=sqlite`. With `database.driver=postgres` (and an external PostgreSQL), values >1 are supported. |
+| `database.driver` | `sqlite` | Database backend: `sqlite` (dev/test) or `postgres` (production). See [Database Configuration](../operations/database.md). |
+| `database.url` | `""` | PostgreSQL connection URL. Required when `database.driver=postgres`. Use a Kubernetes Secret; see [Database Configuration](../operations/database.md). |
+| `database.postgresql.enabled` | `false` | Deploy a bundled PostgreSQL for quick-start. Not recommended for production. |
 | `service.type` | `ClusterIP` | Global default Service type; each component inherits unless overridden. |
 | `controlPlane.httpPort` | `8080` | Management REST API listen port. |
 | `controlPlane.grpcPort` | `9443` | RegistrationService gRPC (Agent enrollment and heartbeat). |
@@ -207,9 +216,14 @@ helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
 
 ## Persistence
 
-The Control Plane requires a PVC for:
-- The SQLite registry file (`PURSER_DB`, default `/data/purser-registry.db`)
+The Control Plane always requires a PVC for:
 - The internal CA key and certificate (`PURSER_PKI_DIR`, default `/data/pki-state`)
+
+When `database.driver=sqlite` (default), the PVC also holds:
+- The SQLite registry file (`PURSER_DB`, default `/data/purser-registry.db`)
+
+When `database.driver=postgres`, the PVC is used only for the PKI CA. The registry
+data lives in PostgreSQL. See [Database Configuration](../operations/database.md).
 
 The chart creates a PVC with the configured StorageClass (`controlPlane.persistence.storageClass`). Use an existing claim with `controlPlane.persistence.existingClaim`.
 
@@ -290,8 +304,68 @@ kubectl create secret tls purser-mgmt-tls \
 !!! note "Rate limiting"
     The management API has a built-in per-IP and per-API-key rate limiter (100 RPS and 50 RPS by default). Tune via `PURSER_RATE_LIMIT_RPS` and `PURSER_RATE_LIMIT_KEY_RPS` in `controlPlane.extraEnv`. See [Environment Variables](../configuration/env-vars.md#rate-limiting-for-the-management-api) for details.
 
+## Data Plane Registration
+
+Purser v0.5 introduces a first-class **Control Plane / Data Plane (CP/DP) split**. The Control Plane (this chart) is the management authority; Agents running on your GPU fleet form the Data Plane. Data Planes can be pre-registered at install time so they appear in the registry as soon as the Control Plane starts.
+
+### Pre-registering Data Planes at install time
+
+Use `controlPlane.dataplanes[]` in your values file. Each entry is seeded idempotently at startup — existing records are not overwritten:
+
+```yaml
+# values-prod.yaml
+controlPlane:
+  dataplanes:
+    - id: dp-prod
+      name: "Production Data Plane"
+      tier: production
+      gatewayUrl: "https://ai.acme.com"
+    - id: dp-dev
+      name: "Development Data Plane"
+      tier: development
+      gatewayUrl: "https://ai-dev.acme.com"
+```
+
+```bash
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
+  --namespace purser --create-namespace \
+  --set controlPlane.service.type=LoadBalancer \
+  -f values-prod.yaml
+```
+
+Or inline via `--set` for a single Data Plane:
+
+```bash
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
+  --set "controlPlane.dataplanes[0].id=dp-prod" \
+  --set "controlPlane.dataplanes[0].name=Production DP" \
+  --set "controlPlane.dataplanes[0].tier=production" \
+  --set "controlPlane.dataplanes[0].gatewayUrl=https://ai.acme.com" \
+  --set database.driver=postgres
+```
+
+Join tokens are generated by the Control Plane and stored as Kubernetes Secrets
+(`<release>-control-plane-dp-<id>-token`) so remote Gateways can read them at startup.
+
+For dynamic registration (without a Helm upgrade), use the REST API or the Operator UI. See [Data Plane configuration](../configuration/data-plane.md) for the full reference.
+
+### Engine backend: llama.cpp (production default)
+
+Agents default to `PURSER_ENGINE_BACKEND=llamacpp`, which drives real GPU inference via llama.cpp. The `mock` backend is opt-in — it returns canned responses with no GPU and is intended for demo and CI environments only.
+
+The `docker-compose.yml` demo stack sets `mock` explicitly. Helm deployments always default to `llamacpp`. To override to mock for a test namespace:
+
+```bash
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
+  --set agent.engineBackend=mock
+```
+
+!!! warning "Never use mock in production"
+    The `mock` backend fabricates responses. It is only suitable for UI smoke-tests and CI pipelines where no GPU is available.
+
 ## Enterprise options
 
 - **License key**: set `license.key` to enable enterprise features. The key is stored in a Kubernetes Secret and injected as `PURSER_LICENSE_KEY` into the Control Plane pod. See [Enterprise: Open-Core Model](../enterprise/overview.md).
 - **External Secrets Operator**: see [Secret Management](../configuration/secrets.md).
 - **cert-manager**: see [Certificate Management](../configuration/cert-manager.md).
+- **Data Plane**: see [Data Plane configuration](../configuration/data-plane.md).

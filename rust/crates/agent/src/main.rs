@@ -18,6 +18,7 @@ use purser_agent::config::AgentConfig;
 use purser_agent::discovery::{self, Membership};
 use purser_agent::healing::{diagnose, CertMonitor, DiagnosisInput, Liveness, NodeHealthMonitor};
 use purser_agent::linkbench::BandwidthReflector;
+use purser_agent::metrics as agent_metrics;
 use purser_agent::probe::{DefaultProbe, HardwareProbe};
 use purser_agent::secrets::{self, EncryptedFileSecretStore, InMemorySecretStore, SecretStore};
 use purser_agent::service::{AgentHeartbeatSource, AgentSvc};
@@ -381,6 +382,12 @@ async fn main() -> anyhow::Result<()> {
         let health_interval = config.health_interval;
         let fallback_node_id = node_id.clone();
         let secret_store = Arc::clone(&secret_store);
+        // Pre-build the HTTP client for cert renewal before entering the async
+        // move closure (config lives in main's scope and can't be moved in).
+        #[cfg(feature = "http-fetch")]
+        let cert_renewal_http_client = purser_agent::http_client::build_http_client(&config).ok();
+        #[cfg(feature = "http-fetch")]
+        let cert_check_hours = config.cert_check_interval_hours.unwrap_or(24);
         tokio::spawn(async move {
             // The token is a secret: log it only through the redacting wrapper.
             tracing::debug!(
@@ -405,6 +412,36 @@ async fn main() -> anyhow::Result<()> {
                         let _ = sm.enrolled();
                         let _ = sm.ready();
                     }
+
+                    // Spawn the cert-renewal loop now that we have the node ID.
+                    // It wakes every PURSER_CERT_CHECK_INTERVAL_HOURS hours (default 24)
+                    // and automatically renews the mTLS cert when < 30 days remain.
+                    #[cfg(feature = "http-fetch")]
+                    match cert_renewal_http_client {
+                        Some(http_client) => {
+                            let renewal_node_id = enrollment.node_id.clone();
+                            let renewal_cp_addr = cp_addr.clone();
+                            let renewal_store = Arc::clone(&secret_store);
+                            tokio::spawn(purser_agent::healing::cert_renewal_loop(
+                                renewal_node_id,
+                                renewal_cp_addr,
+                                renewal_store,
+                                http_client,
+                                cert_check_hours,
+                            ));
+                            tracing::info!(
+                                check_interval_hours = cert_check_hours,
+                                "cert renewal loop started"
+                            );
+                        }
+                        None => {
+                            tracing::warn!(
+                                "could not build HTTP client for cert renewal; \
+                                 renewal loop disabled"
+                            );
+                        }
+                    }
+
                     // H6: reconnect loop with exponential backoff so a transient
                     // control-plane outage does not permanently sever heartbeating.
                     let node_id_for_hb = enrollment.node_id;
@@ -489,6 +526,56 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
+    }
+
+    // ── Prometheus /metrics server ───────────────────────────────────────────
+    // Exposes EngineMetrics gauges at GET :<PURSER_AGENT_METRICS_PORT>/metrics.
+    // Default port: 9091. Unauthenticated — expose only on trusted networks.
+    {
+        // Install the recorder once; subsequent calls to prometheus_handle() clone it.
+        let _metrics_handle = agent_metrics::prometheus_handle();
+
+        // Periodic gauge update: sample the supervisor's latest metrics every
+        // health_interval so Prometheus always has a fresh value to scrape.
+        let supervisor_m = Arc::clone(&supervisor);
+        let node_id_m = node_id.clone();
+        let metrics_interval = config.health_interval;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(metrics_interval);
+            loop {
+                ticker.tick().await;
+                let engine_metrics = supervisor_m.latest_metrics();
+                let alive = supervisor_m.engine_node_state() == NodeState::Running;
+                agent_metrics::update_engine_metrics(&node_id_m, engine_metrics.as_ref(), alive);
+            }
+        });
+
+        // Dedicated HTTP server for the /metrics endpoint.
+        let metrics_port: u16 = std::env::var("PURSER_AGENT_METRICS_PORT")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(9091);
+        let metrics_addr = SocketAddr::new(config.bind_addr.ip(), metrics_port);
+        let metrics_router = axum::Router::new().route(
+            "/metrics",
+            axum::routing::get(agent_metrics::metrics_handler),
+        );
+        match tokio::net::TcpListener::bind(metrics_addr).await {
+            Ok(listener) => {
+                tracing::info!(%metrics_addr, "Prometheus /metrics endpoint listening");
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, metrics_router).await {
+                        tracing::warn!(error = %e, "Prometheus metrics server error");
+                    }
+                });
+            }
+            Err(e) => tracing::warn!(
+                %metrics_addr,
+                error = %e,
+                "failed to bind Prometheus metrics port (PURSER_AGENT_METRICS_PORT); \
+                 /metrics will not be served"
+            ),
+        }
     }
 
     // Compose the shutdown future so SWIM tasks also receive the signal.

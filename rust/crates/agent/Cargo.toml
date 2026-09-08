@@ -8,6 +8,8 @@ description = "Purser fleet agent: node-local daemon exposing AgentService over 
 [dependencies]
 aes-gcm = { workspace = true }
 anyhow = "1.0.104"
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 zeroize = { workspace = true }
 base64 = "0.22"
 getrandom = "0.2"
@@ -26,7 +28,7 @@ prost-types = "0.14.4"
 purser-engine-adapter = { version = "0.1.0", path = "../engine-adapter" }
 purser-adapter-llamacpp = { path = "../adapter-llamacpp", optional = true }
 purser-proto = { path = "../purser-proto" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"], optional = true }
 serde_json = "1"
 sha2 = "0.11.0"
 sysinfo = "0.39.6"
@@ -37,7 +39,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+http-body-util = "0.1.5"
 tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
 
 [features]
 # mDNS/DNS-SD zero-config LAN discovery (`_purser._tcp`). On by default: the

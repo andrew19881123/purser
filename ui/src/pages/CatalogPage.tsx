@@ -73,6 +73,74 @@ function FitBadge({ entry, t }: { entry: CatalogEntry; t: TFunc }) {
 }
 
 // ---------------------------------------------------------------------------
+// DeleteConfirmDialog — requires typing model ID before delete is enabled
+// ---------------------------------------------------------------------------
+
+function DeleteConfirmDialog({
+  modelId,
+  isDeleting,
+  error,
+  onConfirm,
+  onCancel,
+  t,
+}: {
+  modelId: string;
+  isDeleting: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+  t: TFunc;
+}) {
+  const [typed, setTyped] = useState('');
+  const canConfirm = typed === modelId && !isDeleting;
+  const inputId = `delete-confirm-input-${modelId}`;
+
+  return (
+    <Modal
+      title={t('catalog.deleteDialog.title')}
+      onClose={onCancel}
+      footer={
+        <div className="modal-footer-actions">
+          <Button variant="secondary" size="sm" onClick={onCancel} disabled={isDeleting}>
+            {t('catalog.deleteDialog.cancel')}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={onConfirm}
+            disabled={!canConfirm}
+          >
+            {isDeleting ? <Spinner /> : t('catalog.deleteDialog.confirm')}
+          </Button>
+        </div>
+      }
+    >
+      <p className="delete-dialog__body">{t('catalog.deleteDialog.body')}</p>
+      <div className="delete-dialog__field">
+        <label className="delete-dialog__label" htmlFor={inputId}>
+          {t('catalog.deleteDialog.confirmLabel', { model: modelId })}
+        </label>
+        <input
+          id={inputId}
+          type="text"
+          className="delete-dialog__input"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder={modelId}
+          autoFocus
+          autoComplete="off"
+        />
+      </div>
+      {error && (
+        <p role="alert" className="delete-dialog__error">
+          {error}
+        </p>
+      )}
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // PlanPreviewModal — fleet-split preview dialog
 // ---------------------------------------------------------------------------
 
@@ -158,8 +226,6 @@ function PlanPreviewModal({
 interface ModelCardProps {
   entry: CatalogEntry;
   t: TFunc;
-  isDeleting: boolean;
-  deleteError: string | null;
   onDelete: (modelId: string) => void;
   isPreviewPending: boolean;
   onPreview: (modelId: string) => void;
@@ -168,8 +234,6 @@ interface ModelCardProps {
 function ModelCard({
   entry,
   t,
-  isDeleting,
-  deleteError,
   onDelete,
   isPreviewPending,
   onPreview,
@@ -235,18 +299,11 @@ function ModelCard({
           variant="danger"
           size="sm"
           onClick={() => onDelete(model.modelId)}
-          disabled={isDeleting}
           aria-label={t('catalog.action.delete')}
         >
-          {isDeleting ? <Spinner /> : <IconTrash />}
+          <IconTrash />
         </Button>
       </div>
-
-      {deleteError && (
-        <p role="alert" className="model-card__delete-error">
-          {deleteError}
-        </p>
-      )}
     </Card>
   );
 }
@@ -261,24 +318,39 @@ export function CatalogPage() {
   const deleteModel = useDeleteModel();
   const previewMutation = usePreviewModelPlan();
 
-  // Track which model triggered a delete error (to show inline)
-  const [deleteErrorModel, setDeleteErrorModel] = useState<{ modelId: string; msg: string } | null>(null);
+  // Delete dialog state
+  const [deleteDialogModelId, setDeleteDialogModelId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   // Track which model's preview modal is open
   const [previewModelId, setPreviewModelId] = useState<string | null>(null);
 
-  function handleDelete(modelId: string) {
-    const confirmed = window.confirm(t('catalog.deleteConfirm', { model: modelId }));
-    if (!confirmed) return;
-    setDeleteErrorModel(null);
-    deleteModel.mutate(modelId, {
+  function handleDeleteClick(modelId: string) {
+    setDeleteDialogModelId(modelId);
+    setDeleteError(null);
+  }
+
+  function handleDeleteConfirm() {
+    if (!deleteDialogModelId) return;
+    deleteModel.mutate(deleteDialogModelId, {
+      onSuccess: () => {
+        setDeleteDialogModelId(null);
+        setDeleteError(null);
+      },
       onError: (err) => {
         const msg =
           err instanceof ApiError && err.status === 409
             ? t('catalog.deleteError.inUse')
             : errorMessage(err, t, 'error.catalog');
-        setDeleteErrorModel({ modelId, msg });
+        setDeleteError(msg);
       },
     });
+  }
+
+  function handleDeleteCancel() {
+    if (deleteModel.isPending) return;
+    setDeleteDialogModelId(null);
+    setDeleteError(null);
   }
 
   function handlePreview(modelId: string) {
@@ -311,13 +383,7 @@ export function CatalogPage() {
               key={entry.model.modelId}
               entry={entry}
               t={t}
-              isDeleting={deleteModel.isPending && !deleteErrorModel}
-              deleteError={
-                deleteErrorModel?.modelId === entry.model.modelId
-                  ? deleteErrorModel.msg
-                  : null
-              }
-              onDelete={handleDelete}
+              onDelete={handleDeleteClick}
               isPreviewPending={
                 previewMutation.isPending && previewModelId === entry.model.modelId
               }
@@ -325,6 +391,17 @@ export function CatalogPage() {
             />
           ))}
         </div>
+      )}
+
+      {deleteDialogModelId && (
+        <DeleteConfirmDialog
+          modelId={deleteDialogModelId}
+          isDeleting={deleteModel.isPending}
+          error={deleteError}
+          onConfirm={handleDeleteConfirm}
+          onCancel={handleDeleteCancel}
+          t={t}
+        />
       )}
 
       {previewModelId && previewMutation.isSuccess && (

@@ -59,6 +59,7 @@ nav:
     - Deploy Your First Model: getting-started/deploy-model.md
   - Install:
     - Kubernetes (Helm): install/kubernetes.md
+    - Kubernetes Enterprise (CP + DP): install/kubernetes-enterprise.md
     - Linux Agent (.deb/.rpm): install/linux-agent.md
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md
@@ -75,6 +76,7 @@ nav:
     - Model Sources (S3 / GCS / Azure): configuration/model-sources.md
     - SWIM Gossip Discovery: configuration/swim.md
     - Webhook Notifications: configuration/webhook.md
+    - Data Planes (CP/DP): configuration/data-plane.md
   - Enterprise:
     - Open-Core Model: enterprise/overview.md
     - Licensing & Key Management: enterprise/licensing.md

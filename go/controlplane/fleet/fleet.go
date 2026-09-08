@@ -39,9 +39,16 @@ const (
 
 // Common errors.
 var (
-	ErrInvalidToken = errors.New("fleet: invalid or expired join token")
-	ErrTokenUsed    = errors.New("fleet: join token already used")
+	ErrInvalidToken       = errors.New("fleet: invalid or expired join token")
+	ErrTokenUsed          = errors.New("fleet: join token already used")
+	ErrCertNotYetExpiring = errors.New("fleet: certificate is not yet expiring (more than 60 days remaining)")
 )
+
+// RenewResult holds the new certificate issued by the renewal endpoint.
+type RenewResult struct {
+	CertPEM   []byte
+	ExpiresAt time.Time
+}
 
 // JoinToken is a short-lived, single-use credential handed to a machine so it
 // can request enrollment into the cluster.
@@ -311,6 +318,50 @@ func (m *Manager) Decommission(ctx context.Context, nodeID string) error {
 	}
 	m.audit(ctx, "fleet.node.decommissioned", nodeID, nil)
 	return nil
+}
+
+// RenewCert issues a fresh certificate for the given node.
+//
+// Rules:
+//   - Returns registry.ErrNotFound if the node does not exist.
+//   - Returns ErrCertNotYetExpiring if the node's current issued certificate
+//     still has more than 60 days remaining (premature renewal rejected).
+//   - Otherwise, issues a new leaf certificate and returns it.
+func (m *Manager) RenewCert(ctx context.Context, nodeID string) (*RenewResult, error) {
+	// 1. Check node exists.
+	if _, err := m.reg.GetNode(ctx, nodeID); err != nil {
+		return nil, fmt.Errorf("fleet: renew cert: %w", err)
+	}
+
+	// 2. Find the current issued cert and enforce the 60-day guard.
+	const renewThreshold = 60 * 24 * time.Hour
+	certs, err := m.reg.ListCerts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fleet: list certs for renewal: %w", err)
+	}
+	for _, c := range certs {
+		if c.Subject == nodeID && c.State == pki.StateIssued {
+			if time.Until(c.NotAfter) > renewThreshold {
+				return nil, ErrCertNotYetExpiring
+			}
+			break
+		}
+	}
+
+	// 3. Issue the new certificate.
+	issued, err := m.ca.Issue(ctx, pki.CertRequest{
+		CommonName: nodeID,
+		Role:       pki.RoleAgent,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fleet: issue renewal cert: %w", err)
+	}
+
+	m.audit(ctx, "fleet.cert.renewed", nodeID, map[string]any{"serial": issued.Serial})
+	return &RenewResult{
+		CertPEM:   issued.CertPEM,
+		ExpiresAt: issued.NotAfter,
+	}, nil
 }
 
 func (m *Manager) audit(ctx context.Context, action, target string, details map[string]any) {

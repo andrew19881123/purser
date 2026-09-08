@@ -16,11 +16,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/purser/purser/go/controlplane/audit"
-
-	// modernc.org/sqlite is a pure-Go (CGO-free) SQLite driver. It registers
-	// itself under the name "sqlite". Keeping the build CGO-free is essential
-	// for air-gap and cross-compilation.
-	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -47,16 +42,19 @@ var _ Registry = (*SQLiteRegistry)(nil)
 // Open opens (creating if necessary) a SQLite-backed registry at dsn. dsn is a
 // file path (e.g. "/var/lib/purser/registry.db") or ":memory:" for tests.
 // The returned registry has not yet been migrated — call Migrate.
+//
+// Deprecated: prefer OpenFromConfig for driver-agnostic initialisation.
 func Open(dsn string) (*SQLiteRegistry, error) {
-	// Enable foreign keys, WAL journaling and a busy timeout via DSN pragmas so
-	// every connection in the pool is configured identically.
-	// WAL + synchronous=NORMAL: full durability on commit, no fsync on every
-	// page write. Safe for single-writer deployments on modern OS+hardware and
-	// gives a ~2-5x write-throughput improvement over the default FULL mode.
-	conn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn)
-	db, err := sql.Open("sqlite", conn)
+	return OpenFromConfig(DBConfig{Driver: "sqlite", DSN: dsn})
+}
+
+// OpenFromConfig opens the registry using the given database configuration.
+// Supports both SQLite (dev/test) and PostgreSQL (production). The returned
+// registry has not yet been migrated — call Migrate.
+func OpenFromConfig(cfg DBConfig) (*SQLiteRegistry, error) {
+	db, err := OpenDB(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("registry: open sqlite: %w", err)
+		return nil, fmt.Errorf("registry: open: %w", err)
 	}
 	return &SQLiteRegistry{db: db}, nil
 }
@@ -97,6 +95,8 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"api_keys", "predecessor_id", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "rotated_at", "TEXT"},
 		{"api_keys", "scopes", "TEXT NOT NULL DEFAULT '[]'"},
+		// created_by: actor who created the key (v0.5). NULL for older keys.
+		{"api_keys", "created_by", "TEXT"},
 		// AI Act Art.12(1)(a): version tracking for inference events. Default
 		// empty string preserves backward compat for pre-feature rows.
 		{"inference_audit_log", "model_revision", "TEXT NOT NULL DEFAULT ''"},
@@ -109,6 +109,10 @@ func (r *SQLiteRegistry) Migrate(ctx context.Context) error {
 		{"deployment_approvals", "required_approvals", "INTEGER NOT NULL DEFAULT 1"},
 		// Expiry timestamp for the approval request (NULL = no expiry).
 		{"deployment_approvals", "expires_at", "TEXT"},
+		// CP/DP separation (v0.5): assign fleet nodes to a named Data Plane.
+		{"nodes", "dataplane_id", "TEXT"},
+		// Service account description (v0.5). Team-scoped from v0.5 onwards.
+		{"service_accounts", "description", "TEXT NOT NULL DEFAULT ''"}, // comma required in Go slice literal
 	} {
 		if err := r.ensureColumn(ctx, m.table, m.column, m.def); err != nil {
 			return fmt.Errorf("registry: migrate: %w", err)
@@ -692,10 +696,10 @@ func (r *SQLiteRegistry) CreateAPIKey(ctx context.Context, k *APIKey) error {
 		role = "admin"
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO api_keys (id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.ID, k.Name, k.KeyHash, k.Tenant, role, k.Quota, boolToInt(k.Enabled),
-		fmtTime(k.CreatedAt), fmtTime(k.UpdatedAt))
+		fmtTime(k.CreatedAt), fmtTime(k.UpdatedAt), k.CreatedBy)
 	if err != nil {
 		return fmt.Errorf("registry: create api_key %q: %w", k.ID, err)
 	}
@@ -703,21 +707,23 @@ func (r *SQLiteRegistry) CreateAPIKey(ctx context.Context, k *APIKey) error {
 	return nil
 }
 
-const apiKeyCols = `id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at`
+const apiKeyCols = `id, name, key_hash, tenant, role, quota, enabled, created_at, updated_at, created_by`
 
 func scanAPIKey(s interface{ Scan(...any) error }) (*APIKey, error) {
 	var (
-		k       APIKey
-		enabled int64
-		created sql.NullString
-		updated sql.NullString
+		k         APIKey
+		enabled   int64
+		created   sql.NullString
+		updated   sql.NullString
+		createdBy sql.NullString
 	)
-	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Role, &k.Quota, &enabled, &created, &updated); err != nil {
+	if err := s.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Tenant, &k.Role, &k.Quota, &enabled, &created, &updated, &createdBy); err != nil {
 		return nil, err
 	}
 	k.Enabled = enabled != 0
 	k.CreatedAt = parseTime(created)
 	k.UpdatedAt = parseTime(updated)
+	k.CreatedBy = createdBy.String
 	return &k, nil
 }
 

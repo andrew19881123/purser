@@ -13,7 +13,6 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	_ "embed"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -91,6 +90,10 @@ type FleetManager interface {
 	// certificates, auditing fleet.node.decommissioned. It is a lifecycle
 	// transition, not a hard row deletion.
 	Decommission(ctx context.Context, nodeID string) error
+	// RenewCert issues a replacement certificate for an existing node.
+	// Returns fleet.ErrCertNotYetExpiring when the cert has > 60 days remaining
+	// (HTTP 409); returns registry.ErrNotFound when the node is unknown (HTTP 404).
+	RenewCert(ctx context.Context, nodeID string) (*fleet.RenewResult, error)
 }
 
 // ReconcilerStatusProvider is the surface the GET /api/v1/reconciler/status
@@ -591,6 +594,16 @@ func New(reg registry.Registry, cfg Config) *Server {
 		s.reloadPolicies(context.Background())
 	}
 
+	// Initialise Prometheus /metrics exporter. This installs a new global
+	// sdkmetric.MeterProvider backed by a Prometheus pull reader so that all
+	// OTEL instruments created below appear at GET /metrics. Must be called
+	// before otel.Meter() calls so the instruments land on the correct provider.
+	// Errors are non-fatal: if the exporter cannot be created the server starts
+	// without Prometheus export (OTLP still works if telemetry.Init was called).
+	if _, err := initPromExporter(); err != nil {
+		logger.Warn("Prometheus exporter init failed — /metrics will return 404", "err", err)
+	}
+
 	// Initialise OTEL metric instruments. otel.Meter() returns a no-op meter
 	// (zero overhead) if no real MeterProvider was installed by telemetry.Init,
 	// so this is always safe to call even without a collector.
@@ -627,7 +640,18 @@ func New(reg registry.Registry, cfg Config) *Server {
 	// processing) → OTEL (distributed tracing) → OIDC (human-user auth) →
 	// rate-limit → RBAC (API key role enforcement) → mux. CORS and OTEL are
 	// transparent no-ops when not configured; OIDC is a no-op when unconfigured.
-	s.handler = s.corsMiddleware(otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux)))))
+	innerHandler := s.corsMiddleware(otelMiddleware(s.oidcMiddleware(s.rateLimitMiddleware(s.rbacMiddleware(s.mux)))))
+
+	// Prometheus /metrics is served OUTSIDE the middleware chain so that
+	// Prometheus scrapers can reach it without an Authorization header.
+	// metrics endpoint — no auth, expose only on trusted networks.
+	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/metrics" {
+			promHTTPHandler().ServeHTTP(w, r)
+			return
+		}
+		innerHandler.ServeHTTP(w, r)
+	})
 
 	// Build the underlying http.Server. For in-memory TLS (auto mode) the PEM
 	// bytes are pre-parsed into a tls.Certificate and attached via TLSConfig so
@@ -671,6 +695,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) ListenAndServe() error {
 	go s.cleanupLimiters()
 	go s.startKeyExpiryWatcher(context.Background())
+	go s.startConfigSnapshotPusher(context.Background())
 	// Hourly background cleanup of expired OIDC sessions and PKCE state rows.
 	// This prevents unbounded growth of the oidc_sessions and pkce_state tables
 	// on long-running instances. The goroutine runs for the lifetime of the
@@ -1396,6 +1421,7 @@ func (s *Server) routes() {
 		s.policyMiddleware("deploy")(http.HandlerFunc(s.handleDeployModel)))
 	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
 	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
+	s.mux.HandleFunc("POST /api/v1/enrollment/renew", s.handleEnrollmentRenew)
 	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
 	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
@@ -1405,7 +1431,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
 	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
 	s.mux.HandleFunc("POST /api/v1/apikeys/{id}/rotate", s.handleRotateAPIKey)
-	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/access-log", s.handleListAPIKeyAccess)
+	// Legacy per-key access-log endpoint — 301 redirect to unified /logs/access.
+	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/access-log", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		http.Redirect(w, r, "/api/v1/logs/access?api_key_id="+id, http.StatusMovedPermanently)
+	})
+	// Unified access-log endpoint (v0.5+).
+	s.mux.HandleFunc("GET /api/v1/logs/access", s.handleListAccessLogs)
 	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
 
@@ -1454,6 +1486,9 @@ func (s *Server) routes() {
 	// feature); GET /billing/summary is open for all viewer/admin roles.
 	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
 	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
+	// FinOps extensions (v0.5) — enterprise-gated ("billing" feature).
+	s.mux.HandleFunc("GET /api/v1/billing/forecast", s.handleBillingForecast)
+	s.mux.HandleFunc("GET /api/v1/billing/models/adoption", s.handleModelAdoption)
 
 	// v0.4 org/team billing — enterprise-gated ("billing" feature).
 	// Teams are identified by tenant_id (naming convention: "<orgId>/<teamSlug>").
@@ -1521,6 +1556,20 @@ func (s *Server) routes() {
 	// Platform: status overview (admin) and liveness probe (public).
 	s.mux.HandleFunc("GET /api/v1/platform/status", s.handlePlatformStatus)
 	s.mux.HandleFunc("GET /api/v1/platform/health", s.handlePlatformHealth)
+
+	// Data Planes — CP/DP architectural separation (v0.5).
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes", s.handleCreateDataPlane)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes", s.handleListDataPlanes)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}", s.handleGetDataPlane)
+	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}", s.handleUpdateDataPlane)
+	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}", s.handleDeleteDataPlane)
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/heartbeat", s.handleDataPlaneHeartbeat)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/config", s.handleGetDataPlaneConfig)
+	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}/config", s.handlePutDataPlaneConfig)
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/config/refresh", s.handleRefreshDataPlaneConfig)
+	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleAssignNodeToDataPlane)
+	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleUnassignNodeFromDataPlane)
+	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/nodes", s.handleListDataPlaneNodes)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -1759,6 +1808,17 @@ func (s *Server) handleReconcilerStatus(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleListNodes returns all nodes known to the registry.
+//
+// Tenant isolation policy: INTENTIONALLY GLOBAL. Nodes are infrastructure
+// resources owned by the platform operator, not by individual tenants. All
+// authenticated users — regardless of tenant or role — can read the full node
+// list. This is necessary for:
+//   - Admins performing fleet management and capacity planning.
+//   - Viewers understanding cluster topology when debugging deployments.
+//
+// If per-tenant node visibility is required in future (e.g. isolated
+// single-tenant node pools), add a ListNodesByTenant registry method and call
+// extractRequestTenant here, mirroring handleListDeployments.
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.reg.ListNodes(r.Context())
 	if err != nil {
@@ -1957,6 +2017,13 @@ type modelWithFit struct {
 // entry is annotated with a fit verdict (deployable / node count + estimated
 // tok/s range, or the deficit) so the UI can render the "Runs / Doesn't fit"
 // badge without a second round-trip.
+//
+// Tenant isolation policy: INTENTIONALLY GLOBAL. The model catalog is a shared
+// library of available LLM architectures. Tenants must be able to discover all
+// registered models before deploying them; a tenant-scoped catalog would prevent
+// users from seeing models they are entitled to deploy. Read access to the
+// catalog does not grant deployment rights — those are enforced separately when
+// a deployment is requested (see handleListDeployments for tenant-scoped resources).
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.reg.ListModels(r.Context())
 	if err != nil {
@@ -2942,22 +3009,17 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := make([]byte, 24)
-	if _, err := rand.Read(secret); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "keygen_failed", err.Error())
-		return
-	}
-	plaintext := "psk_" + base64.RawURLEncoding.EncodeToString(secret)
-	sum := sha256.Sum256([]byte(plaintext))
+	plaintext, keyHash := generateAPIKey()
 	id := "key-" + randHex(8)
 	key := &registry.APIKey{
-		ID:      id,
-		Name:    body.Name,
-		KeyHash: hex.EncodeToString(sum[:]),
-		Tenant:  body.Tenant,
-		Role:    role,
-		Quota:   body.Quota,
-		Enabled: true,
+		ID:        id,
+		Name:      body.Name,
+		KeyHash:   keyHash,
+		Tenant:    body.Tenant,
+		Role:      role,
+		Quota:     body.Quota,
+		Enabled:   true,
+		CreatedBy: actorFromRequest(r),
 	}
 	if err := s.reg.CreateAPIKey(r.Context(), key); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "create_apikey_failed", err.Error())

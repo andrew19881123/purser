@@ -695,3 +695,74 @@ export interface EffectivePermissions {
   permissions: string[];
   is_org_admin: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Inference Audit Log — GET /api/v1/inference-audit
+// Per-request tamper-evident log; distinct from the administrative audit log.
+// ---------------------------------------------------------------------------
+
+export interface InferenceAuditEvent {
+  seq: number;
+  modelId: string;
+  modelRevision: string;
+  modelQuantization: string;
+  tenant: string;
+  apiKeyId: string;
+  nodeId: string;
+  inferenceEngine: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  status: string;
+  createdAt: string;
+  hash: string;
+  prevHash: string;
+}
+
+export interface InferenceAuditParams {
+  limit?: number;
+  offset?: number;
+  modelId?: string;
+  tenant?: string;
+  since?: string;
+  until?: string;
+}
+
+export interface InferenceAuditResponse {
+  events: InferenceAuditEvent[];
+  total: number;
+}
+
+/** Response from GET /api/v1/inference-audit/verify */
+export interface ChainVerifyResponse {
+  verified: boolean;
+  blockCount: number;
+  lastVerifiedAt: string;
+  brokenAtSeq: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Access Log — GET /api/v1/logs/access
+// Gateway access log entries for observability and security review.
+// ---------------------------------------------------------------------------
+
+export interface AccessLogEntry {
+  id: number;
+  apiKeyId: string;
+  method: string;
+  path: string;
+  ipPrefix: string;
+  userAgent: string;
+  statusCode: number;
+  requestAt: string;
+}
+
+export interface AccessLogParams {
+  limit?: number;
+  apiKeyId?: string;
+}
+
+export interface AccessLogResponse {
+  entries: AccessLogEntry[];
+  count: number;
+}

@@ -98,7 +98,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at   TEXT,                       -- NULL = never used; throttled writes
     predecessor_id TEXT    NOT NULL DEFAULT '', -- rotation chain; '' if no predecessor
     rotated_at     TEXT,                       -- when replaced by a successor; NULL if active
-    scopes         TEXT    NOT NULL DEFAULT '[]' -- JSON array of permission strings
+    scopes         TEXT    NOT NULL DEFAULT '[]', -- JSON array of permission strings
+    -- created_by: actor (OIDC sub or apikey fingerprint) who created this key.
+    -- NULL for keys created before v0.5.
+    created_by     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant);
 
@@ -338,10 +341,13 @@ CREATE TABLE IF NOT EXISTS gdpr_erasure_log (
 -- client_secret is never stored; only its SHA-256 hex hash is persisted.
 -- The client_credentials grant issues short-lived (15 min) HMAC-signed JWTs
 -- so the secret never travels on subsequent requests.
+-- tenant stores the team_id — service accounts are team-level credentials
+-- (not user-level). The field is named "tenant" for routing compatibility.
 CREATE TABLE IF NOT EXISTS service_accounts (
     id                 TEXT    PRIMARY KEY,
     name               TEXT    NOT NULL,
-    tenant             TEXT    NOT NULL DEFAULT '',
+    tenant             TEXT    NOT NULL DEFAULT '',  -- stores team_id
+    description        TEXT    NOT NULL DEFAULT '',  -- optional human description
     role               TEXT    NOT NULL DEFAULT 'inference',
     scopes             TEXT    NOT NULL DEFAULT '[]',
     client_id          TEXT    NOT NULL UNIQUE,
@@ -475,6 +481,38 @@ CREATE TABLE IF NOT EXISTS pool_team_quotas (
     updated_at       TEXT    NOT NULL,
     PRIMARY KEY (pool_id, team_id)
 );
+
+-- =============================================================================
+-- DATA PLANE: CP/DP architectural separation (v0.5)
+-- =============================================================================
+
+-- dataplanes: named inference clusters governed by this Control Plane.
+-- Each Data Plane consists of one or more Agents (GPU nodes) and one Gateway.
+-- Analogous to a "Gateway Service" in IBM API Connect.
+CREATE TABLE IF NOT EXISTS dataplanes (
+    id              TEXT    PRIMARY KEY,
+    name            TEXT    NOT NULL,
+    description     TEXT    NOT NULL DEFAULT '',
+    -- tier: "production" | "development" | "staging" | custom string
+    tier            TEXT    NOT NULL DEFAULT 'production',
+    -- gateway_url: the base URL clients call for inference on this DP.
+    -- e.g. "https://ai-prod.acme.com" or "http://10.0.1.5:8081"
+    gateway_url     TEXT    NOT NULL DEFAULT '',
+    -- status: "active" | "registering" | "degraded" | "offline"
+    status          TEXT    NOT NULL DEFAULT 'active',
+    -- join_token_hash: SHA-256 of the token the DP uses to authenticate.
+    -- Agents on this DP include this token in their gRPC Join request.
+    join_token_hash TEXT    NOT NULL DEFAULT '',
+    -- config_snapshot: JSON of the last pushed config (routing + auth bundle).
+    config_snapshot TEXT    NOT NULL DEFAULT '{}',
+    last_heartbeat  TEXT,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dataplanes_status ON dataplanes(status);
+
+-- NOTE: nodes.dataplane_id is added additively via ensureColumn in Migrate.
+-- NULL = default/unassigned (backward compat).
 
 -- platform_orgs: lightweight org record used by the roles/users subsystem.
 -- Created automatically when org-scoped role endpoints are first called.

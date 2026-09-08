@@ -31,7 +31,7 @@ the **ChargebackPage** in the UI require the `billing` feature in the active lic
 Verify the feature is enabled:
 
 ```bash
-curl -s http://localhost:8080/api/v1/enterprise/status | jq .features
+curl -s https://purser.example.com/api/v1/enterprise/status | jq .features
 # ["billing", ...]
 ```
 
@@ -125,15 +125,15 @@ team-fin,llama-3.1-8b,6780,3210000,1000000,4210000,189.7
 ```bash
 # Last 30 days (default)
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/v1/billing/report"
+  "https://purser.example.com/api/v1/billing/report"
 
 # Custom window, filtered to one tenant
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/v1/billing/report?start=2026-08-01T00:00:00Z&end=2026-09-01T00:00:00Z&tenant_id=team-eng"
+  "https://purser.example.com/api/v1/billing/report?start=2026-08-01T00:00:00Z&end=2026-09-01T00:00:00Z&tenant_id=team-eng"
 
 # Download CSV
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/v1/billing/report?format=csv" \
+  "https://purser.example.com/api/v1/billing/report?format=csv" \
   -o billing-report.csv
 ```
 
@@ -237,7 +237,7 @@ regardless of whether pricing is set.
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/v1/platform/teams/acme-corp%2Fengineering/billing"
+  "https://purser.example.com/api/v1/platform/teams/acme-corp%2Fengineering/billing"
 ```
 
 !!! note "URL-encoding the slash"
@@ -306,11 +306,11 @@ an org with no recent activity, not a 404).
 ```bash
 # Last 30 days for the acme-corp org
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/v1/platform/orgs/acme-corp/billing"
+  "https://purser.example.com/api/v1/platform/orgs/acme-corp/billing"
 
 # Custom window
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/v1/platform/orgs/acme-corp/billing?start=2026-08-01T00:00:00Z&end=2026-09-01T00:00:00Z"
+  "https://purser.example.com/api/v1/platform/orgs/acme-corp/billing?start=2026-08-01T00:00:00Z&end=2026-09-01T00:00:00Z"
 ```
 
 ---

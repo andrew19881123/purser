@@ -1,0 +1,20 @@
+apiVersion: v2
+name: purser-dataplane
+description: >
+  Purser Data Plane: inference gateway for a GPU fleet cluster.
+  Register this Data Plane with a Purser Control Plane to begin serving inference.
+type: application
+# Chart version — bump on any change to the chart itself.
+version: 0.5.0
+# Version of the Purser application shipped by this chart (image tag default).
+appVersion: "0.5.0"
+keywords:
+  - ai
+  - llm
+  - inference
+  - gpu
+  - data-plane
+  - gateway
+home: https://github.com/andrew19881123/purser
+sources:
+  - https://github.com/andrew19881123/purser

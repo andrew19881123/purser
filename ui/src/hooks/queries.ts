@@ -16,7 +16,13 @@ import {
 import { api, type CreateApiKeyInput } from '../api/client';
 import { config } from '../api/config';
 import type { ChatClient } from '../api/openai';
-import type { DeployOverrides, ImportSource, MetricsSnapshot } from '../api/types';
+import type {
+  AccessLogParams,
+  DeployOverrides,
+  ImportSource,
+  InferenceAuditParams,
+  MetricsSnapshot,
+} from '../api/types';
 
 export const qk = {
   capacity: ['capacity'] as const,
@@ -73,17 +79,83 @@ export function useNodeAction() {
 // --- reconciler status ------------------------------------------------------
 
 /**
- * Live reconciler health: state machine phase, last-sync timestamp, and pending
- * / error counts. Backed by GET /api/v1/reconciler/status (v0.3+ endpoint).
- * When the endpoint is absent (older control plane) the query enters the error
- * state after one retry — FleetPage renders a "Status unknown" badge instead of
- * crashing or hiding the card entirely.
+ * Raw JSON shape returned by GET /api/v1/reconciler/status (Go handler).
+ * Fields use snake_case to match the JSON tags on the Go structs.
+ */
+interface GoReconcilerStatusResponse {
+  config: {
+    interval_s: number;
+    node_timeout_s: number;
+    hysteresis_s: number;
+    action_cooldown_s: number;
+  };
+  /** Per-event-type tracker snapshot; may be an empty object when nothing is tracked. */
+  tracker: Record<string, { tracked: number; oldest_age_s: number }>;
+}
+
+/**
+ * Derived reconciler health: state machine phase, last-sync timestamp (always
+ * null — the Go API does not expose it), pending/error counts, plus the raw
+ * config and tracker data for the enhanced status widget.
+ *
+ * Backed by GET /api/v1/reconciler/status (v0.3+ endpoint). When the endpoint
+ * is absent (older control plane) the query enters the error state after one
+ * retry — FleetPage renders a "Status unknown" badge instead of crashing or
+ * hiding the card entirely.
  */
 export interface ReconcilerStatus {
   state: 'idle' | 'syncing' | 'error';
+  /** Always null — the Go API does not return a last-sync timestamp. */
   lastSyncAt: string | null;
+  /** Sum of all tracker[*].tracked values. */
   pendingCount: number;
+  /** Count of event types whose oldest tracked event exceeds the error age threshold. */
   errorCount: number;
+  config: {
+    intervalS: number;
+    nodeTimeoutS: number;
+    hysteresisS: number;
+    actionCooldownS: number;
+  };
+  tracker: Record<string, { tracked: number; oldestAgeS: number }>;
+}
+
+/**
+ * Age in seconds above which a tracked event is considered stale enough to
+ * count as an error (5 minutes). This threshold is intentionally kept in the
+ * UI layer so it can be tuned without a Go deploy.
+ */
+const RECONCILER_ERROR_AGE_S = 300;
+
+function deriveReconcilerStatus(raw: GoReconcilerStatusResponse): ReconcilerStatus {
+  const tracker: ReconcilerStatus['tracker'] = {};
+  let pendingCount = 0;
+  let errorCount = 0;
+
+  for (const [key, val] of Object.entries(raw.tracker ?? {})) {
+    tracker[key] = { tracked: val.tracked, oldestAgeS: val.oldest_age_s };
+    pendingCount += val.tracked;
+    if (val.tracked > 0 && val.oldest_age_s > RECONCILER_ERROR_AGE_S) {
+      errorCount++;
+    }
+  }
+
+  const state: ReconcilerStatus['state'] =
+    errorCount > 0 ? 'error' : pendingCount > 0 ? 'syncing' : 'idle';
+
+  return {
+    state,
+    lastSyncAt: null,
+    pendingCount,
+    errorCount,
+    config: {
+      intervalS: raw.config.interval_s,
+      nodeTimeoutS: raw.config.node_timeout_s,
+      hysteresisS: raw.config.hysteresis_s,
+      actionCooldownS: raw.config.action_cooldown_s,
+    },
+    tracker,
+  };
 }
 
 export function useReconcilerStatus() {
@@ -92,7 +164,7 @@ export function useReconcilerStatus() {
     queryFn: (): Promise<ReconcilerStatus> =>
       fetch(`${config.apiBase}/reconciler/status`, { credentials: 'same-origin' }).then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<ReconcilerStatus>;
+        return (r.json() as Promise<GoReconcilerStatusResponse>).then(deriveReconcilerStatus);
       }),
     retry: 1,
     retryDelay: 2000,
@@ -317,6 +389,31 @@ export function useAuditLog(limit = 100) {
   return useQuery({
     queryKey: ['auditLog', limit],
     queryFn: () => api.getAuditLog(limit),
+  });
+}
+
+// --- inference audit --------------------------------------------------------
+
+export function useInferenceAudit(params: InferenceAuditParams = {}) {
+  return useQuery({
+    queryKey: ['inferenceAudit', params],
+    queryFn: () => api.listInferenceAudit(params),
+  });
+}
+
+export function useAuditChainVerify() {
+  return useQuery({
+    queryKey: ['auditChainVerify'],
+    queryFn: () => api.verifyAuditChain(),
+    // Don't auto-refetch — operator triggers verification explicitly.
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useAccessLog(params: AccessLogParams = {}) {
+  return useQuery({
+    queryKey: ['accessLog', params],
+    queryFn: () => api.listAccessLog(params),
   });
 }
 

@@ -266,13 +266,23 @@ async fn chat_completions(
     api_key: ApiKey,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    // The `model.id` field is filled in inside proxy_inference once the body
-    // is parsed. When tracing-opentelemetry is active this span is exported to
-    // the configured OTEL collector as a root span for the inference call.
+    // OpenTelemetry GenAI semantic conventions (semconv/gen-ai):
+    //   gen_ai.system          — inference system identifier
+    //   gen_ai.operation.name  — "chat" for chat/completions
+    //   gen_ai.request.model   — model id (set after body parse)
+    //   gen_ai.usage.*         — token counts (set after upstream response)
+    //   gen_ai.response.*      — finish reasons (set after upstream response)
+    // model.id is kept for backward compatibility with existing dashboards.
     let span = tracing::info_span!(
         "purser.gateway.inference",
         "http.route" = "/v1/chat/completions",
         "model.id" = tracing::field::Empty,
+        "gen_ai.system" = "purser",
+        "gen_ai.operation.name" = "chat",
+        "gen_ai.request.model" = tracing::field::Empty,
+        "gen_ai.usage.input_tokens" = tracing::field::Empty,
+        "gen_ai.usage.output_tokens" = tracing::field::Empty,
+        "gen_ai.response.finish_reasons" = tracing::field::Empty,
     );
     proxy_inference(&state, &api_key, body, "/v1/chat/completions")
         .instrument(span)
@@ -288,6 +298,12 @@ async fn completions(
         "purser.gateway.inference",
         "http.route" = "/v1/completions",
         "model.id" = tracing::field::Empty,
+        "gen_ai.system" = "purser",
+        "gen_ai.operation.name" = "completion",
+        "gen_ai.request.model" = tracing::field::Empty,
+        "gen_ai.usage.input_tokens" = tracing::field::Empty,
+        "gen_ai.usage.output_tokens" = tracing::field::Empty,
+        "gen_ai.response.finish_reasons" = tracing::field::Empty,
     );
     proxy_inference(&state, &api_key, body, "/v1/completions")
         .instrument(span)
@@ -360,7 +376,9 @@ async fn proxy_inference(
 
     // Record the model id on the enclosing span so it is visible in OTEL
     // traces. When no OTEL provider is configured this is a no-op.
+    // Also set the standard GenAI semantic convention attribute.
     tracing::Span::current().record("model.id", model.as_str());
+    tracing::Span::current().record("gen_ai.request.model", model.as_str());
 
     // Resolve the host (404 if unknown, 503 if draining).
     let route = state.resolve_active(&model).await.inspect_err(|_| {
@@ -398,6 +416,9 @@ async fn proxy_inference(
 
     // Estimate input tokens for usage accounting (messages content ÷ 4).
     let input_tokens_for_usage = estimate_input_tokens(&body);
+
+    // Record estimated input token count on the GenAI span now that we know it.
+    tracing::Span::current().record("gen_ai.usage.input_tokens", input_tokens_for_usage as i64);
 
     // Capture usage-reporting context before moving `body` into the proxy.
     let cp_url = state.control_plane_url.clone();
@@ -445,6 +466,11 @@ async fn proxy_inference(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
+    // Capture a handle to the current span so stream_response / buffered_response
+    // can record gen_ai.usage.output_tokens and gen_ai.response.finish_reasons
+    // after the upstream response is fully consumed.
+    let inference_span = tracing::Span::current();
+
     if want_stream {
         Ok(stream_response(
             state,
@@ -462,6 +488,7 @@ async fn proxy_inference(
             resp,
             guard,
             queue_permit,
+            inference_span,
         ))
     } else {
         buffered_response(
@@ -480,6 +507,7 @@ async fn proxy_inference(
             resp,
             guard,
             queue_permit,
+            inference_span,
         )
         .await
     }
@@ -488,6 +516,8 @@ async fn proxy_inference(
 /// Pipe the host's SSE stream to the client with minimal buffering. The
 /// admission `guard` and the per-model `queue_permit` are moved into the
 /// stream so both concurrency slots are held until the last token is delivered.
+/// `inference_span` is a handle to the parent GenAI span; output token counts
+/// and finish reasons are recorded on it when the stream completes.
 #[allow(clippy::too_many_arguments)]
 fn stream_response(
     state: &AppState,
@@ -505,6 +535,7 @@ fn stream_response(
     resp: reqwest::Response,
     guard: crate::quota::RequestGuard,
     queue_permit: OwnedSemaphorePermit,
+    inference_span: tracing::Span,
 ) -> Response {
     let idle = state.http.idle;
     let limiter = Arc::clone(&state.limiter);
@@ -518,6 +549,9 @@ fn stream_response(
         // Both held for the whole stream; dropped at the end → releases slots.
         let _guard = guard;
         let _queue_permit = queue_permit;
+        // inference_span is moved in so we can record GenAI usage attributes
+        // when the stream completes, then drop it to finalize the span export.
+        let span = inference_span;
 
         // Increment active-streams gauge; decrement on drop via StreamGauge.
         metrics::gauge!(
@@ -531,6 +565,8 @@ fn stream_response(
         tokio::pin!(upstream);
         let mut out_tokens: u64 = 0;
         let mut ttft_recorded = false;
+        // Tracks the arrival time of the previous chunk for TBT measurement.
+        let mut last_chunk_time: Option<Instant> = None;
 
         loop {
             match tokio::time::timeout(idle, upstream.next()).await {
@@ -555,6 +591,15 @@ fn stream_response(
                         );
                         ttft_recorded = true;
                     }
+                    // Record TBT for each chunk after the first.
+                    if let Some(last) = last_chunk_time {
+                        crate::metrics::record_inter_token_latency(
+                            &model,
+                            &tenant,
+                            last.elapsed().as_secs_f64(),
+                        );
+                    }
+                    last_chunk_time = Some(Instant::now());
                     out_tokens += count_sse_tokens(&chunk);
                     yield Ok(chunk);
                 }
@@ -580,6 +625,15 @@ fn stream_response(
             prompt_tokens,
             out_tokens,
         );
+
+        // Record GenAI semantic convention attributes on the parent span now
+        // that we know the final token counts. The span handle is dropped at
+        // the end of this block, which finalises and exports the span.
+        let finish_reason = if status.is_success() { "stop" } else { "error" };
+        span.record("gen_ai.usage.output_tokens", out_tokens as i64);
+        span.record("gen_ai.response.finish_reasons", finish_reason);
+        drop(span);
+
         // Fire-and-forget usage report + inference audit to the Control Plane.
         if let Some(url) = cp_url {
             let audit_url = Arc::clone(&url);
@@ -631,6 +685,8 @@ fn stream_response(
 }
 
 /// Buffer and relay a non-streaming JSON response.
+/// `inference_span` is a handle to the parent GenAI span; output token counts
+/// and finish reasons are recorded on it before returning.
 #[allow(clippy::too_many_arguments)]
 async fn buffered_response(
     state: &AppState,
@@ -649,6 +705,7 @@ async fn buffered_response(
     guard: crate::quota::RequestGuard,
     // Held for the duration of the buffered response; released on return.
     _queue_permit: OwnedSemaphorePermit,
+    inference_span: tracing::Span,
 ) -> Result<Response, ApiError> {
     // TTFT for buffered responses: time from request start to when the upstream
     // returned the response headers (≈ time-to-first-byte of body).
@@ -700,6 +757,14 @@ async fn buffered_response(
         prompt_tokens,
         out_tokens,
     );
+
+    // Record GenAI semantic convention attributes on the span now that we
+    // have the final token counts and finish reason.
+    let finish_reason_str = if status.is_success() { "stop" } else { "error" };
+    inference_span.record("gen_ai.usage.output_tokens", out_tokens as i64);
+    inference_span.record("gen_ai.response.finish_reasons", finish_reason_str);
+    drop(inference_span);
+
     // Fire-and-forget usage report + inference audit to the Control Plane.
     if let Some(url) = cp_url {
         let audit_url = Arc::clone(&url);

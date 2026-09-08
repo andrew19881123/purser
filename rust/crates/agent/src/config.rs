@@ -152,6 +152,11 @@ pub struct AgentConfig {
     /// signed by a private (corporate) CA.
     /// Overridable via `PURSER_AGENT_CA_BUNDLE`.
     pub ca_bundle_path: Option<String>,
+
+    /// How often (in hours) the cert-renewal background loop checks the
+    /// current mTLS certificate's expiry. Default: 24 hours.
+    /// Overridable via `PURSER_CERT_CHECK_INTERVAL_HOURS`.
+    pub cert_check_interval_hours: Option<u64>,
 }
 
 impl Default for AgentConfig {
@@ -177,6 +182,7 @@ impl Default for AgentConfig {
             https_proxy: None,
             no_proxy: None,
             ca_bundle_path: None,
+            cert_check_interval_hours: None,
         }
     }
 }
@@ -209,6 +215,7 @@ impl AgentConfig {
     /// - `PURSER_AGENT_HTTPS_PROXY`         — HTTPS proxy URL; overrides `HTTP_PROXY` for TLS
     /// - `PURSER_AGENT_NO_PROXY`            — comma-separated bypass list (e.g. `localhost,10.0.0.0/8`)
     /// - `PURSER_AGENT_CA_BUNDLE`           — path to PEM file with additional trusted CA certs
+    /// - `PURSER_CERT_CHECK_INTERVAL_HOURS` — how often the cert-renewal loop runs (default 24)
     pub fn from_env() -> Result<Self> {
         let mut cfg = AgentConfig::default();
 
@@ -272,6 +279,12 @@ impl AgentConfig {
         cfg.https_proxy = non_empty(std::env::var("PURSER_AGENT_HTTPS_PROXY").ok());
         cfg.no_proxy = non_empty(std::env::var("PURSER_AGENT_NO_PROXY").ok());
         cfg.ca_bundle_path = non_empty(std::env::var("PURSER_AGENT_CA_BUNDLE").ok());
+        if let Ok(hours) = std::env::var("PURSER_CERT_CHECK_INTERVAL_HOURS") {
+            let h: u64 = hours
+                .parse()
+                .with_context(|| format!("invalid PURSER_CERT_CHECK_INTERVAL_HOURS: {hours:?}"))?;
+            cfg.cert_check_interval_hours = Some(h.max(1));
+        }
 
         Ok(cfg)
     }

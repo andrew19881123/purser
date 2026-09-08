@@ -36,7 +36,7 @@ Preview what would change without touching the cluster:
 purser diff purser.yaml         # dry-run: prints add/remove/upsert plan
 ```
 
-> **Wave 2 note:** `purser apply` and `purser diff` are scheduled for the Wave 2 CLI
+> **Note:** `purser apply` and `purser diff` are planned for an upcoming CLI
 > release. The schema, loader, validator and diff engine are available now in
 > `go/controlplane/config` for programmatic use.
 
@@ -159,7 +159,7 @@ deployments:
     quantization: Q4_K_M
     min_nodes: 2              # Minimum number of nodes (optional)
     max_nodes: 8              # Maximum number of nodes (optional)
-    approved: true            # Approval gate for Wave 3 gated rollouts
+    approved: true            # Approval gate for gated rollouts
 ```
 
 | Field | Type | Description |
@@ -168,7 +168,7 @@ deployments:
 | `quantization` | string | Quantization variant to serve |
 | `min_nodes` | int | Minimum node count for this deployment |
 | `max_nodes` | int | Maximum node count for this deployment |
-| `approved` | bool | Approval gate (Wave 3 gated rollouts) |
+| `approved` | bool | Approval gate for gated rollouts |
 
 ---
 
@@ -492,6 +492,89 @@ quotas:
 
 ---
 
+## GitOps: Applying Organizations and Node Pools
+
+Starting with **v0.5**, `purser apply` (and the `POST /api/v1/config/apply` endpoint)
+fully processes the `orgs` and `node_pools` sections of `purser.yaml`. The apply is
+**idempotent** — running the same file multiple times is safe.
+
+### How orgs are applied
+
+- An org is **created** (along with its nested teams) when no org with that `slug`
+  exists in the live registry.
+- An org that already exists is **updated** — its `name` and `description` are
+  synchronised; teams are not re-created on subsequent applies.
+- Teams missing from the registry are created; existing teams are left untouched
+  (no destructive ops on members or roles).
+
+### How node pools are applied
+
+- A pool is **created** (with its nodes assigned and quotas set) when no pool with
+  that `id` exists.
+- A pool that already exists is **left unchanged** (idempotent apply — no update,
+  no removal). Full reconciliation including pool updates and removals is planned
+  for a future release.
+- Nodes listed under `nodes` are assigned to the pool via `AddNodeToPool`. If a
+  node does not exist yet (e.g. it has not enrolled), the assignment is logged and
+  skipped rather than failing the entire apply.
+- Per-team quotas (`quotas` under a `shared` pool) are upserted atomically.
+
+### Quickstart: GitOps with orgs and pools
+
+A minimal `purser.yaml` that bootstraps a multi-tenant cluster in one `apply`:
+
+```yaml
+apiVersion: purser/v1
+kind: ClusterConfig
+metadata:
+  name: prod-cluster
+
+orgs:
+  - id: acme
+    name: "Acme Corp"
+    slug: acme
+    teams:
+      - id: ml-team
+        name: "ML Team"
+        slug: ml-team
+      - id: platform-team
+        name: "Platform Engineering"
+        slug: platform-team
+
+node_pools:
+  - id: ml-gpu-lab
+    name: "ML GPU Lab"
+    owner_type: team
+    owner_id: ml-team
+    policy: exclusive
+    nodes:
+      - gpu-node-01
+      - gpu-node-02
+
+  - id: shared-pool
+    name: "Shared GPU Pool"
+    owner_type: platform
+    policy: shared
+    nodes:
+      - gpu-node-03
+    quotas:
+      - team_id: ml-team
+        max_deployments: 3
+        max_gpu_nodes: 6
+        priority: 10
+```
+
+Apply it:
+
+```bash
+curl -X POST https://cp:8080/api/v1/config/apply \
+  -H "Authorization: Bearer $PURSER_ADMIN_KEY" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @purser.yaml
+```
+
+---
+
 ## Node Pool GitOps
 
 Node pools can be fully managed through `purser.yaml`, keeping pool topology
@@ -504,8 +587,9 @@ alongside the rest of your infrastructure code.
 3. **Apply** — either via `purser apply` or automatically via the control-plane
    watcher — and Purser reconciles the pool topology:
    - Pools present in the file but not live → **created**.
-   - Pools present both in the file and live → **updated** (nodes, quotas, policy).
-   - Pools present live but absent from the file → **removed**.
+   - Pools present both in the file and live → **left unchanged** (idempotent).
+   - Pools present live but absent from the file → left in place (removal not yet
+     implemented; full reconciliation is planned for a future release).
 
 ### Exclusive vs shared pools
 
@@ -561,7 +645,7 @@ quotas:
 
 ---
 
-## Applying the file (Wave 2 preview)
+## Applying the file
 
 ```bash
 # Show what would change without modifying the cluster
@@ -769,10 +853,20 @@ curl http://cp:8080/api/v1/config/export \
   "applied": {
     "models_added": 1,
     "deployments_added": 0,
-    "quotas_upserted": 0
+    "quotas_upserted": 0,
+    "orgs_added": 1,
+    "node_pools_added": 2
   }
 }
 ```
+
+| Counter | Description |
+|---|---|
+| `models_added` | Number of new model catalog entries created |
+| `deployments_added` | Number of new deployments submitted |
+| `quotas_upserted` | Number of tenant quota rows written (reserved — not yet persisted) |
+| `orgs_added` | Number of new organisations created (v0.5+) |
+| `node_pools_added` | Number of new node pools created (v0.5+) |
 
 `GET /api/v1/config/export` returns a `Content-Type: application/yaml` body in
 the same `ClusterConfig` format as the input, representing the current live

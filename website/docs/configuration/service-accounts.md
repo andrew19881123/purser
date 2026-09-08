@@ -4,6 +4,9 @@ Service accounts give CI/CD pipelines and automation scripts a secure, non-inter
 
 Instead of sharing long-lived API keys, a service account issues a **short-lived JWT (15 minutes)** via the OAuth2 `client_credentials` grant. The secret is only transmitted once — during the token exchange — and never again for subsequent API calls.
 
+!!! info "Service accounts are team-level credentials"
+    From v0.5, service accounts belong to a **team**, not to an individual user. This aligns with LiteLLM and proxy auth patterns where a single service account provides machine-to-machine access on behalf of a team. Use `team_id` when creating a service account. The legacy `tenant` field is still accepted for backward compatibility.
+
 ---
 
 ## API keys vs service accounts
@@ -13,7 +16,8 @@ Instead of sharing long-lived API keys, a service account issues a **short-lived
 | Credential type | Static bearer token | `client_id` + `client_secret` |
 | Token TTL | Long-lived (never expires by default) | 15 minutes |
 | Secret travels per request | **Yes** | No — only at token exchange |
-| Best for | Simple scripts, manual tooling | CI/CD, scheduled jobs, GitOps |
+| Belongs to | Individual user / tenant | **Team** (machine-to-machine) |
+| Best for | Simple scripts, manual tooling | CI/CD, scheduled jobs, GitOps, LiteLLM |
 | Rotation | Manual `POST …/rotate` | Each token request is fresh |
 
 ---
@@ -26,8 +30,9 @@ curl -X POST https://purser.example.com/api/v1/service-accounts \
   -H "Content-Type: application/json" \
   -d '{
     "name": "github-actions",
+    "team_id": "team-ml",
     "role": "inference",
-    "tenant": "ml-team"
+    "description": "GitHub Actions CI pipeline for the ML team"
   }'
 ```
 
@@ -39,10 +44,25 @@ curl -X POST https://purser.example.com/api/v1/service-accounts \
   "client_id": "sa_2e9f1a3b",
   "client_secret": "y3rXvlO9…",
   "role": "inference",
-  "tenant": "ml-team",
+  "team_id": "team-ml",
+  "tenant": "team-ml",
   "message": "Copy the client_secret now — it is shown only once."
 }
 ```
+
+### Request fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Human-readable name for the service account |
+| `team_id` | **Yes (v0.5+)** | The team this SA belongs to; scopes all usage attribution to that team |
+| `role` | No | `inference` (default), `viewer`, or `admin` |
+| `description` | No | Optional free-text description |
+| `scopes` | No | JSON array of fine-grained permission strings |
+| `expires_at` | No | RFC3339 timestamp after which the account is automatically disabled |
+
+!!! warning "Deprecated: `tenant` field"
+    The `tenant` field is still accepted for backward compatibility with clients that have not migrated to `team_id`. If **both** `team_id` and `tenant` are supplied, `team_id` takes precedence. New code should always use `team_id`.
 
 ### Available roles
 
@@ -53,13 +73,6 @@ curl -X POST https://purser.example.com/api/v1/service-accounts \
 | `admin` | Full management access |
 
 Default role is `inference` if not specified.
-
-### Optional fields
-
-| Field | Description |
-|---|---|
-| `scopes` | JSON array of fine-grained permission strings (informational) |
-| `expires_at` | RFC3339 timestamp after which the account is automatically disabled |
 
 ---
 
@@ -94,6 +107,66 @@ Pass the token as a standard `Authorization: Bearer` header:
 ```bash
 curl https://purser.example.com/api/v1/nodes \
   -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## LiteLLM integration
+
+Service accounts are the recommended credential for [LiteLLM](https://docs.litellm.ai/) and other OpenAI-compatible proxies. Each team creates one service account; LiteLLM exchanges it for short-lived tokens, keeping the long-lived secret out of inference traffic.
+
+### Step 1 — Create a team service account
+
+```bash
+curl -X POST https://purser.example.com/api/v1/service-accounts \
+  -H "Authorization: Bearer <admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "litellm-proxy",
+    "team_id": "team-ml",
+    "role": "inference",
+    "description": "LiteLLM proxy credential for team-ml"
+  }'
+```
+
+Save the returned `client_id` and `client_secret` in your secrets manager.
+
+### Step 2 — Configure LiteLLM
+
+In your `litellm_config.yaml`, use the `custom_auth` flow or set the bearer token directly from a token-refresh script:
+
+```yaml
+model_list:
+  - model_name: llama3-70b
+    litellm_params:
+      model: openai/llama3-70b
+      api_base: https://purser.example.com/v1
+      api_key: os.environ/PURSER_BEARER_TOKEN
+
+environment_variables:
+  PURSER_BEARER_TOKEN: ""   # populated at runtime by token-refresh sidecar
+```
+
+### Step 3 — Token-refresh sidecar (recommended)
+
+Because Purser tokens expire in 15 minutes, run a refresh loop alongside LiteLLM:
+
+```bash
+#!/usr/bin/env bash
+# refresh-token.sh — runs as a sidecar, writes token to a shared env file
+set -euo pipefail
+
+while true; do
+  TOKEN=$(curl -sf -X POST "${PURSER_URL}/auth/token" \
+    -d "grant_type=client_credentials" \
+    -d "client_id=${PURSER_CLIENT_ID}" \
+    -d "client_secret=${PURSER_CLIENT_SECRET}" \
+    | jq -r .access_token)
+
+  # Write to the file LiteLLM reads (or export to the process environment).
+  echo "PURSER_BEARER_TOKEN=${TOKEN}" > /run/secrets/purser.env
+  sleep 600   # refresh every 10 minutes (token TTL is 15 min)
+done
 ```
 
 ---

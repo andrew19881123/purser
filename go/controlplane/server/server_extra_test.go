@@ -175,8 +175,8 @@ func TestHandleCreateAPIKey(t *testing.T) {
 	var resp map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	plaintext, _ := resp["key"].(string)
-	if !strings.HasPrefix(plaintext, "psk_") {
-		t.Fatalf("returned key = %q, want psk_ prefix", plaintext)
+	if len(plaintext) != 43 || !strings.HasPrefix(plaintext, "sk-") {
+		t.Fatalf("returned key = %q, want sk- prefix and 43 chars (sk-<40 hex>)", plaintext)
 	}
 	// Only the hash must be persisted, matching sha256(plaintext).
 	keys, _ := reg.ListAPIKeys(context.Background())

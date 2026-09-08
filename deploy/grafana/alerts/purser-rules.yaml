@@ -1,0 +1,85 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: purser-slo
+  labels:
+    prometheus: kube-prometheus
+    app.kubernetes.io/name: purser
+    app.kubernetes.io/component: alerts
+spec:
+  groups:
+    - name: purser.slo
+      rules:
+        - alert: PurserHighTTFTp99
+          expr: |
+            histogram_quantile(0.99,
+              rate(purser_gateway_time_to_first_token_seconds_bucket[5m])
+            ) > 2.0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Purser gateway TTFT p99 exceeds 2 s"
+            description: >
+              The p99 time-to-first-token over the last 5 minutes is
+              {{ $value | humanizeDuration }}, above the 2 s SLO threshold.
+              Check upstream engine health and queue depth.
+            runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"
+
+        - alert: PurserHighTBTp99
+          expr: |
+            histogram_quantile(0.99,
+              rate(purser_gateway_inter_token_latency_seconds_bucket[5m])
+            ) > 0.5
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Purser gateway inter-token latency p99 exceeds 500 ms"
+            description: >
+              The p99 inter-token latency is {{ $value | humanizeDuration }}, above the
+              500 ms SLO. This usually indicates GPU saturation or network congestion
+              between the gateway and inference nodes.
+            runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"
+
+        - alert: PurserNodeEngineDown
+          expr: purser_node_inference_port_alive == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Purser inference engine down on {{ $labels.node_id }}"
+            description: >
+              The inference port on node {{ $labels.node_id }} has not responded for
+              at least 1 minute. The node is being bypassed by the scheduler but
+              capacity is reduced. Investigate the engine process on that host.
+            runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"
+
+        - alert: PurserHighErrorRate
+          expr: |
+            rate(purser_gateway_errors_total[5m]) /
+            rate(purser_gateway_requests_total[5m]) > 0.05
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Purser gateway error rate exceeds 5 %"
+            description: >
+              The gateway error rate is {{ $value | humanizePercentage }} over
+              the last 5 minutes. Break down by error_type label to identify
+              whether the source is auth failures, upstream timeouts, or quota
+              exhaustion.
+            runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"
+
+        - alert: PurserQueueSaturated
+          expr: purser_node_queue_depth > 50
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Purser inference queue depth > 50 on {{ $labels.node_id }}"
+            description: >
+              Node {{ $labels.node_id }} has {{ $value }} requests queued,
+              exceeding the saturation threshold of 50. Request latency will
+              increase. Consider scaling out or redirecting traffic.
+            runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"

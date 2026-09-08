@@ -106,7 +106,8 @@ function hardwareSummary(n: NodeView): string {
  *   - error    → the endpoint is absent or returned an error; show a neutral
  *                "Status unknown" badge so the operator knows the card is present
  *                but unavailable, rather than silently disappearing.
- *   - data     → normal rendering with state badge and last-sync timestamp.
+ *   - data     → state badge + pending/error counts + active event list +
+ *                collapsible configuration panel.
  *
  * P-12: the previous `{reconcilerStatus.data && <ReconcilerStatusCard .../>}`
  * guard hid the card entirely during loading and on API error, making it
@@ -136,6 +137,9 @@ export function ReconcilerStatusCard({
     );
   }
 
+  // Active tracker events: only event types that currently have tracked > 0.
+  const activeEvents = Object.entries(status.tracker).filter(([, v]) => v.tracked > 0);
+
   return (
     <Card title="Reconciler">
       <div className="stat-grid">
@@ -154,6 +158,47 @@ export function ReconcilerStatusCard({
           <span className="stat__label">Errors</span>
         </div>
       </div>
+
+      {activeEvents.length > 0 && (
+        <div className="reconciler__events">
+          <p className="muted">Active events</p>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th scope="col">Event type</th>
+                  <th scope="col">Tracked</th>
+                  <th scope="col">Age (s)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeEvents.map(([type, v]) => (
+                  <tr key={type}>
+                    <td><code>{type}</code></td>
+                    <td>{v.tracked}</td>
+                    <td>{v.oldestAgeS.toFixed(0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <details className="reconciler__config">
+        <summary className="muted">Configuration</summary>
+        <dl className="reconciler__config-grid">
+          <dt>Interval</dt>
+          <dd data-testid="cfg-interval">{status.config.intervalS}s</dd>
+          <dt>Node timeout</dt>
+          <dd data-testid="cfg-node-timeout">{status.config.nodeTimeoutS}s</dd>
+          <dt>Hysteresis</dt>
+          <dd>{status.config.hysteresisS}s</dd>
+          <dt>Action cooldown</dt>
+          <dd>{status.config.actionCooldownS}s</dd>
+        </dl>
+      </details>
+
       {status.lastSyncAt && (
         <p className="muted">
           Last sync:{' '}

@@ -1,0 +1,103 @@
+# Default values for the purser-dataplane chart.
+# Deploys the Purser API Gateway (inference endpoint) in a Data Plane cluster.
+# Connects back to a Purser Control Plane deployed with purser-control-plane.
+#
+# NOTE: Purser Agents (GPU node daemons) are installed as host packages (.deb/.rpm),
+# NOT as pods. This chart deploys only the Gateway pod.
+
+replicaCount: 1
+
+# Override the generated resource name (defaults to the release name).
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/andrew19881123/purser-gateway
+  # Defaults to .Chart.AppVersion when left empty.
+  tag: "0.5.0"
+  pullPolicy: IfNotPresent
+
+# Secrets for pulling from a private registry, e.g. [{ name: regcred }].
+imagePullSecrets: []
+
+service:
+  # LoadBalancer exposes the inference endpoint externally.
+  # Use ClusterIP if you access via an Ingress or in-cluster only.
+  type: LoadBalancer
+  port: 8080
+  nodePort: ""
+  annotations: {}
+
+# -- Control Plane connection (ALL three fields are required).
+controlPlane:
+  # Base URL of the Control Plane REST API.
+  # Example: https://purser-cp.internal:8080
+  url: ""    # REQUIRED
+  # Data Plane ID registered in the Control Plane.
+  dataplaneId: ""    # REQUIRED
+  # Join token (dp_...) obtained from the Control Plane.
+  # Set joinToken OR joinTokenSecret — not both.
+  joinToken: ""
+  # Name of a Kubernetes Secret with key "join-token".
+  # Takes precedence over controlPlane.joinToken when set.
+  joinTokenSecret: ""
+
+# -- Inference engine backend.
+agent:
+  # "llamacpp" (default, production) or "mock" (demo/testing without a GPU).
+  engineBackend: llamacpp
+
+# Optional comma-separated API keys for inference clients (bearer sk-... tokens).
+# Empty => OPEN DEV MODE (any non-empty bearer token is accepted — NOT for production).
+apiKeys: ""
+# Name of a Kubernetes Secret with key "api-keys" (takes precedence over apiKeys).
+apiKeysSecret: ""
+
+# Port the gateway binds inside the pod (should match service.port).
+gateway:
+  port: 8080
+  # Extra env passed verbatim to the gateway container ([{name, value}]).
+  extraEnv: []
+  resources: {}
+    # requests: { cpu: 100m, memory: 128Mi }
+    # limits:   { cpu: "2",  memory: 1Gi  }
+
+# -- Optional Kubernetes Ingress.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []
+
+# -- Container-level security context applied to every container.
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Pod-level security context.
+podSecurityContext:
+  fsGroup: 65532
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Optional Kubernetes NetworkPolicy.
+networkPolicy:
+  enabled: false
+
+# Annotations applied to all pods.
+podAnnotations: {}
+
+# nodeSelector / tolerations / affinity applied to all workloads.
+nodeSelector: {}
+tolerations: []
+affinity: {}

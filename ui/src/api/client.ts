@@ -16,12 +16,15 @@
 // Every page, hook and component keeps working unchanged across the swap.
 // ---------------------------------------------------------------------------
 import type {
+  AccessLogParams,
+  AccessLogResponse,
   ApiKey,
   ApiKeyWithSecret,
   AuditLog,
   BillingReport,
   BillingSummary,
   CatalogEntry,
+  ChainVerifyResponse,
   ClusterCapacity,
   DeployOverrides,
   Deployment,
@@ -30,6 +33,8 @@ import type {
   EffectivePermissions,
   EnterpriseStatus,
   ImportSource,
+  InferenceAuditParams,
+  InferenceAuditResponse,
   JoinInfo,
   JoinTokenResult,
   KeyUsage,
@@ -115,6 +120,14 @@ export interface PurserApi {
   // --- enterprise ---
   /** GET /api/v1/enterprise/audit-log — 402 without a valid license. */
   getAuditLog(limit?: number): Promise<AuditLog>;
+
+  // --- inference audit ---
+  /** GET /api/v1/inference-audit — paginated tamper-evident inference log. */
+  listInferenceAudit(params?: InferenceAuditParams): Promise<InferenceAuditResponse>;
+  /** GET /api/v1/inference-audit/verify — verify the hash chain. */
+  verifyAuditChain(): Promise<ChainVerifyResponse>;
+  /** GET /api/v1/logs/access — gateway access log. */
+  listAccessLog(params?: AccessLogParams): Promise<AccessLogResponse>;
 
   // --- reconciler ---
   /** GET /api/v1/reconciler/status — live reconciler config + pending event tracker. */

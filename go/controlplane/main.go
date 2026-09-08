@@ -283,9 +283,14 @@ func run(logger *slog.Logger) error {
 	}
 	http.DefaultTransport = customTransport
 
-	reg, err := registry.Open(cfg.dbPath)
+	// Database configuration — PURSER_DB_DRIVER selects the backend (sqlite or
+	// postgres); PURSER_DB_URL carries the PostgreSQL DSN; PURSER_DB carries the
+	// SQLite file path. All three fall back to the per-driver defaults when unset.
+	dbCfg := registry.DBConfigFromEnv()
+	slog.Info("opening registry database", "driver", dbCfg.Driver)
+	reg, err := registry.OpenFromConfig(dbCfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("open registry: %w", err)
 	}
 	defer reg.Close()
 
@@ -294,7 +299,7 @@ func run(logger *slog.Logger) error {
 	if err := reg.Migrate(migCtx); err != nil {
 		return err
 	}
-	logger.Info("registry ready", "db", cfg.dbPath)
+	logger.Info("registry ready", "driver", dbCfg.Driver)
 
 	// Seed built-in platform roles (idempotent — safe to run on every start).
 	if err := reg.SeedSystemRoles(migCtx); err != nil {

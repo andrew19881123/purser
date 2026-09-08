@@ -47,7 +47,7 @@ The `--artifact-uri` becomes the `artifactUri` field that Purser reads back.
 Send a `POST /api/v1/models/import` request to the Purser control-plane:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/models/import \
+curl -X POST https://purser.example.com/api/v1/models/import \
   -H 'Content-Type: application/json' \
   -d '{
     "source":  "vertexai",

@@ -173,6 +173,15 @@ curl -sS -X POST http://<control-plane-host>:8080/api/v1/models \
 
 ## Step 6: Deploy the model
 
+### Via the Dashboard
+
+1. Open the **Catalog** page.
+2. Click the model you registered (`llama-8b`).
+3. Click **Preview Split** to review the node assignment the Planner computed.
+4. Click **Deploy** — the deployment moves to `ACTIVE` once all engine workers are running.
+
+### Via the API
+
 ```bash
 curl -sS -X POST http://<control-plane-host>:8080/api/v1/models/llama-8b/deploy \
   -H "Content-Type: application/json" \
@@ -188,6 +197,14 @@ curl -s http://<control-plane-host>:8080/api/v1/deployments | python3 -m json.to
 ---
 
 ## Step 7: Create an API key and call the Gateway
+
+### Via the Dashboard
+
+1. Open **Settings → API Keys**.
+2. Click **New Key**, set name `my-key`, tenant `default`, role `inference`.
+3. Copy the key — it is shown only once.
+
+### Via the API
 
 Create an API key:
 
@@ -302,3 +319,10 @@ The Playground stores the Gateway API key in **`sessionStorage`**, not `localSto
 - [Architecture](architecture.md) — two-plane design and request flow
 - [Enterprise features](../enterprise/overview.md) — audit log, HA, RBAC/SSO
 - [Contributing guide](https://github.com/andrew19881123/purser/blob/main/CONTRIBUTING.md) — good first issues and conventions
+
+## See also
+
+- [Node Pools](../configuration/node-pools.md) — assign GPU nodes to teams and set scheduling constraints
+- [Organizations & Teams](../configuration/platform-model.md) — multi-tenant platform model
+- [API Key Lifecycle](../configuration/api-keys.md) — create, rotate, and revoke keys
+- [RBAC Permissions](../configuration/permissions.md) — built-in roles and custom role definitions

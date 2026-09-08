@@ -163,6 +163,20 @@ type Registry interface {
 	// Teams are discovered using the naming convention "<orgID>/<teamSlug>" for
 	// tenant_id values in the inference_audit_log.
 	GetOrgBillingReport(ctx context.Context, orgID string, start, end time.Time) (*OrgBillingReport, error)
+	// GetBillingForecast computes daily burn rate and projected monthly spend for
+	// every tenant with inference activity in the current calendar-month billing
+	// period. Budget data is sourced from tenant_quotas when available.
+	// now is used as the reference point for computing days-elapsed and period end.
+	GetBillingForecast(ctx context.Context, now time.Time) ([]BillingForecastEntry, error)
+	// GetModelAdoptionSeries returns a request-count time-series grouped by model
+	// and bucketed by date (window="daily") or ISO week (window="weekly").
+	// days controls how far back from now to query; max 90.
+	GetModelAdoptionSeries(ctx context.Context, window string, days int, now time.Time) (*ModelAdoptionResponse, error)
+	// GetSLAComplianceByTenant returns the fraction of requests whose latency_ms
+	// is below thresholdMs for each tenant in the given billing window.
+	// Only rows where latency_ms > 0 are counted (unrecorded latency is excluded).
+	// Returns an empty slice when no qualifying rows exist.
+	GetSLAComplianceByTenant(ctx context.Context, start, end time.Time, thresholdMs float64) ([]TenantSLAStat, error)
 
 	// --- Inference audit log (AI Act Art.12) --------------------------------
 	// RecordInferenceEvent appends an inference event to the audit log.
@@ -238,6 +252,10 @@ type Registry interface {
 	ListAPIKeysExpiringBefore(ctx context.Context, before time.Time) ([]*APIKey, error)
 	// RecordAPIKeyAccess appends one row to api_key_access_log.
 	RecordAPIKeyAccess(ctx context.Context, entry *APIKeyAccessEntry) error
+	// ListAPIKeyAccessLog returns access-log entries newest-first, capped at
+	// limit (limit <= 0 → default 50, max 1000). When apiKeyID is non-empty
+	// only entries for that key are returned; empty string returns all entries.
+	ListAPIKeyAccessLog(ctx context.Context, apiKeyID string, limit int) ([]*APIKeyAccessEntry, error)
 	// HasAnyAPIKey: see declaration above (deduped).
 
 	// --- Model Pricing ---------------------------------------------------------
@@ -394,4 +412,38 @@ type Registry interface {
 	// GetEffectivePermissions resolves the full permission set for userID in
 	// the context of teamID (org membership + team role union).
 	GetEffectivePermissions(ctx context.Context, userID, teamID string) (*EffectivePermissions, error)
+
+	// ==========================================================================
+	// Data Planes (v0.5 CP/DP architectural separation)
+	// ==========================================================================
+
+	// CreateDataPlane generates a join token, stores its hash, and returns the
+	// plaintext token exactly once. dp.ID, dp.JoinTokenHash, dp.CreatedAt and
+	// dp.UpdatedAt are written back into dp.
+	CreateDataPlane(ctx context.Context, dp *DataPlane) (joinToken string, err error)
+	// GetDataPlane returns the data plane with the given id, or ErrNotFound.
+	GetDataPlane(ctx context.Context, id string) (*DataPlane, error)
+	// ListDataPlanes returns all registered data planes, ordered by name.
+	ListDataPlanes(ctx context.Context) ([]*DataPlane, error)
+	// UpdateDataPlane replaces the mutable fields of a data plane. Returns
+	// ErrNotFound when absent.
+	UpdateDataPlane(ctx context.Context, dp *DataPlane) error
+	// DeleteDataPlane removes a data plane by id. Returns ErrNotFound when absent.
+	DeleteDataPlane(ctx context.Context, id string) error
+	// RecordDataPlaneHeartbeat updates the status and last_heartbeat of a DP.
+	RecordDataPlaneHeartbeat(ctx context.Context, hb *DataPlaneHeartbeat) error
+	// GetDataPlaneConfigSnapshot returns the current config snapshot for a DP.
+	// Returns an empty snapshot (not ErrNotFound) when none has been set yet.
+	GetDataPlaneConfigSnapshot(ctx context.Context, id string) (*DataPlaneConfigSnapshot, error)
+	// UpdateDataPlaneConfigSnapshot replaces the config snapshot for a DP.
+	UpdateDataPlaneConfigSnapshot(ctx context.Context, id string, snapshot *DataPlaneConfigSnapshot) error
+	// AssignNodeToDataPlane assigns a fleet node to a specific data plane.
+	// Pass dataplaneID="" to unassign (set back to NULL / default DP).
+	AssignNodeToDataPlane(ctx context.Context, nodeID, dataplaneID string) error
+	// ListNodesByDataPlane returns nodes belonging to a specific data plane.
+	// When dataplaneID is "", nodes with no data plane assignment are returned.
+	ListNodesByDataPlane(ctx context.Context, dataplaneID string) ([]*Node, error)
+	// ValidateDataPlaneToken returns the DataPlane whose join_token_hash matches
+	// the SHA-256 of joinToken, or ErrNotFound. Used by the DP config-pull endpoint.
+	ValidateDataPlaneToken(ctx context.Context, joinToken string) (*DataPlane, error)
 }

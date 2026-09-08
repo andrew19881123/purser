@@ -155,6 +155,22 @@ function renderPage() {
   };
 }
 
+/** Open the delete dialog for the first model card's delete button. */
+async function openDeleteDialog(user: ReturnType<typeof userEvent.setup>) {
+  await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+  const deleteButtons = screen.getAllByLabelText('Delete');
+  await user.click(deleteButtons[0]);
+  await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+}
+
+/** Type the model ID into the confirmation input and click confirm. */
+async function confirmDeletion(user: ReturnType<typeof userEvent.setup>, modelId = 'llama-8b') {
+  const input = screen.getByRole('textbox');
+  await user.type(input, modelId);
+  const confirmBtn = screen.getByRole('button', { name: 'Delete permanently' });
+  await user.click(confirmBtn);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -165,111 +181,199 @@ describe('CatalogPage', () => {
     vi.mocked(api.getCatalog).mockResolvedValue([feasibleEntry, infeasibleEntry]);
   });
 
-  // --- Task A: Delete model --------------------------------------------------
+  // --- Delete model ----------------------------------------------------------
 
-  it('delete_button_shows_confirm_dialog', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const { user } = renderPage();
+  describe('Delete model', () => {
+    it('shows delete button on each model card', async () => {
+      renderPage();
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
 
-    // Wait for the catalog to load
-    await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+      const deleteButtons = screen.getAllByLabelText('Delete');
+      // Both feasible and infeasible model cards have a delete button
+      expect(deleteButtons).toHaveLength(2);
+    });
 
-    // Click the delete button for the first (feasible) model
-    const deleteButtons = screen.getAllByLabelText('Delete');
-    await user.click(deleteButtons[0]);
+    it('opens confirmation dialog when delete button clicked', async () => {
+      const { user } = renderPage();
+      await openDeleteDialog(user);
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining('llama-8b'),
-    );
-    // confirm returned false so deleteModel should NOT have been called
-    expect(api.deleteModel).not.toHaveBeenCalled();
+      // Modal is visible with the right title
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByText('Delete model')).toBeInTheDocument();
+    });
 
-    confirmSpy.mockRestore();
+    it('requires typing model name to enable confirm button', async () => {
+      const { user } = renderPage();
+      await openDeleteDialog(user);
+
+      const confirmBtn = screen.getByRole('button', { name: 'Delete permanently' });
+      // Initially disabled — nothing typed yet
+      expect(confirmBtn).toBeDisabled();
+
+      // Type something wrong — still disabled
+      const input = screen.getByRole('textbox');
+      await user.type(input, 'wrong-name');
+      expect(confirmBtn).toBeDisabled();
+
+      // Clear and type the correct model ID — now enabled
+      await user.clear(input);
+      await user.type(input, 'llama-8b');
+      expect(confirmBtn).not.toBeDisabled();
+    });
+
+    it('calls DELETE API when confirmed', async () => {
+      vi.mocked(api.deleteModel).mockResolvedValue(undefined);
+      vi.mocked(api.getCatalog)
+        .mockResolvedValueOnce([feasibleEntry, infeasibleEntry])
+        .mockResolvedValueOnce([infeasibleEntry]);
+
+      const { user } = renderPage();
+      await openDeleteDialog(user);
+      await confirmDeletion(user);
+
+      await waitFor(() => expect(api.deleteModel).toHaveBeenCalledWith('llama-8b'));
+    });
+
+    it('shows error when model has active deployments (409)', async () => {
+      vi.mocked(api.deleteModel).mockRejectedValue(
+        new ApiError(409, 'model is referenced by one or more active deployments; tear them down first'),
+      );
+
+      const { user } = renderPage();
+      await openDeleteDialog(user);
+      await confirmDeletion(user);
+
+      await waitFor(() =>
+        expect(
+          screen.getByText('Cannot delete: model is used by an active deployment'),
+        ).toBeInTheDocument(),
+      );
+      // Dialog stays open so the user can take action
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('removes model from list after successful delete', async () => {
+      vi.mocked(api.deleteModel).mockResolvedValue(undefined);
+      // Second getCatalog call returns catalog without the deleted model
+      vi.mocked(api.getCatalog)
+        .mockResolvedValueOnce([feasibleEntry, infeasibleEntry])
+        .mockResolvedValueOnce([infeasibleEntry]);
+
+      const { user } = renderPage();
+      await openDeleteDialog(user);
+      await confirmDeletion(user);
+
+      await waitFor(() => expect(api.deleteModel).toHaveBeenCalledWith('llama-8b'));
+      // After success, getCatalog is refetched (cache invalidation)
+      await waitFor(() => expect(api.getCatalog).toHaveBeenCalledTimes(2));
+    });
+
+    it('closes dialog after successful delete', async () => {
+      vi.mocked(api.deleteModel).mockResolvedValue(undefined);
+      vi.mocked(api.getCatalog)
+        .mockResolvedValueOnce([feasibleEntry, infeasibleEntry])
+        .mockResolvedValueOnce([infeasibleEntry]);
+
+      const { user } = renderPage();
+      await openDeleteDialog(user);
+      await confirmDeletion(user);
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it('cancels delete without calling API when dialog is dismissed', async () => {
+      const { user } = renderPage();
+      await openDeleteDialog(user);
+
+      const cancelBtn = screen.getByRole('button', { name: 'Cancel' });
+      await user.click(cancelBtn);
+
+      expect(api.deleteModel).not.toHaveBeenCalled();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
   });
 
-  it('delete_success_invalidates_catalog', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    vi.mocked(api.deleteModel).mockResolvedValue(undefined);
-    // Second call returns catalog without the deleted model
-    vi.mocked(api.getCatalog)
-      .mockResolvedValueOnce([feasibleEntry, infeasibleEntry])
-      .mockResolvedValueOnce([infeasibleEntry]);
+  // --- Preview deploy -------------------------------------------------------
 
-    const { user } = renderPage();
-    await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+  describe('Preview Deploy', () => {
+    it('shows preview button on each feasible model card', async () => {
+      renderPage();
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
 
-    const deleteButtons = screen.getAllByLabelText('Delete');
-    await user.click(deleteButtons[0]);
+      // Only the feasible model has "Preview Split"
+      const previewBtns = screen.getAllByLabelText('Preview Split');
+      expect(previewBtns).toHaveLength(1);
+    });
 
-    await waitFor(() => expect(api.deleteModel).toHaveBeenCalledWith('llama-8b'));
-    // After success, getCatalog should be called again (cache invalidation)
-    await waitFor(() => expect(api.getCatalog).toHaveBeenCalledTimes(2));
-  });
+    it('opens preview modal when clicked', async () => {
+      vi.mocked(api.previewModelPlan).mockResolvedValue(feasiblePlanResult);
+      const { user } = renderPage();
 
-  it('delete_409_shows_in_use_error', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    vi.mocked(api.deleteModel).mockRejectedValue(
-      new ApiError(409, 'model is referenced by one or more active deployments; tear them down first'),
-    );
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Preview Split'));
 
-    const { user } = renderPage();
-    await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+      await waitFor(() =>
+        expect(screen.getByText('Fleet split preview')).toBeInTheDocument(),
+      );
+    });
 
-    const deleteButtons = screen.getAllByLabelText('Delete');
-    await user.click(deleteButtons[0]);
+    it('shows node assignments from plan response', async () => {
+      vi.mocked(api.previewModelPlan).mockResolvedValue(feasiblePlanResult);
+      const { user } = renderPage();
 
-    await waitFor(() =>
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+
+      const previewBtn = screen.getByLabelText('Preview Split');
+      await user.click(previewBtn);
+
+      await waitFor(() =>
+        expect(screen.getByText('Fleet split preview')).toBeInTheDocument(),
+      );
+
+      // Assignments list shows node id (appears in assignments + pipeline)
+      const nodeLabels = screen.getAllByText('node-gpu-01');
+      expect(nodeLabels.length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('layers 0–31')).toBeInTheDocument();
+      // HOST badge
+      expect(screen.getByText('HOST')).toBeInTheDocument();
+
+      // Pipeline order
+      expect(screen.getByText('Pipeline order')).toBeInTheDocument();
+    });
+
+    it('shows "Not feasible" when plan is infeasible', async () => {
+      // The feasible model's plan preview comes back infeasible (planner found no fit)
+      vi.mocked(api.previewModelPlan).mockResolvedValue(infeasiblePlanResult);
+      const { user } = renderPage();
+
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+
+      const previewBtn = screen.getByLabelText('Preview Split');
+      await user.click(previewBtn);
+
+      await waitFor(() =>
+        expect(screen.getByText('Fleet split preview')).toBeInTheDocument(),
+      );
+
       expect(
-        screen.getByText('Cannot delete: model is used by an active deployment'),
-      ).toBeInTheDocument(),
-    );
-  });
+        screen.getByText(/Cannot be deployed on this fleet/),
+      ).toBeInTheDocument();
+      // Reason string should be in the modal
+      expect(screen.getByText(/Insufficient VRAM/)).toBeInTheDocument();
+    });
 
-  // --- Task B: Preview deploy -----------------------------------------------
+    it('shows loading state while fetching plan', async () => {
+      // Promise that never resolves — simulates a long-running plan request
+      vi.mocked(api.previewModelPlan).mockImplementation(() => new Promise(() => {}));
+      const { user } = renderPage();
 
-  it('preview_split_shows_assignments', async () => {
-    vi.mocked(api.previewModelPlan).mockResolvedValue(feasiblePlanResult);
-    const { user } = renderPage();
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
 
-    await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+      const previewBtn = screen.getByLabelText('Preview Split');
+      await user.click(previewBtn);
 
-    // Only the feasible model has "Preview Split"
-    const previewBtn = screen.getByLabelText('Preview Split');
-    await user.click(previewBtn);
-
-    await waitFor(() =>
-      expect(screen.getByText('Fleet split preview')).toBeInTheDocument(),
-    );
-
-    // Assignments list shows node id (appears once in assignments + once in pipeline)
-    const nodeLabels = screen.getAllByText('node-gpu-01');
-    expect(nodeLabels.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('layers 0–31')).toBeInTheDocument();
-    // HOST badge
-    expect(screen.getByText('HOST')).toBeInTheDocument();
-
-    // Pipeline order
-    expect(screen.getByText('Pipeline order')).toBeInTheDocument();
-  });
-
-  it('preview_infeasible_shows_reason', async () => {
-    // The feasible model's plan preview comes back infeasible (planner found no fit)
-    vi.mocked(api.previewModelPlan).mockResolvedValue(infeasiblePlanResult);
-    const { user } = renderPage();
-
-    await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
-
-    const previewBtn = screen.getByLabelText('Preview Split');
-    await user.click(previewBtn);
-
-    await waitFor(() =>
-      expect(screen.getByText('Fleet split preview')).toBeInTheDocument(),
-    );
-
-    expect(
-      screen.getByText(/Cannot be deployed on this fleet/),
-    ).toBeInTheDocument();
-    // Reason string should be in the modal
-    expect(screen.getByText(/Insufficient VRAM/)).toBeInTheDocument();
+      // Button should be disabled (spinner) while the plan is loading
+      await waitFor(() => expect(previewBtn).toBeDisabled());
+    });
   });
 });

@@ -405,10 +405,10 @@ func (r *SQLiteRegistry) CreateServiceAccount(ctx context.Context, sa *ServiceAc
 
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO service_accounts
-		 (id, name, tenant, role, scopes, client_id, client_secret_hash,
+		 (id, name, tenant, description, role, scopes, client_id, client_secret_hash,
 		  enabled, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-		sa.ID, sa.Name, sa.Tenant, sa.Role, scopesJSON(sa.Scopes),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		sa.ID, sa.Name, sa.Tenant, sa.Description, sa.Role, scopesJSON(sa.Scopes),
 		sa.ClientID, sa.ClientSecretHash,
 		fmtNullTimePtr(sa.ExpiresAt), fmtTime(now), fmtTime(now),
 	)
@@ -422,7 +422,7 @@ func (r *SQLiteRegistry) CreateServiceAccount(ctx context.Context, sa *ServiceAc
 // with the given client_id. Returns ErrNotFound when no matching row exists.
 func (r *SQLiteRegistry) GetServiceAccountByClientID(ctx context.Context, clientID string) (*ServiceAccount, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT id, name, tenant, role, scopes, client_id, client_secret_hash,
+		`SELECT id, name, tenant, description, role, scopes, client_id, client_secret_hash,
 		        enabled, expires_at, last_used_at, created_at, updated_at
 		 FROM service_accounts
 		 WHERE client_id=? AND enabled=1
@@ -436,7 +436,7 @@ func (r *SQLiteRegistry) GetServiceAccountByClientID(ctx context.Context, client
 // When tenant is empty, all accounts (across all tenants) are returned.
 // Results are ordered by created_at DESC (newest first).
 func (r *SQLiteRegistry) ListServiceAccounts(ctx context.Context, tenant string) ([]*ServiceAccount, error) {
-	const cols = `id, name, tenant, role, scopes, client_id, client_secret_hash,
+	const cols = `id, name, tenant, description, role, scopes, client_id, client_secret_hash,
 	              enabled, expires_at, last_used_at, created_at, updated_at`
 	var (
 		rows *sql.Rows
@@ -515,11 +515,10 @@ func (r *SQLiteRegistry) HasAnyAPIKey(ctx context.Context) (bool, error) {
 	return count > 0, err
 }
 
-// ListAPIKeyAccessLog returns the most recent access-log entries for the given
-// API key, newest first, capped at limit (limit <= 0 → default 50, max 1000).
-// This method is not on the core Registry interface; callers that need it
-// may type-assert to *SQLiteRegistry or use the accessLogQuerier local
-// interface in the server package.
+// ListAPIKeyAccessLog returns access-log entries newest-first, capped at
+// limit (limit <= 0 → default 50, max 1000). When apiKeyID is non-empty only
+// entries for that key are returned; an empty string returns all entries.
+// Now implements the core Registry interface (added in v0.5).
 func (r *SQLiteRegistry) ListAPIKeyAccessLog(ctx context.Context, apiKeyID string, limit int) ([]*APIKeyAccessEntry, error) {
 	if limit <= 0 {
 		limit = 50
@@ -527,12 +526,25 @@ func (r *SQLiteRegistry) ListAPIKeyAccessLog(ctx context.Context, apiKeyID strin
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, api_key_id, key_hash, method, path, ip_prefix, user_agent, status_code, request_at
-		 FROM api_key_access_log WHERE api_key_id = ?
-		 ORDER BY request_at DESC LIMIT ?`,
-		apiKeyID, limit,
+	var (
+		rows *sql.Rows
+		err  error
 	)
+	if apiKeyID != "" {
+		rows, err = r.db.QueryContext(ctx,
+			`SELECT id, api_key_id, key_hash, method, path, ip_prefix, user_agent, status_code, request_at
+			 FROM api_key_access_log WHERE api_key_id = ?
+			 ORDER BY request_at DESC LIMIT ?`,
+			apiKeyID, limit,
+		)
+	} else {
+		rows, err = r.db.QueryContext(ctx,
+			`SELECT id, api_key_id, key_hash, method, path, ip_prefix, user_agent, status_code, request_at
+			 FROM api_key_access_log
+			 ORDER BY request_at DESC LIMIT ?`,
+			limit,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("registry: list_api_key_access_log: %w", err)
 	}
@@ -557,30 +569,172 @@ func (r *SQLiteRegistry) ListAPIKeyAccessLog(ctx context.Context, apiKeyID strin
 
 // --- Model Pricing ------------------------------------------------------------
 
-func (r *SQLiteRegistry) UpsertModelPricing(_ context.Context, _ *ModelPricing) error {
-	return errNotImplemented
+// UpsertModelPricing inserts or replaces the pricing schedule for
+// (model_id, effective_from). The most-recent row per model_id is the active price.
+func (r *SQLiteRegistry) UpsertModelPricing(ctx context.Context, p *ModelPricing) error {
+	tiersJSON := "[]"
+	if len(p.Tiers) > 0 {
+		b, _ := json.Marshal(p.Tiers)
+		tiersJSON = string(b)
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO model_pricing (model_id, effective_from, input_price_per_1k, output_price_per_1k, tiers)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(model_id, effective_from) DO UPDATE SET
+			input_price_per_1k  = excluded.input_price_per_1k,
+			output_price_per_1k = excluded.output_price_per_1k,
+			tiers               = excluded.tiers`,
+		p.ModelID, fmtTime(p.EffectiveFrom), p.InputPricePer1K, p.OutputPricePer1K, tiersJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("registry: upsert_model_pricing: %w", err)
+	}
+	return nil
 }
 
-func (r *SQLiteRegistry) GetCurrentModelPricing(_ context.Context, _ string) (*ModelPricing, error) {
-	return nil, errNotImplemented
+// GetCurrentModelPricing returns the most-recently effective pricing for
+// modelID (highest effective_from ≤ now), or ErrNotFound when no row exists.
+func (r *SQLiteRegistry) GetCurrentModelPricing(ctx context.Context, modelID string) (*ModelPricing, error) {
+	var (
+		p         ModelPricing
+		efFrom    string
+		tiersJSON string
+	)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT model_id, effective_from, input_price_per_1k, output_price_per_1k, tiers
+		FROM model_pricing
+		WHERE model_id = ?
+		ORDER BY effective_from DESC
+		LIMIT 1`,
+		modelID,
+	).Scan(&p.ModelID, &efFrom, &p.InputPricePer1K, &p.OutputPricePer1K, &tiersJSON)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("registry: get_model_pricing: %w", err)
+	}
+	if t, err2 := time.Parse(tsLayout, efFrom); err2 == nil {
+		p.EffectiveFrom = t.UTC()
+	}
+	if tiersJSON != "" && tiersJSON != "[]" {
+		_ = json.Unmarshal([]byte(tiersJSON), &p.Tiers)
+	}
+	return &p, nil
 }
 
 // --- Tenant Quota -------------------------------------------------------------
 
-func (r *SQLiteRegistry) UpsertTenantQuota(_ context.Context, _ *TenantQuota) error {
-	return errNotImplemented
+// UpsertTenantQuota inserts or replaces the quota configuration for a tenant.
+func (r *SQLiteRegistry) UpsertTenantQuota(ctx context.Context, q *TenantQuota) error {
+	now := fmtTime(time.Now().UTC())
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO tenant_quotas (
+			tenant_id, monthly_requests, max_concurrent, requests_per_sec,
+			input_tpm, output_tpm, monthly_input_tokens, monthly_output_tokens,
+			monthly_cost_budget, alert_at_percent, inherit_from_parent, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id) DO UPDATE SET
+			monthly_requests     = excluded.monthly_requests,
+			max_concurrent       = excluded.max_concurrent,
+			requests_per_sec     = excluded.requests_per_sec,
+			input_tpm            = excluded.input_tpm,
+			output_tpm           = excluded.output_tpm,
+			monthly_input_tokens = excluded.monthly_input_tokens,
+			monthly_output_tokens= excluded.monthly_output_tokens,
+			monthly_cost_budget  = excluded.monthly_cost_budget,
+			alert_at_percent     = excluded.alert_at_percent,
+			inherit_from_parent  = excluded.inherit_from_parent,
+			updated_at           = excluded.updated_at`,
+		q.TenantID, q.MonthlyRequests, q.MaxConcurrent, q.RequestsPerSec,
+		q.InputTPM, q.OutputTPM, q.MonthlyInputTokens, q.MonthlyOutputTokens,
+		q.MonthlyCostBudget, q.AlertAtPercent, boolToInt(q.InheritFromParent), now,
+	)
+	if err != nil {
+		return fmt.Errorf("registry: upsert_tenant_quota: %w", err)
+	}
+	return nil
 }
 
-func (r *SQLiteRegistry) GetTenantQuota(_ context.Context, _ string) (*TenantQuota, error) {
-	return nil, errNotImplemented
+// GetTenantQuota returns the quota configuration for tenantID, or ErrNotFound.
+func (r *SQLiteRegistry) GetTenantQuota(ctx context.Context, tenantID string) (*TenantQuota, error) {
+	var (
+		q         TenantQuota
+		inherit   int64
+		updatedAt sql.NullString
+	)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT tenant_id, monthly_requests, max_concurrent, requests_per_sec,
+		       input_tpm, output_tpm, monthly_input_tokens, monthly_output_tokens,
+		       monthly_cost_budget, alert_at_percent, inherit_from_parent, updated_at
+		FROM tenant_quotas WHERE tenant_id = ?`,
+		tenantID,
+	).Scan(
+		&q.TenantID, &q.MonthlyRequests, &q.MaxConcurrent, &q.RequestsPerSec,
+		&q.InputTPM, &q.OutputTPM, &q.MonthlyInputTokens, &q.MonthlyOutputTokens,
+		&q.MonthlyCostBudget, &q.AlertAtPercent, &inherit, &updatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("registry: get_tenant_quota: %w", err)
+	}
+	q.InheritFromParent = inherit != 0
+	q.UpdatedAt = parseTime(updatedAt)
+	return &q, nil
 }
 
-func (r *SQLiteRegistry) IncrementTenantUsage(_ context.Context, _ string, _ time.Time, _ UsageDelta) error {
-	return errNotImplemented
+// IncrementTenantUsage atomically increments the usage counters for tenantID
+// in the given billing period. An upsert ensures the row is created on first use.
+func (r *SQLiteRegistry) IncrementTenantUsage(ctx context.Context, tenantID string, period time.Time, delta UsageDelta) error {
+	now := fmtTime(time.Now().UTC())
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO tenant_quota_usage
+			(tenant_id, period_start, requests_used, input_tokens_used, output_tokens_used, cost_used_usd, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, period_start) DO UPDATE SET
+			requests_used      = requests_used      + excluded.requests_used,
+			input_tokens_used  = input_tokens_used  + excluded.input_tokens_used,
+			output_tokens_used = output_tokens_used + excluded.output_tokens_used,
+			cost_used_usd      = cost_used_usd      + excluded.cost_used_usd,
+			last_updated       = excluded.last_updated`,
+		tenantID, fmtTime(period), delta.Requests, delta.InputTokens, delta.OutputTokens, delta.CostUSD, now,
+	)
+	if err != nil {
+		return fmt.Errorf("registry: increment_tenant_usage: %w", err)
+	}
+	return nil
 }
 
-func (r *SQLiteRegistry) GetTenantUsage(_ context.Context, _ string, _ time.Time) (*TenantQuotaUsage, error) {
-	return nil, errNotImplemented
+// GetTenantUsage returns accumulated usage for tenantID in the given period,
+// or ErrNotFound when no usage has been recorded.
+func (r *SQLiteRegistry) GetTenantUsage(ctx context.Context, tenantID string, period time.Time) (*TenantQuotaUsage, error) {
+	var (
+		u           TenantQuotaUsage
+		periodStart sql.NullString
+		lastUpdated sql.NullString
+	)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT tenant_id, period_start, requests_used, input_tokens_used,
+		       output_tokens_used, cost_used_usd, last_updated
+		FROM tenant_quota_usage
+		WHERE tenant_id = ? AND period_start = ?`,
+		tenantID, fmtTime(period),
+	).Scan(
+		&u.TenantID, &periodStart,
+		&u.RequestsUsed, &u.InputTokensUsed, &u.OutputTokensUsed, &u.CostUsedUSD,
+		&lastUpdated,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("registry: get_tenant_usage: %w", err)
+	}
+	u.PeriodStart = parseTime(periodStart)
+	u.LastUpdated = parseTime(lastUpdated)
+	return &u, nil
 }
 
 // --- Policy Versioning --------------------------------------------------------
@@ -643,19 +797,21 @@ func (r *SQLiteRegistry) RecordGDPRErasure(ctx context.Context, log *GDPRErasure
 // both *sql.Row and *sql.Rows via the common Scan interface.
 func scanServiceAccount(s interface{ Scan(...any) error }) (*ServiceAccount, error) {
 	var (
-		sa         ServiceAccount
-		scopes     string
-		enabled    int64
-		expiresAt  sql.NullString
-		lastUsedAt sql.NullString
-		createdAt  sql.NullString
-		updatedAt  sql.NullString
+		sa          ServiceAccount
+		scopes      string
+		description string
+		enabled     int64
+		expiresAt   sql.NullString
+		lastUsedAt  sql.NullString
+		createdAt   sql.NullString
+		updatedAt   sql.NullString
 	)
 	err := s.Scan(
-		&sa.ID, &sa.Name, &sa.Tenant, &sa.Role, &scopes, &sa.ClientID,
+		&sa.ID, &sa.Name, &sa.Tenant, &description, &sa.Role, &scopes, &sa.ClientID,
 		&sa.ClientSecretHash, &enabled, &expiresAt, &lastUsedAt,
 		&createdAt, &updatedAt,
 	)
+	sa.Description = description
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound

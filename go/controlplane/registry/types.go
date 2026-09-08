@@ -151,6 +151,9 @@ type APIKey struct {
 	// Scopes is a JSON-backed list of fine-grained permission strings.
 	// An empty slice means the key's permissions are governed by Role alone.
 	Scopes []string `json:"scopes,omitempty"`
+	// CreatedBy is the actor (OIDC sub or API key fingerprint) who created this
+	// key. Empty for keys created before this field was introduced (v0.5).
+	CreatedBy string `json:"created_by,omitempty"`
 }
 
 // Session records an inference session for metrics/attribution.
@@ -253,12 +256,69 @@ type BillingTenantUsage struct {
 
 // BillingReport is the full chargeback report for a configurable time window.
 // It is returned by GetBillingReport and served by GET /api/v1/billing/report.
+//
+// SLAStats is populated only when the caller supplies a sla_threshold_ms query
+// parameter; it contains one row per distinct tenant showing the fraction of
+// requests whose latency_ms was below the requested threshold.
 type BillingReport struct {
 	PeriodStart   time.Time            `json:"period_start"`
 	PeriodEnd     time.Time            `json:"period_end"`
 	Tenants       []BillingTenantUsage `json:"tenants"`
 	TotalRequests int64                `json:"total_requests"`
 	TotalTokens   int64                `json:"total_tokens"`
+	// SLA compliance — present only when sla_threshold_ms is requested.
+	SLAStats []TenantSLAStat `json:"sla_stats,omitempty"`
+}
+
+// TenantSLAStat holds the SLA compliance rate for one tenant over the
+// billing window. It is embedded in BillingReport.SLAStats.
+type TenantSLAStat struct {
+	TenantID          string  `json:"tenant_id"`
+	SLAComplianceRate float64 `json:"sla_compliance_rate"` // 0.0–1.0
+	SLAThresholdMs    float64 `json:"sla_threshold_ms"`
+}
+
+// BillingForecastEntry is a burn-rate projection for one tenant in the
+// current billing period. It is returned by GetBillingForecast and served
+// by GET /api/v1/billing/forecast.
+//
+// OrgID / TeamID are derived from the tenant_id naming convention:
+// "orgId/teamSlug" → OrgID=orgId, TeamID=teamSlug; plain "tenantId" → OrgID=tenantId, TeamID="".
+type BillingForecastEntry struct {
+	OrgID               string    `json:"org_id"`
+	TeamID              string    `json:"team_id,omitempty"`
+	PeriodStart         time.Time `json:"period_start"`
+	PeriodEnd           time.Time `json:"period_end"`
+	DaysElapsed         int       `json:"days_elapsed"`
+	DaysInPeriod        int       `json:"days_in_period"`
+	CostUsedUSD         float64   `json:"cost_used_usd"`
+	BudgetUSD           *float64  `json:"budget_usd,omitempty"`
+	BurnRateDailyUSD    float64   `json:"burn_rate_daily_usd"`
+	ProjectedMonthlyUSD float64   `json:"projected_monthly_usd"`
+	BudgetRemainingUSD  *float64  `json:"budget_remaining_usd,omitempty"`
+	DaysUntilExhaustion *float64  `json:"days_until_exhaustion,omitempty"`
+	QuotaUtilizationPct *float64  `json:"quota_utilization_pct,omitempty"`
+}
+
+// ModelAdoptionBucket is one time bucket in a model-adoption time-series.
+type ModelAdoptionBucket struct {
+	Date      string `json:"date"`
+	Requests  int64  `json:"requests"`
+	TokensOut int64  `json:"tokens_out"`
+}
+
+// ModelAdoptionSeries is the request time-series for a single model,
+// grouped into daily or weekly buckets.
+type ModelAdoptionSeries struct {
+	ModelID string                `json:"model_id"`
+	Buckets []ModelAdoptionBucket `json:"buckets"`
+}
+
+// ModelAdoptionResponse is returned by GET /api/v1/billing/models/adoption.
+type ModelAdoptionResponse struct {
+	Window string                `json:"window"`
+	Days   int                   `json:"days"`
+	Series []ModelAdoptionSeries `json:"series"`
 }
 
 // Cert tracks a certificate issued by the internal CA (see package pki).
@@ -498,10 +558,16 @@ type GDPRErasureLog struct {
 // is exchanged for a short-lived (15 min) HMAC-signed JWT via POST /auth/token
 // so the secret never travels on subsequent API requests.
 // ClientSecretHash is never exposed in JSON responses (json:"-").
+//
+// Tenant holds the team_id to which this service account belongs. Service
+// accounts are team-level credentials — they are not associated with an
+// individual user. This aligns with LiteLLM and proxy auth patterns where
+// a single service account provides machine-to-machine access for a team.
 type ServiceAccount struct {
 	ID               string     `json:"id"`
 	Name             string     `json:"name"`
-	Tenant           string     `json:"tenant"`
+	Tenant           string     `json:"tenant"` // team_id (stored as tenant for routing compat)
+	Description      string     `json:"description,omitempty"`
 	Role             string     `json:"role"`
 	Scopes           []string   `json:"scopes,omitempty"`
 	ClientID         string     `json:"client_id"`
@@ -657,6 +723,48 @@ type EffectivePermissions struct {
 	RoleName    string   `json:"role_name,omitempty"`
 	Permissions []string `json:"permissions"`
 	IsOrgAdmin  bool     `json:"is_org_admin,omitempty"`
+}
+
+// =============================================================================
+// Data Plane types (v0.5 CP/DP architectural separation)
+// =============================================================================
+
+// DataPlane represents a named inference cluster registered to this Control Plane.
+// Analogous to a "Gateway Service" in IBM API Connect.
+type DataPlane struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	Tier           string         `json:"tier"`        // "production" | "development" | etc.
+	GatewayURL     string         `json:"gateway_url"` // endpoint clients use for inference
+	Status         string         `json:"status"`      // "active" | "registering" | "degraded" | "offline"
+	JoinTokenHash  string         `json:"-"`           // not exposed in API responses
+	ConfigSnapshot map[string]any `json:"config_snapshot,omitempty"`
+	LastHeartbeat  *time.Time     `json:"last_heartbeat,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	// Computed fields (not stored)
+	NodeCount int `json:"node_count,omitempty"`
+}
+
+// DataPlaneHeartbeat is sent by a DP gateway to report its health.
+type DataPlaneHeartbeat struct {
+	DataPlaneID  string   `json:"dataplane_id"`
+	Status       string   `json:"status"`
+	NodeCount    int      `json:"node_count"`
+	ActiveModels []string `json:"active_models,omitempty"`
+}
+
+// DataPlaneConfigSnapshot is the config the CP pushes to a DP.
+type DataPlaneConfigSnapshot struct {
+	// RoutingTable maps model_id → deployment details.
+	RoutingTable map[string]any `json:"routing_table"`
+	// AuthBundle: API key hashes + quota limits for this DP.
+	AuthBundle map[string]any `json:"auth_bundle"`
+	// PolicyBundle: OPA policies active for this DP.
+	PolicyBundle []string `json:"policy_bundle"`
+	// GeneratedAt: when this snapshot was generated.
+	GeneratedAt time.Time `json:"generated_at"`
 }
 
 // Platform-level permission strings (all capabilities).

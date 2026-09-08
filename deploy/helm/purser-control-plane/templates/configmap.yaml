@@ -1,0 +1,23 @@
+{{- /*
+Non-secret configuration for the Control Plane. Exposed to the deployment as
+individual env vars via envFrom or direct references.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "purser-cp.fullname" . }}
+  labels:
+    {{- include "purser-cp.labels" . | nindent 4 }}
+data:
+  PURSER_ADDR: ":{{ .Values.service.httpPort }}"
+  PURSER_GRPC_ADDR: ":{{ .Values.service.grpcPort }}"
+  PURSER_CLUSTER_ID: {{ .Values.controlPlane.clusterId | quote }}
+  PURSER_DB_DRIVER: {{ .Values.database.driver | quote }}
+  PURSER_DB: "{{ .Values.persistence.mountPath }}/purser-registry.db"
+  PURSER_PKI_DIR: "{{ .Values.persistence.mountPath }}/pki-state"
+  {{- if .Values.controlPlane.agentPort }}
+  PURSER_AGENT_PORT: {{ .Values.controlPlane.agentPort | quote }}
+  {{- end }}
+  {{- if .Values.security.integrityCheckOnStart }}
+  PURSER_DB_INTEGRITY_CHECK: "1"
+  {{- end }}

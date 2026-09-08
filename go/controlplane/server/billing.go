@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -22,10 +23,13 @@ const featureBilling = "billing"
 //
 // Query parameters (all optional):
 //
-//	start      — RFC3339 window start; defaults to now − 30 days
-//	end        — RFC3339 window end;   defaults to now
-//	tenant_id  — filter to one tenant; empty = all tenants
-//	format     — "json" (default) or "csv"
+//	start             — RFC3339 window start; defaults to now − 30 days
+//	end               — RFC3339 window end;   defaults to now
+//	tenant_id         — filter to one tenant; empty = all tenants
+//	format            — "json" (default) or "csv"
+//	sla_threshold_ms  — when set, adds SLA compliance stats (latency_ms <
+//	                    threshold) to the response in a sla_stats array.
+//	                    Default when omitted: omit SLA stats entirely.
 //
 // JSON response: BillingReport (registry.BillingReport).
 // CSV response: Content-Type text/csv, Content-Disposition attachment.
@@ -48,6 +52,23 @@ func (s *Server) handleBillingReport(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "billing_report_failed", err.Error())
 		return
+	}
+
+	// Optional SLA compliance enrichment.
+	if v := r.URL.Query().Get("sla_threshold_ms"); v != "" {
+		thresholdMs, parseErr := strconv.ParseFloat(v, 64)
+		if parseErr != nil || thresholdMs <= 0 {
+			s.writeError(w, http.StatusBadRequest, "bad_request", "sla_threshold_ms must be a positive number")
+			return
+		}
+		slaStats, slaErr := s.reg.GetSLAComplianceByTenant(r.Context(), start, end, thresholdMs)
+		if slaErr != nil {
+			// SLA computation is best-effort: log and continue without enriching.
+			// (e.g. latency_ms column not available on older schemas)
+			_ = slaErr
+		} else {
+			report.SLAStats = slaStats
+		}
 	}
 
 	if format == "csv" {

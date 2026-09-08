@@ -1,10 +1,11 @@
 # Default values for the Purser chart.
 # This is a YAML-formatted file. Every knob below is referenced from templates.
 
-# -- Replicas per component. KEEP AT 1.
-# The Registry is a single-writer SQLite database and the internal PKI CA lives
-# on one PVC; horizontal HA (multi-replica) requires the Registry Raft backend,
-# which is an ENTERPRISE feature. Scaling >1 without it corrupts/splits state.
+# -- Replicas per component.
+# With driver=sqlite, keep at 1 — SQLite is single-writer. With driver=postgres
+# (and an external PostgreSQL), replicaCount>1 is supported for the control plane.
+# The internal PKI CA still lives on one PVC; use a shared volume or an external
+# CA for true HA. The Registry Raft backend (ENTERPRISE) is an alternative HA path.
 replicaCount: 1
 
 # Override the generated resource name (defaults to the release name).
@@ -38,12 +39,41 @@ imagePullSecrets: []
 service:
   type: ClusterIP
 
+agent:
+  # Backend engine for inference on each node.
+  # "llamacpp" (production — real GPU inference via llama.cpp) or
+  # "mock" (demo/CI only — returns canned responses, no GPU required).
+  # The docker-compose demo overrides this to "mock"; all Helm deployments
+  # default to "llamacpp". Override per-release with:
+  #   --set agent.engineBackend=mock
+  # See: https://docs.purser.io/configuration/engine
+  engineBackend: llamacpp
+
 controlPlane:
   httpPort: 8080          # management REST API (/api/v1) and UI backend
   grpcPort: 9443          # RegistrationService gRPC (Agent Join/Heartbeat, mTLS)
   clusterId: "default"    # echoed in join tokens (PURSER_CLUSTER_ID)
   # AgentService port the orchestrator dials back on each node (0 => default 50151).
   agentPort: 0
+
+  # -- Pre-registered Data Planes (created at startup via SeedDataPlanes).
+  # Each entry creates a DataPlane record in the registry; join tokens are stored
+  # as Kubernetes Secrets so remote Gateways can read them at startup.
+  # Empty list (default) = no pre-registered Data Planes; register manually via
+  # the REST API or the Operator UI after the Control Plane is running.
+  #
+  # Example:
+  # dataplanes:
+  #   - id: dp-prod
+  #     name: "Production Data Plane"
+  #     tier: production
+  #     gatewayUrl: "https://ai.acme.com"
+  #   - id: dp-dev
+  #     name: "Development Data Plane"
+  #     tier: development
+  #     gatewayUrl: "https://ai-dev.acme.com"
+  dataplanes: []
+
   service:
     # Empty => inherit the global `service.type`. Override to LoadBalancer /
     # NodePort so out-of-cluster Agents can reach the gRPC RegistrationService +
@@ -186,6 +216,46 @@ containerSecurityContext:
       - ALL
   seccompProfile:
     type: RuntimeDefault
+
+# --- Database ---
+# Controls which database backend the control plane uses.
+# See: website/docs/operations/database.md
+database:
+  # driver: "postgres" (production, recommended) or "sqlite" (dev/test only).
+  # SQLite does not support multiple replicas — use postgres for HA.
+  driver: sqlite
+
+  # For driver=postgres: full PostgreSQL connection URL.
+  # Use a Kubernetes Secret for the password in production:
+  #   kubectl create secret generic purser-db \
+  #     --from-literal=url='postgres://user:pass@host:5432/dbname?sslmode=require'
+  # Then reference it via controlPlane.extraEnv:
+  #   - name: PURSER_DB_URL
+  #     valueFrom: { secretKeyRef: { name: purser-db, key: url } }
+  # Leave empty to use the default (localhost) — only suitable for quick-start.
+  url: ""  # required when driver=postgres; set via PURSER_DB_URL env or secret
+
+  # For driver=sqlite: file path inside the container (ignored when driver=postgres).
+  # Warning: SQLite requires replicaCount=1. Do not use in production.
+  sqlitePath: /data/purser-registry.db
+
+  # PostgreSQL connection pool settings (driver=postgres only).
+  # These are wired into the binary via OpenDB; the chart exposes them for
+  # documentation purposes only — the defaults in db.go are used at runtime.
+  pool:
+    maxOpenConns: 25
+    maxIdleConns: 10
+
+  # Bundled PostgreSQL sub-chart (optional quick-start).
+  # Set postgresql.enabled=true to deploy a single-node PostgreSQL alongside the
+  # control plane. For production, use an external managed PostgreSQL (RDS,
+  # Cloud SQL, Azure Database for PostgreSQL) and supply the DSN via database.url.
+  postgresql:
+    enabled: false
+    auth:
+      username: purser
+      password: purser
+      database: purser
 
 # --- Security: encryption at rest ---
 # Options for encrypting the control plane's SQLite database at rest.
