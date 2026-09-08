@@ -8,12 +8,14 @@ require (
 	github.com/hashicorp/raft v1.7.3
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jung-kurt/gofpdf v1.16.2
 	github.com/open-policy-agent/opa v1.20.2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/purser/purser/enterprise/license v0.0.0
 	github.com/purser/purser/go/gen v0.0.0
 	github.com/purser/purser/go/planner v0.0.0
 	github.com/stretchr/testify v1.12.1
+	github.com/xuri/excelize/v2 v2.11.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
@@ -22,8 +24,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/sdk/metric v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
-	github.com/jung-kurt/gofpdf v1.16.2
-	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/time v0.15.0
 	google.golang.org/grpc v1.83.2
