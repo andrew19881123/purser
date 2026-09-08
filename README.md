@@ -41,9 +41,38 @@ If you know Kubernetes, the mental model is familiar:
 - **Bring your own engine** — the Engine Adapter abstracts the backend, so the
   orchestrator never hard-codes model or engine specifics.
 
+## Try it now — no GPU, no Kubernetes
+
+The demo stack runs entirely in Docker (the inference engine is a deterministic mock — no GPU needed):
+
+```bash
+git clone https://github.com/andrew19881123/purser.git
+cd purser
+docker compose up -d
+
+# Wait ~10s for services to start, then:
+curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
+```
+
+Open the dashboard at **http://localhost:3000** — username/password not required in demo mode.
+
+## Purser vs alternatives
+
+| | **Purser** | Ollama | vLLM | TGI | LocalAI |
+|---|---|---|---|---|---|
+| **Multi-node LAN layer split** | ✅ automatic DP planning | ❌ | ❌ | ❌ | ❌ |
+| OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ | ✅ |
+| No NVLink / InfiniBand required | ✅ 10GbE sufficient | — | ❌ requires NVLink | ❌ requires NVLink | — |
+| Enterprise compliance (LDAP, audit, AI Act) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| ARM64 support (Apple Silicon, Graviton) | ✅ v0.6 | ✅ | ✅ | ✅ | ✅ |
+| Cryptographic audit chain | ✅ unique | ❌ | ❌ | ❌ | ❌ |
+| 1-command Docker Compose demo | ✅ | ✅ | partial | partial | ✅ |
+
+> **The unique case:** you have 2–4 GPU machines on a LAN and want to run a 70B+ model. Ollama, vLLM, and TGI all require a single machine with enough VRAM. Purser automatically splits the model across your nodes.
+
 ## Install
 
-Purser ships **prebuilt artifacts** for v0.3.0 — you do **not** need to compile
+Purser ships **prebuilt artifacts** for v0.5.0 — you do **not** need to compile
 anything to run it. It comes as **two kinds of workload**, matching its two
 planes:
 
@@ -366,7 +395,7 @@ See [LICENSING.md](LICENSING.md) for details.
 
 ## Status & roadmap
 
-**Alpha — v0.3.0.** The zero-config vertical (*enroll → deploy → chat*) is implemented and demonstrated end-to-end. The architecture supports enterprise features but **live inference on real GPU hardware** has not yet been validated. Use for evaluation, development, and staging — not yet recommended for production.
+**Alpha — v0.5.0.** The zero-config vertical (*enroll → deploy → chat*) is implemented and demonstrated end-to-end. The architecture supports enterprise features but **live inference on real GPU hardware** has not yet been validated. Use for evaluation, development, and staging — not yet recommended for production.
 
 v0.3 adds Anthropic SDK compatibility (`/v1/messages`), `purser.yaml` config-as-code + GitOps reconciler, inference audit log (AI Act Art.12), deployment approval gates (Art.14), embedded OPA policy engine, HA Raft foundation, chargeback reports, HTTP proxy + custom CA bundle, and backup/restore CLI.
 

@@ -17,7 +17,7 @@ The demo stack uses the built-in mock engine — real inference comes when you i
 Try the OpenAI-compatible Gateway immediately:
 
 ```bash
-curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'
+curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 ```
 
 Stop the demo at any time:
@@ -48,7 +48,7 @@ Get from zero to a working OpenAI-compatible inference endpoint in about 5 minut
 The chart and images are published as public OCI artifacts on GHCR — no registry login needed.
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
   --set controlPlane.service.type=LoadBalancer
 ```
 
@@ -84,10 +84,10 @@ On the fleet node (Linux), download the package from the [latest release](https:
 
 ```bash
 # Debian / Ubuntu (amd64 or arm64)
-sudo apt install ./purser-agent_0.3.0_amd64.deb
+sudo apt install ./purser-agent_0.5.0_amd64.deb
 
 # RHEL / Fedora / openSUSE
-sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm
+sudo yum install ./purser-agent-0.5.0-1.x86_64.rpm
 ```
 
 ---
