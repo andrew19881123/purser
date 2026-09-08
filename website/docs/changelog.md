@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-08
+
+> **v0.5 — "Observability & FinOps"** — major feature release (alpha; GPU validation pending).
+
+### Added
+
+- **mTLS certificate auto-renewal** — `purser-agent` now runs a daily renewal loop;
+  certificates are renewed automatically when fewer than 30 days remain.
+  Control plane exposes `POST /api/v1/enrollment/renew`; configurable via
+  `PURSER_CERT_CHECK_INTERVAL_HOURS`. Manual operator workflow also supported.
+- **Prometheus metrics endpoints** — all three components now expose `GET /metrics`:
+  gateway (TTFT, TBT, tokens/s, error types, queue depth), agent (VRAM, decode tok/s,
+  inference port alive), and control plane (node counts, deployment states, fleet
+  throughput). See [Observability](operations/observability.md).
+- **Grafana provisioning bundle** (`deploy/grafana/`) — four pre-built dashboards
+  (Gateway Overview, Node Hardware, Token Economics, Compliance & Audit) plus
+  PrometheusRule SLO alerts. Helm flag `grafana.provisioning.enabled=true` wires
+  the kube-prometheus-stack sidecar automatically.
+- **OpenTelemetry GenAI span attributes** — every inference request produces a
+  `purser.gateway.inference` span enriched with the
+  [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+  (`gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, …).
+- **Billing forecast API** (`GET /api/v1/billing/forecast`) — daily burn rate and
+  projected monthly spend per tenant with budget-exhaustion countdown. Requires
+  `billing` enterprise feature.
+- **Model adoption time-series** (`GET /api/v1/billing/models/adoption`) — request
+  counts and output token volumes per model bucketed by day or week (up to 90 days).
+- **SLA compliance tracking** (`GET /api/v1/billing/report?sla_threshold_ms=<N>`) —
+  per-tenant `sla_compliance_rate` enrichment on the standard billing report.
+- **AuditPage chain integrity** — the UI Audit page now shows a complete hash-chain
+  verification panel alongside the inference audit log, surfacing `{verified, length,
+  break?}` status at a glance.
+- **Service accounts — team scoping** — service accounts now belong to a `team_id`
+  (previously a flat `tenant` string). The legacy `tenant` field is still accepted
+  for backward compatibility.
+
+## [0.4.0] - 2026-09-07
+
+> **v0.4 — "Platform Model"** — major feature release (alpha; GPU validation pending).
+
+### Added
+
+- **Multi-tenant platform model** — first-class Organization → Team → User hierarchy
+  (`/api/v1/platform/orgs`, `/api/v1/platform/orgs/{orgId}/teams`,
+  `/api/v1/platform/users`). Org slugs are immutable after creation.
+- **Fine-grained permission system** — 21 permission strings following
+  `<namespace>:<resource>:<action>` convention, six built-in system roles
+  (`platform_admin`, `org_admin`, `team_admin`, `developer`, `viewer`,
+  `inference_only`), and wildcard matching (e.g. `team:*`). Legacy three-role model
+  (`admin`, `viewer`, `inference`) preserved for backward compatibility until v0.6.
+- **Custom roles** — per-org custom role definitions via
+  `POST /api/v1/platform/orgs/{orgId}/roles`; assignable to team members.
+- **Node Pools** — named GPU node groups with `exclusive` or `shared` policy;
+  per-team `PoolTeamQuota` (max_deployments, max_gpu_nodes, priority). Planner
+  enforces `AllowedNodeIDs` at placement time. Backward compatible — teams with no
+  pool use the full fleet.
+- **Platform UI** — three new dashboard pages: Organizations (`/platform/orgs`),
+  Team detail (`/platform/orgs/{orgId}/teams/{teamId}`), and Node Pools
+  (`/platform/pools`).
+- **Service accounts** — OAuth2 `client_credentials` grant (`POST /auth/token`)
+  issuing 15-minute HMAc-SHA256 JWTs; no DB lookup per request.
+- **PostgreSQL backend** — `PURSER_DB_DRIVER=postgres` and `PURSER_DB_URL` DSN;
+  schema auto-migrated on startup. SQLite remains the default for development.
+- **LDAP / Active Directory authentication** — enabled by setting `PURSER_LDAP_URL`;
+  supports `ldaps://`, StartTLS, group-to-role mapping, 5-minute credential cache.
+- **Multi-replica deployment planning** — `PlanReplicaSet` partitions the fleet into
+  N disjoint pipelines; `round_robin` and `least_loaded` routing policies.
+- **Control Plane startup sequence** — documented migration, system-role seeding,
+  and GitOps watcher initialization; health (`GET /api/v1/platform/health`) and
+  status (`GET /api/v1/platform/status`) endpoints.
+
 ## [0.3.0] - 2026-09-06
 
 > **v0.3 — "Enterprise Architecture"** — major feature release (alpha; GPU validation pending).
@@ -138,5 +209,10 @@ across a multi-node pipeline, driven by the built-in mock engine.
   fmt check), `go` (build/vet/test for `planner` and `controlplane`), and `ui`
   (typecheck + build).
 
-[Unreleased]: https://github.com/andrew19881123/purser/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/andrew19881123/purser/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/andrew19881123/purser/releases/tag/v0.5.0
+[0.4.0]: https://github.com/andrew19881123/purser/releases/tag/v0.4.0
+[0.3.0]: https://github.com/andrew19881123/purser/releases/tag/v0.3.0
+[0.2.0]: https://github.com/andrew19881123/purser/releases/tag/v0.2.0
+[0.1.1]: https://github.com/andrew19881123/purser/releases/tag/v0.1.1
 [0.1.0]: https://github.com/andrew19881123/purser/releases/tag/v0.1.0

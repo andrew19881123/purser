@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/andrew19881123/purser/blob/main/LICENSE)
 [![CI](https://github.com/andrew19881123/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/andrew19881123/purser/actions/workflows/ci.yml)
-[![Release: v0.4.0](https://img.shields.io/badge/release-v0.4.0-blue)](https://github.com/andrew19881123/purser/releases/tag/v0.4.0)
+[![Release: v0.5.0](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/andrew19881123/purser/releases/tag/v0.5.0)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](https://github.com/andrew19881123/purser/blob/main/PROJECT_STATUS.md)
 
 ## What is Purser?
@@ -115,7 +115,7 @@ For production Kubernetes deployments see the [Quickstart guide](getting-started
 
 ## Status
 
-**Alpha — v0.4.0.** The zero-config vertical (*enroll → deploy → chat*) is implemented and demonstrated end-to-end. v0.4 adds: multi-tenant platform model (Organizations, Teams, RBAC), fine-grained permission system, platform user management, `purser.yaml` config-as-code + GitOps reconciler, Anthropic Messages API (`/v1/messages`), inference audit log (AI Act Art.12), deployment approval gates (Art.14), OPA policy engine, HA Raft foundation, chargeback reports, HTTP proxy + custom CA, and backup/restore CLI. Live inference on real GPU hardware not yet validated — not recommended for production.
+**Alpha — v0.5.0.** The zero-config vertical (*enroll → deploy → chat*) is implemented and demonstrated end-to-end. v0.5 adds: Prometheus metrics on all three components, Grafana provisioning bundle (4 dashboards + SLO alerts), OpenTelemetry GenAI span attributes, mTLS certificate auto-renewal, billing forecast API (burn rate, model adoption, SLA compliance), and AuditPage chain integrity panel. v0.4 added: multi-tenant platform model (Organizations, Teams, RBAC), fine-grained permission system, node pools, service accounts, PostgreSQL backend, LDAP/AD auth, and multi-replica planning. Live inference on real GPU hardware not yet validated — not recommended for production.
 
 See the full [Changelog](changelog.md) for details.
 

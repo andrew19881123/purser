@@ -16,7 +16,7 @@ runbook automation.
 The webhook fires in the `approval_required` automation path. Events handled
 autonomously (`auto`) or silently (`notify_only`) do not trigger webhooks.
 
-See [Reconciler](../architecture/reconciler.md) for the full automation-level
+See [Reconciler](../operations/reconciler.md) for the full automation-level
 policy and how to override per event type.
 
 ---

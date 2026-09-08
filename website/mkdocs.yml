@@ -66,26 +66,37 @@ nav:
   - Configuration:
     - purser.yaml (Declarative Config): configuration/purser-yaml.md
     - API Key Lifecycle: configuration/api-keys.md
+    - Service Accounts: configuration/service-accounts.md
     - Environment Variables: configuration/env-vars.md
     - Network Proxy & Custom CA: configuration/network-proxy.md
     - OIDC (EntraID / Okta / Keycloak): configuration/oidc.md
+    - LDAP / Active Directory: configuration/ldap-ad.md
     - OpenTelemetry: configuration/otel.md
     - RBAC (API Key Roles): configuration/rbac.md
+    - Permissions Reference: configuration/permissions.md
     - Secret Management (Vault / ESO): configuration/secrets.md
     - Certificate Management (cert-manager): configuration/cert-manager.md
     - Model Sources (S3 / GCS / Azure): configuration/model-sources.md
+    - Model Catalog: configuration/models.md
     - SWIM Gossip Discovery: configuration/swim.md
     - Webhook Notifications: configuration/webhook.md
     - Data Planes (CP/DP): configuration/data-plane.md
+    - Platform Multi-Tenant Model: configuration/platform-model.md
+    - Node Pools: configuration/node-pools.md
+    - Platform UI (Orgs, Teams & Pools): configuration/platform-ui.md
+    - Multi-Replica Deployments: configuration/multi-replica.md
   - Enterprise:
     - Open-Core Model: enterprise/overview.md
     - Licensing & Key Management: enterprise/licensing.md
+    - License Management (UI): enterprise/license.md
     - Tamper-Evident Audit Log: enterprise/audit-log.md
     - Inference Audit Log (AI Act): enterprise/inference-audit.md
     - AI Act & GDPR Compliance: enterprise/ai-act-compliance.md
+    - GDPR Compliance (Right to Erasure): enterprise/gdpr-compliance.md
     - Deployment Approval Gates: enterprise/deployment-approvals.md
     - Usage Accounting (Chargeback): enterprise/usage-accounting.md
     - Chargeback Reports (Multi-Tenant): enterprise/chargeback.md
+    - Billing Forecast (FinOps): enterprise/finops.md
     - Policy-as-Code (OPA/Rego): enterprise/policy-as-code.md
     - HA Control Plane (Raft): enterprise/ha-control-plane.md
   - Integrations:
@@ -98,11 +109,21 @@ nav:
     - Python SDK: integrations/python-sdk.md
     - TypeScript SDK: integrations/typescript-sdk.md
   - Operations:
+    - Observability (Prometheus / OpenTelemetry): operations/observability.md
+    - Grafana Dashboards: operations/grafana.md
+    - Database Configuration: operations/database.md
     - Backup & Restore: operations/backup-restore.md
-    - Encryption at Rest: operations/security-at-rest.md
     - PKI Operations: operations/pki-operations.md
+    - mTLS Certificate Renewal: operations/cert-renewal.md
+    - Reconciler: operations/reconciler.md
+    - Control Plane Startup: operations/platform-startup.md
+    - Encryption at Rest: operations/security-at-rest.md
+    - Security Headers: operations/security-headers.md
+    - CI/CD Supply Chain Security: operations/ci-security.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
+    - Platform Orgs & Teams: api/platform-orgs.md
+    - Platform Users & Roles: api/platform-users.md
     - Gateway (/v1 OpenAI): api/gateway.md
     - Anthropic Compatibility (/v1/messages): api/anthropic-compatibility.md
   - Development:
