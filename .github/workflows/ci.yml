@@ -44,6 +44,18 @@ jobs:
         working-directory: rust
         run: cargo fmt --all -- --check
 
+      # Cross-compile purser-agent for linux/arm64 using the musl target.
+      # --no-default-features skips the llamacpp feature which requires native
+      # llama.cpp headers; the mock/minimal backend cross-compiles cleanly.
+      - name: cross-compile arm64
+        working-directory: rust
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+          cargo build -p purser-agent --target aarch64-unknown-linux-musl \
+            --no-default-features 2>&1 | tail -5
+
   go:
     name: go
     runs-on: ubuntu-latest
@@ -79,6 +91,17 @@ jobs:
         run: |
           files=$(gofmt -l go enterprise/license)
           [ -z "$files" ] || { echo "gofmt needs to be run on:"; echo "$files"; exit 1; }
+
+      # CGO_ENABLED=0 makes Go cross-compilation cost-free (pure Go, no cgo).
+      # Only the controlplane module produces a runnable binary; planner is a library.
+      - name: cross-compile arm64
+        if: matrix.module == 'controlplane'
+        working-directory: go/${{ matrix.module }}
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: go build ./...
 
   ui:
     name: ui

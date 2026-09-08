@@ -60,6 +60,7 @@ nav:
   - Install:
     - Kubernetes (Helm): install/kubernetes.md
     - Kubernetes Enterprise (CP + DP): install/kubernetes-enterprise.md
+    - ARM64 Support (Apple Silicon, Graviton): install/arm64.md
     - Linux Agent (.deb/.rpm): install/linux-agent.md
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md

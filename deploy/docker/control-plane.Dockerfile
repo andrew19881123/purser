@@ -31,10 +31,13 @@ WORKDIR /src/go/controlplane
 
 # GOWORK=off    -> ignore go.work; rely on in-module `replace` directives.
 # CGO_ENABLED=0 -> fully static binary (modernc.org/sqlite is pure Go, no cgo).
+# GOARCH         -> set from TARGETARCH (auto-injected by docker buildx) so the
+#                   same Dockerfile builds for linux/amd64 and linux/arm64.
 # -trimpath + -ldflags "-s -w" -> smaller, reproducible binary.
 # Modules are fetched from the proxy at build time (go.sum is authoritative);
 # CI needs network access or a configured GOPROXY/module cache.
-RUN GOWORK=off CGO_ENABLED=0 GOOS=linux \
+ARG TARGETARCH=amd64
+RUN GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "-s -w" -o /out/control-plane .
 
 # ── Final ────────────────────────────────────────────────────────────────
