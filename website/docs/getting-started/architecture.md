@@ -166,10 +166,14 @@ Multi-replica HA (Raft-replicated Registry + Gateway VIP) is an **Enterprise** f
 
 The Agent ships two engine backends:
 
-| Backend | Availability | Description |
-|---------|-------------|-------------|
-| `mock` | Always (default) | GPU-free deterministic in-process backend. Used in CI and for integration testing without llama.cpp or a GPU. |
-| `llamacpp` | Compiled with `--features llamacpp` | Real llama.cpp RPC worker/host processes. Requires `rpc-server` and `llama-server` binaries (from a llama.cpp build) accessible via `PURSER_LLAMACPP_BIN` or `PATH`. |
+| Backend | Availability | Default in… | Description |
+|---------|-------------|-------------|-------------|
+| `llamacpp` | Compiled with `--features llamacpp` | **Helm chart, production** | Real llama.cpp RPC worker/host processes. Requires `rpc-server` and `llama-server` binaries accessible via `PURSER_LLAMACPP_BIN` or `PATH`. |
+| `mock` | Always | Raw binary (no env var set), demo `docker-compose.yml` | GPU-free deterministic in-process backend. Returns canned responses. **Never use in production.** |
+
+The Helm `purser-dataplane` chart sets `engineBackend: llamacpp` in `values.yaml`, so production deployments automatically use real llama.cpp inference. The `docker-compose.yml` demo stack sets `PURSER_ENGINE_BACKEND=mock` explicitly because it runs without a GPU.
+
+The raw agent binary falls back to `mock` when `PURSER_ENGINE_BACKEND` is unset — useful for CI and local development without a GPU. Always set `PURSER_ENGINE_BACKEND=llamacpp` explicitly in production environments that are not using the Helm chart.
 
 To build the agent with llama.cpp support:
 
@@ -177,7 +181,7 @@ To build the agent with llama.cpp support:
 cargo build -p purser-agent --features llamacpp
 ```
 
-Set `PURSER_ENGINE_BACKEND=llamacpp` at runtime to activate it. If the binary is compiled without `--features llamacpp` and `PURSER_ENGINE_BACKEND=llamacpp` is set, the agent exits with a clear error explaining the missing feature flag.
+If the binary is compiled without `--features llamacpp` and `PURSER_ENGINE_BACKEND=llamacpp` is set, the agent exits immediately with a clear error explaining the missing feature flag.
 
 ---
 

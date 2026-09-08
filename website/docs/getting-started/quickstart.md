@@ -265,7 +265,7 @@ for chunk in response:
 ```
 
 !!! note "Engine backends"
-    The default engine is the built-in mock engine — it responds with generated tokens to demonstrate the pipeline without a GPU. To enable real inference, set `PURSER_ENGINE_BACKEND=llamacpp` in the agent's environment file and install the agent built with `--features llamacpp` (available in the v0.3 release packages). See [Architecture: Engine backends](architecture.md#engine-backends) for details.
+    **Production default is `llamacpp`** (set by the Helm chart). The `docker-compose.yml` demo stack uses `mock` explicitly because it runs without a GPU — mock returns canned responses and must never be used in production. To enable real inference on a bare binary, set `PURSER_ENGINE_BACKEND=llamacpp` and install the agent built with `--features llamacpp`. See [Architecture: Engine backends](architecture.md#engine-backends) for details.
 
 ---
 
