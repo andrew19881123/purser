@@ -120,6 +120,7 @@ nav:
     - Encryption at Rest: operations/security-at-rest.md
     - Security Headers: operations/security-headers.md
     - CI/CD Supply Chain Security: operations/ci-security.md
+    - What-if Planner (Hardware ROI): operations/what-if-planner.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Platform Orgs & Teams: api/platform-orgs.md

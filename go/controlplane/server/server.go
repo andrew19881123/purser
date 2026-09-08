@@ -1570,6 +1570,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleAssignNodeToDataPlane)
 	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleUnassignNodeFromDataPlane)
 	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/nodes", s.handleListDataPlaneNodes)
+
+	// What-if Planner — hardware ROI simulation (v0.6).
+	// Runs the DP planner against a hypothetical fleet without touching the
+	// registry. Auth: admin or viewer role (no registry mutations).
+	s.mux.HandleFunc("POST /api/v1/planner/what-if", s.handleWhatIfPlan)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log

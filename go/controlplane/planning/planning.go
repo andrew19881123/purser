@@ -88,6 +88,24 @@ type Planner struct {
 // New builds a Planner backed by reg.
 func New(reg registry.Registry) *Planner { return &Planner{reg: reg} }
 
+// LoadFleet returns the current READY fleet nodes and links as planner domain
+// types. Exported so callers (e.g. the what-if handler) can obtain the raw
+// fleet snapshot and invoke plan.Plan with a modified node set without going
+// through the full Plan/Fit pipeline.
+func (p *Planner) LoadFleet(ctx context.Context) ([]plan.Node, []plan.Link, error) {
+	return p.loadFleet(ctx)
+}
+
+// ModelSpecFor decodes the catalog ModelSpec for modelID into the planner type.
+// Returns registry.ErrNotFound when the model does not exist.
+func (p *Planner) ModelSpecFor(ctx context.Context, modelID string) (plan.ModelSpec, error) {
+	model, err := p.reg.GetModel(ctx, modelID)
+	if err != nil {
+		return plan.ModelSpec{}, err
+	}
+	return modelSpec(model)
+}
+
 // Plan produces a wire DeploymentPlan for modelID against the current READY
 // fleet. The returned plan carries the planner's deterministic PlanID; the
 // caller assigns a persistence ID before storing/applying it.
