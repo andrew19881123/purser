@@ -8,17 +8,35 @@ Purser has two clearly separated planes: a low-volume **control plane** (gRPC + 
 ## Component overview
 
 ```mermaid
-graph LR
-    Client["Client\nOpenAI SDK / curl"] --> GW["API Gateway\nRust"]
-    GW --> CP["Control Plane\nGo"]
-    CP --> A1["Agent\nRust — Node 1"]
-    CP --> A2["Agent\nRust — Node 2"]
-    A1 --> E1["Engine\nllama.cpp / mock"]
-    A2 --> E2["Engine\nllama.cpp / mock"]
-    GW -. "route sync (HTTP)" .-> CP
-    A1 -. "gRPC mTLS heartbeat" .-> CP
-    A2 -. "gRPC mTLS heartbeat" .-> CP
+graph TB
+    subgraph CP ["Control Plane (management)"]
+        Registry["Registry · PKI · Auth\nPlanner · REST API"]
+    end
+
+    subgraph DPA ["Data Plane A — production"]
+        GWA["Gateway\nRust"]
+        A1["Agent — GPU01\nRust"]
+        A2["Agent — GPU02\nRust"]
+        GWA --> A1
+        GWA --> A2
+    end
+
+    subgraph DPB ["Data Plane B — staging"]
+        GWB["Gateway\nRust"]
+        A3["Agent — GPU03\nRust"]
+        GWB --> A3
+    end
+
+    Registry -- "join token (dp_…) + HTTPS" --> GWA
+    Registry -- "config snapshot (30s push)" --> GWA
+    Registry -- "join token (dp_…) + HTTPS" --> GWB
+    Registry -- "config snapshot (30s push)" --> GWB
+
+    Client1["Client\nOpenAI SDK"] -- "inference traffic\n(never touches CP)" --> GWA
+    Client2["Client\nOpenAI SDK"] -- "inference traffic\n(never touches CP)" --> GWB
 ```
+
+User inference traffic flows directly to the Data Plane's gateway, never reaching the Control Plane. The CP pushes configuration snapshots every 30 seconds so the DP can operate autonomously if the CP is temporarily unreachable.
 
 | Component | Language | Path | Description |
 |---|---|---|---|
@@ -97,6 +115,52 @@ The data plane stays on the trusted LAN subnet between fleet nodes. When a model
 
 !!! warning "Trusted LAN assumption"
     Purser assumes a **trusted LAN**. The Agent's inference engine worker is not sandboxed. Never expose agent ports or the inference engine directly to the public internet.
+
+---
+
+## Data Plane
+
+A **Data Plane** is a named inference cluster — a logical grouping of one API
+Gateway and one or more Agent nodes that serve end-user inference requests
+together. Each Data Plane registers with the Control Plane using a join token,
+receives its own configuration snapshot every 30 seconds, and can continue
+operating autonomously if the Control Plane is temporarily unreachable.
+
+### Status lifecycle
+
+| Status | Meaning |
+|---|---|
+| `registering` | The Data Plane has presented its join token; the Control Plane is issuing its mTLS certificate. |
+| `active` | At least one agent heartbeat received within the configured node-timeout window. Normal operating state. |
+| `degraded` | One or more agents have missed heartbeats but the Data Plane still has capacity. Alerts are raised; deployments continue. |
+| `offline` | All agents have missed heartbeats. Inference is unavailable; the Reconciler queues a `dataplane_down` event. |
+
+### Join token registration flow
+
+1. Operator calls `POST /api/v1/dataplanes` to create a Data Plane record and
+   receive a join token (`dp_…`).
+2. The Gateway and Agent containers start with `PURSER_JOIN_TOKEN=dp_…` and
+   `PURSER_CONTROL_PLANE_ADDR` set.
+3. Each component calls the `RegistrationService` gRPC `Join` RPC, presenting
+   the join token.
+4. The Control Plane verifies the token, signs an mTLS certificate for the
+   component, and transitions the Data Plane to `active`.
+
+### Configuration snapshot
+
+The Control Plane pushes a configuration snapshot to each registered Data Plane
+every 30 seconds via `GET /api/v1/platform/dataplanes/{id}/config`. The snapshot
+contains:
+
+| Bundle | Contents |
+|---|---|
+| `routing_table` | Model-to-agent routing assignments for active deployments |
+| `auth_bundle` | API key hashes and per-tenant quota limits |
+| `policy_bundle` | Rate-limit rules and traffic-shaping policy |
+
+The Gateway and Agents cache the latest snapshot locally. If the Control Plane
+becomes temporarily unreachable, the Data Plane continues serving inference
+using the last-known configuration — typically stale by at most 30 seconds.
 
 ---
 
