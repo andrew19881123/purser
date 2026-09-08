@@ -14,6 +14,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,30 @@ import (
 
 // featureDeploymentApprovals is the license feature entitlement name.
 const featureDeploymentApprovals = "deployment_approvals"
+
+// resolveReviewerKeyHashes converts a list of API key IDs (from QuorumConfig)
+// to the corresponding SHA-256 key hashes stored in votes. Returns nil when
+// keyIDs is empty (meaning "any reviewer counts").
+func (s *Server) resolveReviewerKeyHashes(ctx context.Context, keyIDs []string) []string {
+	if len(keyIDs) == 0 {
+		return nil
+	}
+	keys, err := s.reg.ListAPIKeys(ctx)
+	if err != nil {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(keyIDs))
+	for _, id := range keyIDs {
+		allowed[id] = struct{}{}
+	}
+	var hashes []string
+	for _, k := range keys {
+		if _, ok := allowed[k.ID]; ok {
+			hashes = append(hashes, k.KeyHash)
+		}
+	}
+	return hashes
+}
 
 // handleListApprovals serves GET /api/v1/approvals.
 // Accessible by admin and viewer roles. Requires the deployment_approvals
@@ -62,9 +87,32 @@ func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"approvals": approvals})
 }
 
+// quorumStatusInfo is the quorum progress embedded in the GET approval response.
+type quorumStatusInfo struct {
+	Required  int             `json:"required"`
+	Received  int             `json:"received"`
+	Remaining int             `json:"remaining"`
+	Approvers []approverEntry `json:"approvers,omitempty"`
+}
+
+// approverEntry is one reviewer's vote record inside quorumStatusInfo.
+type approverEntry struct {
+	Actor      string    `json:"actor"`
+	ApprovedAt time.Time `json:"approved_at"`
+}
+
+// approvalWithQuorumResp is the response shape for GET /api/v1/approvals/{id}
+// when quorum information is available.
+type approvalWithQuorumResp struct {
+	*registry.DeploymentApproval
+	Quorum *quorumStatusInfo `json:"quorum,omitempty"`
+}
+
 // handleGetApproval serves GET /api/v1/approvals/{deploymentId}.
 // Accessible by admin and viewer roles. Requires the deployment_approvals
 // enterprise feature — returns 402 when not entitled.
+// When the approval exists the response includes a "quorum" block showing
+// received/required vote counts and the list of approvers so far.
 func (s *Server) handleGetApproval(w http.ResponseWriter, r *http.Request) {
 	if !s.licenseAllows(featureDeploymentApprovals) {
 		s.writeLicenseRequired(w, featureDeploymentApprovals)
@@ -81,7 +129,67 @@ func (s *Server) handleGetApproval(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "get_approval_failed", err.Error())
 		return
 	}
-	s.writeJSON(w, http.StatusOK, approval)
+
+	// Build quorum status: fetch all votes, apply reviewer_keys filter if set.
+	votes, err := s.reg.GetApprovalVotes(r.Context(), approval.ID)
+	if err != nil {
+		// Non-fatal: return the approval without quorum info rather than 500.
+		s.writeJSON(w, http.StatusOK, approval)
+		return
+	}
+
+	// Determine required count from QuorumConfig (falls back to per-record value).
+	required := approval.RequiredApprovals
+	if required <= 0 {
+		required = 1
+	}
+	var reviewerKeySet map[string]struct{}
+	if s.quorum != nil {
+		if s.quorum.MinApprovers > 0 {
+			required = s.quorum.MinApprovers
+		}
+		if len(s.quorum.ReviewerKeys) > 0 {
+			// Resolve key IDs to hashes for filtering votes.
+			hashes := s.resolveReviewerKeyHashes(r.Context(), s.quorum.ReviewerKeys)
+			reviewerKeySet = make(map[string]struct{}, len(hashes))
+			for _, h := range hashes {
+				reviewerKeySet[h] = struct{}{}
+			}
+		}
+	}
+
+	var approvers []approverEntry
+	received := 0
+	for _, v := range votes {
+		if v.Vote != "approved" {
+			continue
+		}
+		if reviewerKeySet != nil {
+			if _, ok := reviewerKeySet[v.Reviewer]; !ok {
+				continue
+			}
+		}
+		received++
+		approvers = append(approvers, approverEntry{
+			Actor:      v.Reviewer,
+			ApprovedAt: v.VotedAt,
+		})
+	}
+	remaining := required - received
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	resp := &approvalWithQuorumResp{
+		DeploymentApproval: approval,
+		Quorum: &quorumStatusInfo{
+			Required:  required,
+			Received:  received,
+			Remaining: remaining,
+			Approvers: approvers,
+		},
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 // approvalActionRequest is the body of POST .../approve and POST .../reject.
@@ -167,8 +275,15 @@ func (s *Server) handleApproveDeployment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check whether quorum has been reached.
-	reached, approved, required, err := s.reg.CheckApprovalQuorum(r.Context(), depID)
+	// Check whether quorum has been reached, applying QuorumConfig if set.
+	// ReviewerKeys are resolved from API key IDs to hashes for storage-layer comparison.
+	var reviewerKeyHashes []string
+	minApprovers := 0
+	if s.quorum != nil {
+		reviewerKeyHashes = s.resolveReviewerKeyHashes(r.Context(), s.quorum.ReviewerKeys)
+		minApprovers = s.quorum.MinApprovers
+	}
+	reached, approved, required, err := s.reg.CheckApprovalQuorumFiltered(r.Context(), depID, reviewerKeyHashes, minApprovers)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "quorum_check_failed", err.Error())
 		return

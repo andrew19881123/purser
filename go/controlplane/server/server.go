@@ -34,6 +34,7 @@ import (
 
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
+	cpconfig "github.com/purser/purser/go/controlplane/config"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/ldapauth"
 	"github.com/purser/purser/go/controlplane/planning"
@@ -369,6 +370,11 @@ type Config struct {
 	// Use in tests to inject a stub that does not require a real LDAP server;
 	// when set LDAPConfig is ignored.
 	LDAPConnector LDAPAuthenticator
+
+	// Quorum, when set, enables multi-person approval requirements for deployment
+	// gates (AI Act Art.14 dual-control). Loaded from purser.yaml quorum block at
+	// startup. Nil means single-approver mode (backward compatible default).
+	Quorum *cpconfig.QuorumConfig
 }
 
 // rateLimiterEntry tracks per-key sliding-window rate-limit state.
@@ -407,6 +413,10 @@ type Server struct {
 	raftNode          RaftNode                 // nil = standalone mode
 
 	ldapConnector LDAPAuthenticator // nil if LDAP not configured
+
+	// quorum holds the cluster-wide approval quorum configuration (from
+	// purser.yaml). Nil when no quorum config is set (single-approver mode).
+	quorum *cpconfig.QuorumConfig
 
 	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
 	tlsCert    string
@@ -532,6 +542,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		ipLimitersAccess:  make(map[string]time.Time),
 		keyLimiters:       make(map[string]*rate.Limiter),
 		keyLimitersAccess: make(map[string]time.Time),
+		quorum:            cfg.Quorum,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built

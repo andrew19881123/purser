@@ -32,7 +32,20 @@ type ClusterConfig struct {
 	Gateway     GatewaySpec    `yaml:"gateway"`
 	Orgs        []OrgSpec      `yaml:"orgs,omitempty"`
 	NodePools   []NodePoolSpec `yaml:"node_pools,omitempty"`
-	LDAP        *LDAPConfig    `yaml:"ldap,omitempty"`
+	LDAP   *LDAPConfig   `yaml:"ldap,omitempty"`
+	// Quorum, when set, enables multi-person approval requirements for
+	// deployment gates (AI Act Art.14 dual-control). Nil means single-approver
+	// mode (backward compatible with existing deployments).
+	Quorum *QuorumConfig `yaml:"quorum,omitempty"`
+}
+
+// QuorumConfig defines the multi-person approval requirements for deployment
+// gates (AI Act Art.14 dual-control). All fields are optional; defaults
+// preserve single-approver backward compatibility.
+type QuorumConfig struct {
+	MinApprovers    int      `yaml:"min_approvers"`
+	ReviewerKeys    []string `yaml:"reviewer_keys"`
+	RequireDistinct bool     `yaml:"require_distinct"`
 }
 
 // Metadata holds identification and labelling fields for the cluster config.

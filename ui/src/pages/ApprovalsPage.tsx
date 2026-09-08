@@ -62,7 +62,8 @@ function StatusBadge({ status }: { status: DeploymentApproval['status'] }) {
 interface ActionDialogProps {
   approval: DeploymentApproval;
   action: 'approve' | 'reject';
-  onClose: () => void;
+  /** Called when the dialog closes; `voted` is true when an approve succeeded. */
+  onClose: (voted: boolean) => void;
 }
 
 function ActionDialog({ approval, action, onClose }: ActionDialogProps) {
@@ -76,7 +77,9 @@ function ActionDialog({ approval, action, onClose }: ActionDialogProps) {
 
   function handleSubmit() {
     const fn = action === 'approve' ? approveMut.mutateAsync : rejectMut.mutateAsync;
-    void fn({ deploymentId: approval.deploymentId, notes }).then(onClose);
+    void fn({ deploymentId: approval.deploymentId, notes }).then(() =>
+      onClose(action === 'approve'),
+    );
   }
 
   return (
@@ -86,7 +89,7 @@ function ActionDialog({ approval, action, onClose }: ActionDialogProps) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 100,
       }}
-      onClick={onClose}
+      onClick={() => onClose(false)}
     >
       <div
         style={{
@@ -113,7 +116,7 @@ function ActionDialog({ approval, action, onClose }: ActionDialogProps) {
           }}
         />
         <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', justifyContent: 'flex-end' }}>
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          <Button variant="secondary" size="sm" onClick={() => onClose(false)}>
             Cancel
           </Button>
           <Button
@@ -136,18 +139,80 @@ function ActionDialog({ approval, action, onClose }: ActionDialogProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Quorum progress bar
+// ---------------------------------------------------------------------------
+
+interface QuorumProgressProps {
+  received: number;
+  required: number;
+}
+
+/** Compact quorum progress bar: "1 of 2 approvals received". */
+function QuorumProgress({ received, required }: QuorumProgressProps) {
+  const t = useT();
+  const pct = required > 0 ? Math.min(100, Math.round((received / required) * 100)) : 100;
+  const label = t('approvals.quorum.progress', {
+    received: String(received),
+    required: String(required),
+  });
+  return (
+    <div style={{ marginTop: '0.35rem' }}>
+      <div style={{ fontSize: '0.78em', color: 'var(--color-text-muted)', marginBottom: '0.2rem' }}>
+        {label}
+      </div>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={required}
+        aria-valuenow={received}
+        aria-label={label}
+        style={{
+          height: 6, borderRadius: 3,
+          background: 'var(--color-border)',
+          overflow: 'hidden',
+          width: '100%',
+          maxWidth: 120,
+        }}
+      >
+        <div style={{
+          height: '100%', width: `${pct}%`,
+          background: pct >= 100 ? 'var(--color-success)' : 'var(--color-primary)',
+          transition: 'width 0.2s ease',
+        }} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Table row
 // ---------------------------------------------------------------------------
 
 function ApprovalRow({ approval }: { approval: DeploymentApproval }) {
   const t = useT();
   const [dialog, setDialog] = useState<'approve' | 'reject' | null>(null);
+  // Track whether the current session has voted on this approval (local guard).
+  const [hasVoted, setHasVoted] = useState(false);
 
   const ts = new Date(approval.requestedAt).toLocaleString(undefined, {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit',
   });
   const shortHash = (h: string) => (h.length > 12 ? h.slice(0, 12) + '…' : h);
+
+  // Derive quorum info: prefer the quorum field from a detail fetch; fall back
+  // to required_approvals from the list response with unknown received count.
+  const quorum = approval.quorum;
+  const showQuorum = approval.status === 'pending' && quorum != null;
+
+  // Disable the Approve button when the current session has already voted, or
+  // when the quorum data shows duplicate approval would fail (already at max).
+  const approveDisabled = hasVoted || (quorum != null && quorum.remaining === 0);
+
+  function handleClose(voted: boolean) {
+    if (voted) setHasVoted(true);
+    setDialog(null);
+  }
 
   return (
     <>
@@ -159,7 +224,12 @@ function ApprovalRow({ approval }: { approval: DeploymentApproval }) {
           <code className="inline-code" style={{ fontSize: '0.78em' }}>{shortHash(approval.requester)}</code>
         </td>
         <td style={{ fontSize: '0.85em', whiteSpace: 'nowrap' }}>{ts}</td>
-        <td><StatusBadge status={approval.status} /></td>
+        <td>
+          <StatusBadge status={approval.status} />
+          {showQuorum && (
+            <QuorumProgress received={quorum.received} required={quorum.required} />
+          )}
+        </td>
         <td>
           {approval.reviewer && (
             <code className="inline-code" style={{ fontSize: '0.78em' }}>{shortHash(approval.reviewer)}</code>
@@ -168,13 +238,24 @@ function ApprovalRow({ approval }: { approval: DeploymentApproval }) {
         <td style={{ fontSize: '0.8em', color: 'var(--color-text-muted)' }}>{approval.notes ?? ''}</td>
         <td>
           {approval.status === 'pending' && (
-            <div style={{ display: 'flex', gap: '0.4rem' }}>
-              <Button variant="primary" size="sm" onClick={() => setDialog('approve')}>
+            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setDialog('approve')}
+                disabled={approveDisabled}
+                title={hasVoted ? t('approvals.quorum.alreadyVoted') : undefined}
+              >
                 {t('approvals.action.approve')}
               </Button>
               <Button variant="danger" size="sm" onClick={() => setDialog('reject')}>
                 {t('approvals.action.reject')}
               </Button>
+              {hasVoted && (
+                <span style={{ fontSize: '0.78em', color: 'var(--color-text-muted)' }}>
+                  {t('approvals.quorum.alreadyVoted')}
+                </span>
+              )}
             </div>
           )}
         </td>
@@ -183,7 +264,7 @@ function ApprovalRow({ approval }: { approval: DeploymentApproval }) {
         <ActionDialog
           approval={approval}
           action={dialog}
-          onClose={() => setDialog(null)}
+          onClose={handleClose}
         />
       )}
     </>

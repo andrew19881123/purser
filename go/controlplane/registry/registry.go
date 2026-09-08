@@ -143,6 +143,12 @@ type Registry interface {
 	// CheckApprovalQuorum reports whether the quorum for deploymentID has been
 	// reached: (reached, approvedCount, requiredCount, error).
 	CheckApprovalQuorum(ctx context.Context, deploymentID string) (bool, int, int, error)
+	// CheckApprovalQuorumFiltered is like CheckApprovalQuorum but allows the
+	// caller to restrict which votes count (reviewerKeys) and override the
+	// minimum required approvals (minApprovers). Pass nil/empty reviewerKeys to
+	// count votes from any reviewer. Pass 0 for minApprovers to use the
+	// per-record required_approvals value.
+	CheckApprovalQuorumFiltered(ctx context.Context, deploymentID string, reviewerKeys []string, minApprovers int) (bool, int, int, error)
 
 	// --- Usage log ---------------------------------------------------------
 	// RecordUsage records one inference request's token usage.

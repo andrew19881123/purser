@@ -367,6 +367,9 @@ export const en = {
   'approvals.confirm.reject': 'Reject deployment of {model}?',
   'approvals.notes.label': 'Notes (optional)',
   'approvals.refresh': 'Refresh',
+  'approvals.quorum.progress': '{received} of {required} approvals received',
+  'approvals.quorum.approvers': 'Approvers so far',
+  'approvals.quorum.alreadyVoted': 'You have already voted on this approval.',
   'error.approvals': 'Could not load approvals.',
 
   // RBAC role labels
