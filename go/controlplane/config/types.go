@@ -33,15 +33,12 @@ type ClusterConfig struct {
 	Orgs        []OrgSpec      `yaml:"orgs,omitempty"`
 	NodePools   []NodePoolSpec `yaml:"node_pools,omitempty"`
 	LDAP   *LDAPConfig   `yaml:"ldap,omitempty"`
-	// Quorum, when set, enables multi-person approval requirements for
-	// deployment gates (AI Act Art.14 dual-control). Nil means single-approver
-	// mode (backward compatible with existing deployments).
 	Quorum *QuorumConfig `yaml:"quorum,omitempty"`
+	// SLO configures per-model TTFT/TBT SLO contracts.
+	SLO    *SLOConfig    `yaml:"slo,omitempty"`
 }
 
-// QuorumConfig defines the multi-person approval requirements for deployment
-// gates (AI Act Art.14 dual-control). All fields are optional; defaults
-// preserve single-approver backward compatibility.
+// QuorumConfig defines multi-person approval requirements for AI Act Art.14.
 type QuorumConfig struct {
 	MinApprovers    int      `yaml:"min_approvers"`
 	ReviewerKeys    []string `yaml:"reviewer_keys"`
@@ -188,4 +185,16 @@ type LDAPConfig struct {
 	// "" (the default) means deny access when no group matches.
 	// Valid values: "admin", "viewer", "inference", or "" (deny).
 	DefaultRole string `yaml:"default_role"`
+}
+
+// SLOConfig holds per-model SLO parameters. "*" key = global default.
+type SLOConfig struct {
+	Models map[string]ModelSLO `yaml:"models"`
+}
+
+// ModelSLO defines the SLO contract for one model.
+type ModelSLO struct {
+	TTFTMs           int     `yaml:"ttft_ms"`
+	TBTMs            int     `yaml:"tbt_ms"`
+	TargetCompliance float64 `yaml:"target_compliance"`
 }

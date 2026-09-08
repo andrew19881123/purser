@@ -535,3 +535,18 @@ CREATE TABLE IF NOT EXISTS platform_teams (
     UNIQUE (org_id, name)
 );
 CREATE INDEX IF NOT EXISTS idx_platform_teams_org ON platform_teams(org_id);
+
+-- =============================================================================
+-- SLO CONTRACTS (v0.6): per-model TTFT / TBT SLO parameters
+-- =============================================================================
+
+-- slo_configs: stores per-model SLO thresholds sourced from purser.yaml or the
+-- API. The special model_id "*" holds the global default that applies to any
+-- model not explicitly listed. Rows are upserted on every config apply.
+CREATE TABLE IF NOT EXISTS slo_configs (
+    model_id          TEXT    PRIMARY KEY,   -- "*" = global default
+    ttft_ms           INTEGER NOT NULL DEFAULT 2000,
+    tbt_ms            INTEGER NOT NULL DEFAULT 500,
+    target_compliance REAL    NOT NULL DEFAULT 0.95,
+    updated_at        TEXT    NOT NULL
+);

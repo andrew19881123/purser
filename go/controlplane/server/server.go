@@ -1508,6 +1508,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/billing", s.handleOrgBillingReport)
 	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/billing", s.handleTeamBillingReport)
 
+	// SLO compliance (v0.6) — viewer-accessible, no enterprise gate.
+	// Returns per-model TTFT compliance rates against configured SLO contracts.
+	s.mux.HandleFunc("GET /api/v1/slo/compliance", s.handleSLOCompliance)
+
 	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
 	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)

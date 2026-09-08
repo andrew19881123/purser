@@ -99,6 +99,7 @@ type ApplyResult struct {
 	QuotasUpserted   int `json:"quotas_upserted"`
 	OrgsAdded        int `json:"orgs_added"`
 	NodePoolsAdded   int `json:"node_pools_added"`
+	SLOsUpserted     int `json:"slos_upserted"`
 }
 
 // ApplyClusterConfig reconciles the live cluster state towards cfg.
@@ -265,6 +266,37 @@ func (s *Server) ApplyClusterConfig(ctx context.Context, cfg *config.ClusterConf
 		// existing pools: skip update (idempotent apply)
 	}
 
+	// --- SLO Configs ---
+	// Upsert per-model SLO thresholds from the purser.yaml slo block. The
+	// special model_id "*" stores the global default. All entries are idempotent:
+	// re-applying the same config is a no-op from the operator's perspective.
+	if cfg.SLO != nil {
+		for modelID, slo := range cfg.SLO.Models {
+			row := &registry.SLOConfigRow{
+				ModelID:          modelID,
+				TTFTMs:           slo.TTFTMs,
+				TBTMs:            slo.TBTMs,
+				TargetCompliance: slo.TargetCompliance,
+			}
+			// Apply defaults for zero-value fields so callers can use partial configs.
+			if row.TTFTMs <= 0 {
+				row.TTFTMs = sloDefaultTTFTMs
+			}
+			if row.TBTMs <= 0 {
+				row.TBTMs = sloDefaultTBTMs
+			}
+			if row.TargetCompliance <= 0 {
+				row.TargetCompliance = sloDefaultTargetCompliance
+			}
+			if err := s.reg.UpsertSLOConfig(ctx, row); err != nil {
+				s.log.Warn("config apply: upsert SLO config failed",
+					"model", modelID, "err", err)
+				continue
+			}
+			result.SLOsUpserted++
+		}
+	}
+
 	return result, nil
 }
 
@@ -301,6 +333,7 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		"quotas_upserted", result.QuotasUpserted,
 		"orgs_added", result.OrgsAdded,
 		"node_pools_added", result.NodePoolsAdded,
+		"slos_upserted", result.SLOsUpserted,
 		slog.String("cluster", cfg.Cluster.ID),
 	)
 

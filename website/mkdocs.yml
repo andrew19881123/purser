@@ -98,6 +98,7 @@ nav:
     - Usage Accounting (Chargeback): enterprise/usage-accounting.md
     - Chargeback Reports (Multi-Tenant): enterprise/chargeback.md
     - Billing Forecast (FinOps): enterprise/finops.md
+    - SLO Contracts: enterprise/slo.md
     - Policy-as-Code (OPA/Rego): enterprise/policy-as-code.md
     - HA Control Plane (Raft): enterprise/ha-control-plane.md
   - Integrations:

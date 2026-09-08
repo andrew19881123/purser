@@ -767,6 +767,34 @@ type DataPlaneConfigSnapshot struct {
 	GeneratedAt time.Time `json:"generated_at"`
 }
 
+// =============================================================================
+// SLO Contract types (v0.6)
+// =============================================================================
+
+// SLOConfigRow is one row in the slo_configs table. The special ModelID "*"
+// stores the global default that applies to any model not listed explicitly.
+type SLOConfigRow struct {
+	ModelID          string    `json:"model_id"`
+	TTFTMs           int       `json:"ttft_ms"`
+	TBTMs            int       `json:"tbt_ms"`
+	TargetCompliance float64   `json:"target_compliance"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// ModelSLOStat holds the raw TTFT compliance data for one model over a query
+// window. It is the per-model row returned by GetSLOComplianceByModel.
+type ModelSLOStat struct {
+	// ModelID is the model this stat applies to.
+	ModelID string `json:"model_id"`
+	// RequestCount is the total number of inference requests in the window
+	// (includes requests with latency_ms == 0, i.e. unrecorded latency).
+	RequestCount int64 `json:"request_count"`
+	// CompliantCount is the number of requests with 0 < latency_ms < thresholdMs.
+	CompliantCount int64 `json:"compliant_count"`
+	// PeriodStart is the start of the query window (UTC).
+	PeriodStart time.Time `json:"period_start"`
+}
+
 // Platform-level permission strings (all capabilities).
 // Fine-grained RBAC: callers check Has(perm) against EffectivePermissions.
 const (
