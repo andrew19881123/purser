@@ -100,7 +100,7 @@ open http://localhost:3000
 No GPU required — the demo uses the built-in mock engine.
 
 ```bash
-curl http://localhost:8081/v1/models -H 'Authorization: Bearer demo-key-12345'
+curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 ```
 
 For production Kubernetes deployments see the [Quickstart guide](getting-started/quickstart.md).
