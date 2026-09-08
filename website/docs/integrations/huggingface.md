@@ -137,7 +137,7 @@ curl -X POST https://purser.example.com/api/v1/models/Llama-3.1-8B-Instruct/plan
 curl -X POST https://purser.example.com/api/v1/models/Llama-3.1-8B-Instruct/deploy
 ```
 
-See the [Deployment guide](../deployment.md) for details on plans and
+See the [Quickstart guide](../getting-started/quickstart.md) for details on plans and
 deployment lifecycle.
 
 ## Error reference

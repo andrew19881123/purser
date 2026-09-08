@@ -13,7 +13,7 @@ The gateway load-balances requests across all healthy replicas, increasing throu
 | Planned failover requires a spare pool | Every replica is already live |
 
 Replicas are the primary horizontal scaling primitive in Purser.
-They complement [failover plans](../architecture/failover.md), which kick in when a *node* dies within a replica.
+They complement the reconciler's self-healing loop, which kicks in when a *node* dies within a replica (see [Reconciler](../operations/reconciler.md)).
 
 ## How it works
 
@@ -143,6 +143,6 @@ rs, err := plan.PlanReplicaSet(ctx, nodes, links, model, plan.Constraints{
 
 ## See also
 
-- [Failover plans](../architecture/failover.md) — per-node failover within a single replica
+- [Architecture](../getting-started/architecture.md) — two-plane design and request flow
 - [Fleet configuration](../configuration/purser-yaml.md) — full `purser.yaml` reference
-- [Planner internals](../architecture/planner.md) — phases A–F design overview
+- [Benchmarking the Planner](../development/benchmarking.md) — planner phases A–F and performance

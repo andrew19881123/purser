@@ -61,7 +61,7 @@ with an empty database or delete the role row and let seeding re-create it.
 When `PURSER_CONFIG` is set to a `purser.yaml` path, the control plane applies
 the declared cluster config at startup and then starts a background watcher that
 re-applies it every `PURSER_CONFIG_INTERVAL` seconds (default 30 s). The watcher
-is described in more detail in the [GitOps configuration guide](../configuration/gitops.md).
+is described in more detail in the [purser.yaml reference](../configuration/purser-yaml.md).
 
 ---
 
