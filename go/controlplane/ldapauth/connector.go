@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,10 +18,11 @@ import (
 
 // UserInfo is the result of a successful LDAP authentication.
 type UserInfo struct {
-	DN     string   // Full distinguished name
-	Email  string   // Mail attribute
-	Groups []string // Group names matching GroupAttribute
-	Role   string   // Resolved Purser role from GroupMappings
+	DN       string   // Full distinguished name, e.g. "CN=alice,OU=users,DC=example,DC=com"
+	Email    string   // Mail or userPrincipalName attribute
+	Groups   []string // Group attribute values (e.g. CN names)
+	GroupDNs []string // Full group distinguished names
+	Role     string   // Resolved Purser role from GroupMappings / DNGroupMappings
 }
 
 // ErrInvalidCredentials is returned when the username/password is incorrect.
@@ -29,12 +31,20 @@ var ErrInvalidCredentials = errors.New("ldap: invalid credentials")
 // ErrLDAPUnavailable is returned when the LDAP server cannot be reached.
 var ErrLDAPUnavailable = errors.New("ldap: server unreachable")
 
-// ErrNoGroupMapping is returned when no group matches a known Purser role.
+// ErrNoGroupMapping is returned when group enforcement is active (at least one
+// mapping is configured) but none of the user's groups match any mapping and no
+// DefaultRole is set.
 var ErrNoGroupMapping = errors.New("ldap: no matching group mapping")
 
 type cacheEntry struct {
 	info      UserInfo
 	expiresAt time.Time
+}
+
+// ldapGroupEntry holds a group's distinguished name and its name attribute value.
+type ldapGroupEntry struct {
+	DN   string
+	Name string
 }
 
 // Connector authenticates users via LDAP and resolves their Purser role.
@@ -60,6 +70,9 @@ func New(cfg *Config) *Connector {
 // Returns cached results within CacheTTL.
 // Returns ErrLDAPUnavailable if the server cannot be reached (callers may
 // fall back to existing sessions but should not issue new credentials).
+// Returns ErrNoGroupMapping when group enforcement is active (at least one
+// mapping is configured) and none of the user's groups match any mapping and
+// DefaultRole is not set.
 func (c *Connector) Authenticate(ctx context.Context, username, password string) (*UserInfo, error) {
 	// Cache check
 	if info := c.fromCache(username, password); info != nil {
@@ -117,13 +130,42 @@ func (c *Connector) Authenticate(ctx context.Context, username, password string)
 		return nil, err
 	}
 
-	role := c.resolveRole(groups)
-	info := &UserInfo{DN: userDN, Email: email, Groups: groups, Role: role}
+	// Resolve role
+	role, matched := c.resolveRole(groups)
+	if !matched {
+		// Group enforcement is active but no group matched and no default role set.
+		return nil, ErrNoGroupMapping
+	}
+
+	// Build UserInfo
+	names := make([]string, 0, len(groups))
+	dns := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if g.Name != "" {
+			names = append(names, g.Name)
+		}
+		if g.DN != "" {
+			dns = append(dns, g.DN)
+		}
+	}
+
+	info := &UserInfo{DN: userDN, Email: email, Groups: names, GroupDNs: dns, Role: role}
 	c.putCache(username, password, *info)
 	return info, nil
 }
 
-func (c *Connector) searchGroups(conn *ldap.Conn, userDN string) ([]string, error) {
+// CheckCache returns a cached UserInfo for the given credentials without
+// triggering a live LDAP lookup. Returns nil on cache miss or when caching is
+// disabled (CacheTTL <= 0). Used by the POST /api/v1/ldap/test endpoint to
+// populate the cache_hit field.
+func (c *Connector) CheckCache(username, password string) *UserInfo {
+	return c.fromCache(username, password)
+}
+
+// searchGroups searches for all groups the given userDN belongs to.
+// When cfg.NestedGroups is true it also searches for parent groups of the
+// directly-found groups (up to 5 levels of recursion).
+func (c *Connector) searchGroups(conn *ldap.Conn, userDN string) ([]ldapGroupEntry, error) {
 	if c.cfg.GroupBaseDN == "" {
 		return nil, nil
 	}
@@ -137,27 +179,127 @@ func (c *Connector) searchGroups(conn *ldap.Conn, userDN string) ([]string, erro
 	if err != nil {
 		return nil, fmt.Errorf("%w: group search: %v", ErrLDAPUnavailable, err)
 	}
-	groups := make([]string, 0, len(result.Entries))
+
+	seen := make(map[string]bool)
+	groups := make([]ldapGroupEntry, 0, len(result.Entries))
+	directDNs := make([]string, 0, len(result.Entries))
 	for _, e := range result.Entries {
-		if name := e.GetAttributeValue(c.cfg.GroupAttribute); name != "" {
-			groups = append(groups, name)
+		if seen[e.DN] {
+			continue
 		}
+		seen[e.DN] = true
+		groups = append(groups, ldapGroupEntry{
+			DN:   e.DN,
+			Name: e.GetAttributeValue(c.cfg.GroupAttribute),
+		})
+		directDNs = append(directDNs, e.DN)
 	}
+
+	// Recursive nested-group lookup for non-AD servers.
+	// (AD already resolves transitively via the LDAP_MATCHING_RULE_IN_CHAIN
+	// OID in the default GroupFilter; NestedGroups is still safe to enable
+	// for AD but will simply find no additional groups.)
+	if c.cfg.NestedGroups && len(directDNs) > 0 {
+		nested, err := c.searchParentGroups(conn, directDNs, seen, 0)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, nested...)
+	}
+
 	return groups, nil
 }
 
-func (c *Connector) resolveRole(groups []string) string {
-	// Priority: admin > viewer > inference
+// searchParentGroups recursively finds groups that contain any of the given
+// group DNs as members. Recursion stops at depth 5 to prevent runaway queries
+// on deeply-nested directory structures.
+func (c *Connector) searchParentGroups(conn *ldap.Conn, groupDNs []string, seen map[string]bool, depth int) ([]ldapGroupEntry, error) {
+	if depth >= 5 || len(groupDNs) == 0 {
+		return nil, nil
+	}
+	var result []ldapGroupEntry
+	var newDNs []string
+	for _, dn := range groupDNs {
+		filter := fmt.Sprintf("(member=%s)", ldap.EscapeFilter(dn))
+		req := ldap.NewSearchRequest(
+			c.cfg.GroupBaseDN,
+			ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+			filter, []string{c.cfg.GroupAttribute}, nil,
+		)
+		sr, err := conn.Search(req)
+		if err != nil {
+			// Non-fatal: nested search may fail on servers without a member index.
+			// Return partial results rather than failing the whole authentication.
+			return result, nil
+		}
+		for _, e := range sr.Entries {
+			if seen[e.DN] {
+				continue
+			}
+			seen[e.DN] = true
+			result = append(result, ldapGroupEntry{
+				DN:   e.DN,
+				Name: e.GetAttributeValue(c.cfg.GroupAttribute),
+			})
+			newDNs = append(newDNs, e.DN)
+		}
+	}
+	deeper, err := c.searchParentGroups(conn, newDNs, seen, depth+1)
+	if err != nil {
+		return result, nil
+	}
+	return append(result, deeper...), nil
+}
+
+// resolveRole determines the highest-privilege Purser role for the given groups.
+//
+// Priority order: admin (3) > viewer (2) > inference (1).
+//
+// Lookup order:
+//  1. DN-based mappings (DNGroupMappings) — most specific.
+//  2. Name-based mappings (GroupMappings) — legacy / env-var-loaded.
+//
+// Returns (role, true) when a mapping is found, (DefaultRole, true) when no
+// mapping matches but DefaultRole is set, or ("", false) when group enforcement
+// is active and nothing matches.
+//
+// When neither GroupMappings nor DNGroupMappings are configured (both empty),
+// group enforcement is considered inactive and ("", true) is returned — any
+// authenticated user is allowed through without a role.
+func (c *Connector) resolveRole(groups []ldapGroupEntry) (string, bool) {
+	// If no mappings configured, group enforcement is inactive.
+	if len(c.cfg.GroupMappings) == 0 && len(c.cfg.DNGroupMappings) == 0 {
+		return "", true
+	}
+
 	priority := map[string]int{"admin": 3, "viewer": 2, "inference": 1}
 	best := ""
+
 	for _, g := range groups {
-		if role, ok := c.cfg.GroupMappings[g]; ok {
+		// 1. DN-based mappings (full distinguished name match, case-insensitive).
+		for _, dm := range c.cfg.DNGroupMappings {
+			if strings.EqualFold(g.DN, dm.DN) {
+				if priority[dm.Role] > priority[best] {
+					best = dm.Role
+				}
+			}
+		}
+		// 2. Name-based mappings (group attribute value, case-sensitive).
+		if role, ok := c.cfg.GroupMappings[g.Name]; ok {
 			if priority[role] > priority[best] {
 				best = role
 			}
 		}
 	}
-	return best
+
+	if best != "" {
+		return best, true
+	}
+	// No group matched any mapping.
+	if c.cfg.DefaultRole != "" {
+		return c.cfg.DefaultRole, true
+	}
+	return "", false
 }
 
 func (c *Connector) dial(_ context.Context) (*ldap.Conn, error) {

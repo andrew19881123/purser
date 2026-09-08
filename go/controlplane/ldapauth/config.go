@@ -44,9 +44,34 @@ type Config struct {
 	// "cn" works for most LDAP servers; "sAMAccountName" for AD.
 	GroupAttribute string
 
-	// GroupMappings maps LDAP group names to Purser roles.
-	// Example: {"Purser-Admins": "admin", "Purser-Viewers": "viewer"}
+	// GroupMappings maps LDAP group names (the GroupAttribute value, e.g. CN)
+	// to Purser roles. Example: {"Purser-Admins": "admin", "Purser-Viewers": "viewer"}.
+	// Loaded from PURSER_LDAP_GROUP_MAPPINGS; can be supplemented by
+	// DNGroupMappings from purser.yaml.
 	GroupMappings map[string]string
+
+	// DNGroupMappings maps full LDAP group DNs to Purser roles.
+	// More specific than GroupMappings: the full distinguished name is used for
+	// matching so groups with identical CNs in different OUs are unambiguous.
+	// Populated from purser.yaml ldap.group_mappings.
+	DNGroupMappings []DNGroupMapping
+
+	// DefaultRole is the Purser role assigned when the user authenticates
+	// successfully but none of the GroupMappings / DNGroupMappings entries
+	// match any of their groups.
+	// "" (the default) causes Authenticate to return ErrNoGroupMapping when
+	// group enforcement is active (i.e. at least one mapping is configured)
+	// and no group matches.
+	DefaultRole string
+
+	// NestedGroups enables recursive parent-group lookup for non-AD servers.
+	// When true, after the initial group search the connector also searches for
+	// groups that contain each found group as a member, recursing up to 5 levels.
+	// For Active Directory the default GroupFilter already uses the
+	// LDAP_MATCHING_RULE_IN_CHAIN OID (:1.2.840.113556.1.4.1941:) which
+	// handles recursion server-side; enabling NestedGroups on AD is harmless
+	// but redundant.
+	NestedGroups bool
 
 	// CacheTTL is how long successful authentications are cached.
 	// 0 disables caching (not recommended for production).
@@ -62,6 +87,12 @@ type Config struct {
 	// InsecureSkipVerify disables TLS certificate verification.
 	// NEVER use in production.
 	InsecureSkipVerify bool
+}
+
+// DNGroupMapping maps a single LDAP/AD group distinguished name to a Purser role.
+type DNGroupMapping struct {
+	DN   string // Full distinguished name, e.g. "CN=purser-admins,OU=groups,DC=acme,DC=com"
+	Role string // Purser role: "admin", "viewer", or "inference"
 }
 
 // FromEnv loads LDAP configuration from environment variables.

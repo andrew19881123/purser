@@ -1399,6 +1399,8 @@ func (s *Server) routes() {
 	// /auth/ldap-login is in rbacPublicPaths and exempted by oidcMiddleware.
 	s.mux.HandleFunc("GET /auth/ldap-login", s.handleLDAPLoginForm)
 	s.mux.HandleFunc("POST /auth/ldap-login", s.handleLDAPLogin)
+	// LDAP diagnostic endpoint — admin-only (POST → viewer/inference blocked by RBAC).
+	s.mux.HandleFunc("POST /api/v1/ldap/test", s.handleLDAPTest)
 
 	// Service account management (admin only).
 	s.mux.HandleFunc("POST /api/v1/service-accounts", s.handleCreateServiceAccount)

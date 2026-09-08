@@ -6,6 +6,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -139,5 +140,228 @@ func TestLDAPLoginForm_NotConfigured_RedirectsToSSO(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "/auth/login" {
 		t.Errorf("Location = %q, want /auth/login", loc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/ldap/test tests (group mapping, cache, and endpoint behaviour).
+// All tests use stub connectors so no real LDAP server is required.
+// ---------------------------------------------------------------------------
+
+// stubLDAPWithCache is a test double that implements both LDAPAuthenticator and
+// LDAPCacheChecker. Use cachedInfo to simulate a cache hit (non-nil = hit).
+type stubLDAPWithCache struct {
+	info       *ldapauth.UserInfo
+	err        error
+	cachedInfo *ldapauth.UserInfo // non-nil → CheckCache returns a hit
+}
+
+func (s *stubLDAPWithCache) Authenticate(_ context.Context, _, _ string) (*ldapauth.UserInfo, error) {
+	return s.info, s.err
+}
+
+func (s *stubLDAPWithCache) CheckCache(_, _ string) *ldapauth.UserInfo {
+	return s.cachedInfo
+}
+
+// ldapTestRequest sends POST /api/v1/ldap/test with the given username/password
+// and returns the recorder.
+func ldapTestRequest(t *testing.T, srv *server.Server, username, password string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := strings.NewReader(`{"username":"` + username + `","password":"` + password + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ldap/test", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// decodeLDAPTestResponse decodes the JSON body of a /ldap/test response into a
+// map[string]any for easy field inspection.
+func decodeLDAPTestResponse(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	return resp
+}
+
+// TestLDAPGroupMapping_AdminGroup verifies that when Authenticate returns a
+// UserInfo with Role "admin", the test endpoint reports mapped_role "admin".
+func TestLDAPGroupMapping_AdminGroup(t *testing.T) {
+	stub := &stubLDAPWithCache{
+		info: &ldapauth.UserInfo{
+			DN:       "CN=alice,OU=users,DC=example,DC=com",
+			Email:    "alice@example.com",
+			Groups:   []string{"purser-admins"},
+			GroupDNs: []string{"CN=purser-admins,OU=groups,DC=example,DC=com"},
+			Role:     "admin",
+		},
+	}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "alice", "secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+	if resp["mapped_role"] != "admin" {
+		t.Errorf("mapped_role = %v, want admin", resp["mapped_role"])
+	}
+	if resp["authenticated"] != true {
+		t.Errorf("authenticated = %v, want true", resp["authenticated"])
+	}
+}
+
+// TestLDAPGroupMapping_NoMatch_DefaultRole verifies that when no group matches
+// but a DefaultRole is configured, the connector assigns the default role and
+// the test endpoint reports it correctly.
+func TestLDAPGroupMapping_NoMatch_DefaultRole(t *testing.T) {
+	stub := &stubLDAPWithCache{
+		info: &ldapauth.UserInfo{
+			DN:    "CN=bob,OU=users,DC=example,DC=com",
+			Email: "bob@example.com",
+			// No groups matched any mapping; connector applied DefaultRole "viewer".
+			Role: "viewer",
+		},
+	}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "bob", "secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+	if resp["mapped_role"] != "viewer" {
+		t.Errorf("mapped_role = %v, want viewer", resp["mapped_role"])
+	}
+}
+
+// TestLDAPGroupMapping_NoMatch_NilDefault_Deny verifies that when no group
+// matches and no DefaultRole is set, the connector returns ErrNoGroupMapping
+// and the test endpoint responds 403 with denied: true.
+func TestLDAPGroupMapping_NoMatch_NilDefault_Deny(t *testing.T) {
+	stub := &stubLDAPWithCache{
+		err: ldapauth.ErrNoGroupMapping,
+	}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "charlie", "secret")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+	if resp["denied"] != true {
+		t.Errorf("denied = %v, want true", resp["denied"])
+	}
+	if resp["authenticated"] != true {
+		t.Errorf("authenticated = %v, want true (user credentials were valid)", resp["authenticated"])
+	}
+}
+
+// TestLDAPGroupCache_Hit verifies that when CheckCache returns a non-nil entry
+// (cache hit), the test endpoint reports cache_hit: true.
+func TestLDAPGroupCache_Hit(t *testing.T) {
+	cached := &ldapauth.UserInfo{
+		DN:    "CN=alice,OU=users,DC=example,DC=com",
+		Email: "alice@example.com",
+		Role:  "admin",
+	}
+	stub := &stubLDAPWithCache{
+		// Authenticate also succeeds (called after cache check in handleLDAPTest).
+		info:       cached,
+		cachedInfo: cached, // non-nil → CheckCache returns a hit
+	}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "alice", "secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+	if resp["cache_hit"] != true {
+		t.Errorf("cache_hit = %v, want true", resp["cache_hit"])
+	}
+}
+
+// TestLDAPGroupCache_Expiry verifies that when CheckCache returns nil (cache
+// miss or entry expired), the test endpoint reports cache_hit: false and falls
+// back to a live LDAP call.
+func TestLDAPGroupCache_Expiry(t *testing.T) {
+	stub := &stubLDAPWithCache{
+		info: &ldapauth.UserInfo{
+			DN:    "CN=alice,OU=users,DC=example,DC=com",
+			Email: "alice@example.com",
+			Role:  "viewer",
+		},
+		cachedInfo: nil, // nil → CheckCache returns a miss (expired or never cached)
+	}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "alice", "secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+	if resp["cache_hit"] != false {
+		t.Errorf("cache_hit = %v, want false", resp["cache_hit"])
+	}
+}
+
+// TestLDAPTestEndpoint_OK verifies the full happy-path response from
+// POST /api/v1/ldap/test: correct status, authenticated flag, user_dn,
+// groups, mapped_role, and cache_hit fields.
+func TestLDAPTestEndpoint_OK(t *testing.T) {
+	stub := &stubLDAPWithCache{
+		info: &ldapauth.UserInfo{
+			DN:       "CN=dave,OU=users,DC=acme,DC=com",
+			Email:    "dave@acme.com",
+			Groups:   []string{"ml-engineers"},
+			GroupDNs: []string{"CN=ml-engineers,OU=groups,DC=acme,DC=com"},
+			Role:     "inference",
+		},
+	}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "dave", "pass")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+
+	if resp["authenticated"] != true {
+		t.Errorf("authenticated = %v, want true", resp["authenticated"])
+	}
+	if resp["user_dn"] != "CN=dave,OU=users,DC=acme,DC=com" {
+		t.Errorf("user_dn = %v, want CN=dave,OU=users,DC=acme,DC=com", resp["user_dn"])
+	}
+	if resp["mapped_role"] != "inference" {
+		t.Errorf("mapped_role = %v, want inference", resp["mapped_role"])
+	}
+	if resp["cache_hit"] != false {
+		t.Errorf("cache_hit = %v, want false", resp["cache_hit"])
+	}
+	groups, ok := resp["groups"].([]any)
+	if !ok || len(groups) == 0 {
+		t.Errorf("groups = %v, want non-empty slice", resp["groups"])
+	} else if groups[0] != "CN=ml-engineers,OU=groups,DC=acme,DC=com" {
+		t.Errorf("groups[0] = %v, want CN=ml-engineers,OU=groups,DC=acme,DC=com", groups[0])
+	}
+}
+
+// TestLDAPTestEndpoint_WrongPassword verifies that POST /api/v1/ldap/test
+// returns 401 when the LDAP connector rejects the credentials.
+func TestLDAPTestEndpoint_WrongPassword(t *testing.T) {
+	stub := &stubLDAPWithCache{err: ldapauth.ErrInvalidCredentials}
+	srv := newLDAPTestServer(t, stub)
+
+	rec := ldapTestRequest(t, srv, "alice", "wrongpassword")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	resp := decodeLDAPTestResponse(t, rec)
+	if resp["authenticated"] != false {
+		t.Errorf("authenticated = %v, want false", resp["authenticated"])
 	}
 }
