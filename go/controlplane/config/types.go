@@ -32,10 +32,10 @@ type ClusterConfig struct {
 	Gateway     GatewaySpec    `yaml:"gateway"`
 	Orgs        []OrgSpec      `yaml:"orgs,omitempty"`
 	NodePools   []NodePoolSpec `yaml:"node_pools,omitempty"`
-	LDAP   *LDAPConfig   `yaml:"ldap,omitempty"`
-	Quorum *QuorumConfig `yaml:"quorum,omitempty"`
+	LDAP        *LDAPConfig    `yaml:"ldap,omitempty"`
+	Quorum      *QuorumConfig  `yaml:"quorum,omitempty"`
 	// SLO configures per-model TTFT/TBT SLO contracts.
-	SLO    *SLOConfig    `yaml:"slo,omitempty"`
+	SLO *SLOConfig `yaml:"slo,omitempty"`
 }
 
 // QuorumConfig defines multi-person approval requirements for AI Act Art.14.
