@@ -507,7 +507,7 @@
       },
       "CreateAPIKeyResponse": {
         "type": "object",
-        "description": "Response from POST /apikeys. The \"key\" field contains the plaintext secret (psk_ prefix). It is returned exactly once and never stored \u2014 copy it immediately.\n",
+        "description": "Response from POST /apikeys. The \"key\" field contains the plaintext secret (\"sk-\" followed by 40 lowercase hex characters). It is returned exactly once and never stored \u2014 copy it immediately.\n",
         "properties": {
           "id": {
             "type": "string",
@@ -524,7 +524,7 @@
           "key": {
             "type": "string",
             "description": "Plaintext gateway key. Returned once; never stored or re-retrievable.",
-            "example": "psk_AAABBBCCCDDDEEEFFFGGG"
+            "example": "sk-a3f8bc12de456789abcdef0123456789abcdef01"
           }
         },
         "required": [
@@ -1845,7 +1845,7 @@
       "post": {
         "operationId": "createAPIKey",
         "summary": "Mint a new gateway API key",
-        "description": "Generates a cryptographically random key with a \"psk_\" prefix. The plaintext key is returned exactly once in the response \u2014 only its SHA-256 hash is persisted. Copy the key immediately; it cannot be retrieved again.\n",
+        "description": "Generates a cryptographically random key formatted as \"sk-\" followed by 40 lowercase hex characters (20 random bytes). The plaintext key is returned exactly once in the response \u2014 only its SHA-256 hash is persisted. Copy the key immediately; it cannot be retrieved again.\n",
         "security": [
           {
             "BearerAuth": []

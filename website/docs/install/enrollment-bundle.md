@@ -9,7 +9,7 @@ The enrollment bundle is a plain-text file with three environment variables:
 | Variable | Example | Description |
 |---|---|---|
 | `PURSER_CONTROL_PLANE_ADDR` | `http://10.0.0.1:9443` | gRPC address of the Control Plane `RegistrationService` |
-| `PURSER_JOIN_TOKEN` | `psk_…` | One-time join token (expires after 1 hour by default) |
+| `PURSER_JOIN_TOKEN` | `<payload>.<signature>` | One-time join token — two `base64url` segments joined by a `.`, with no prefix (expires after 1 hour by default) |
 | `PURSER_CLUSTER_ID` | `default` | Logical cluster this node will join |
 
 The bundle file is re-generated each time you call the endpoint, minting a fresh join token. The previous token is not revoked — unused tokens expire naturally.
@@ -74,7 +74,7 @@ Response:
 
 ```json
 {
-  "token":      "psk_…",
+  "token":      "eyJleHAiOjE3ODkyMDAwMDAsIm5vbmNlIjoiNGYxYzhhMmJlOWQwNzYzNGE1YzFlOGYyOTBiM2Q3NDYifQ.KuWaWIO9iPAuISxsW5rXuVybY7Vr9BbWA7gGzUkQUSE",
   "expires_at": "2026-09-05T01:00:00Z",
   "cluster_id": "default"
 }

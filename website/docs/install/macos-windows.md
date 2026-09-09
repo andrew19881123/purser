@@ -48,7 +48,7 @@ tar -xzf control-plane-darwin-arm64-${TAG}.tar.gz
         <key>PURSER_INFERENCE_PORT</key>  <string>8000</string>
         <key>PURSER_CONTROL_PLANE_ADDR</key> <string>http://cp.internal:9443</string>
         <key>PURSER_CLUSTER_ID</key>      <string>default</string>
-        <key>PURSER_JOIN_TOKEN</key>      <string>psk_replace-me</string>
+        <key>PURSER_JOIN_TOKEN</key>      <string>replace-with-join-token</string>
     </dict>
     ```
 
@@ -117,7 +117,7 @@ sudo launchctl unload -w /Library/LaunchDaemons/dev.purser.agent.plist
     | Variable | Example value |
     |---|---|
     | `PURSER_CONTROL_PLANE_ADDR` | `http://cp.internal:9443` |
-    | `PURSER_JOIN_TOKEN` | `psk_replace-me` |
+    | `PURSER_JOIN_TOKEN` | `replace-with-join-token` |
     | `PURSER_CLUSTER_ID` | `default` |
     | `PURSER_AGENT_BIND` | `0.0.0.0:50151` |
     | `PURSER_INFERENCE_PORT` | `8000` |

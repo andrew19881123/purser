@@ -104,13 +104,14 @@ Response:
 
 ```json
 {
-  "token": "psk_...",
+  "token": "eyJleHAiOjE3ODkyMDAwMDAsIm5vbmNlIjoiNGYxYzhhMmJlOWQwNzYzNGE1YzFlOGYyOTBiM2Q3NDYifQ.KuWaWIO9iPAuISxsW5rXuVybY7Vr9BbWA7gGzUkQUSE",
   "expires_at": "2026-09-05T01:00:00Z",
   "cluster_id": "default"
 }
 ```
 
-Copy the `token` value.
+Copy the `token` value verbatim — it is an opaque signed string with no prefix,
+so any added or missing character invalidates it.
 
 ---
 
@@ -126,7 +127,7 @@ Set at minimum:
 
 ```bash
 PURSER_CONTROL_PLANE_ADDR=http://<control-plane-host>:9443
-PURSER_JOIN_TOKEN=psk_<token-from-step-3>
+PURSER_JOIN_TOKEN=<token-from-step-3>
 PURSER_CLUSTER_ID=default
 ```
 
@@ -220,7 +221,7 @@ The response contains the key **once** — store it:
 {
   "id": "key-...",
   "name": "my-key",
-  "key": "psk_..."
+  "key": "sk-a3f8bc12de456789abcdef0123456789abcdef01"
 }
 ```
 
@@ -234,7 +235,7 @@ Hit the OpenAI-compatible endpoint:
 
 ```bash
 curl -sS http://<gateway-host>:<port>/v1/chat/completions \
-  -H "Authorization: Bearer psk_<your-api-key>" \
+  -H "Authorization: Bearer sk-<your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llama-8b",
@@ -250,7 +251,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://<gateway-host>:<port>/v1",
-    api_key="psk_<your-api-key>"
+    api_key="sk-<your-api-key>"
 )
 
 response = client.chat.completions.create(

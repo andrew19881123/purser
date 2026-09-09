@@ -80,7 +80,7 @@ PURSER_CONTROL_PLANE_ADDR=http://cp.internal:9443
 PURSER_CLUSTER_ID=default
 
 # One-time join token (mint with: curl -X POST http://<cp>:8080/api/v1/join-token)
-PURSER_JOIN_TOKEN=psk_replace-me
+PURSER_JOIN_TOKEN=replace-with-join-token
 
 # Directory for encrypted secret files (created with mode 0700 on first use)
 PURSER_SECRET_STORE_DIR=/var/lib/purser/secrets
@@ -191,7 +191,7 @@ ansible-playbook -i inventory/ playbooks/enroll_nodes.yml
 
 # Option B: supply a pre-existing token
 export PURSER_CP_ADDR=http://cp.internal:8080
-export PURSER_JOIN_TOKEN=psk_your-token-here
+export PURSER_JOIN_TOKEN=your-token-here
 ansible-playbook -i inventory/ playbooks/install_purser_agents.yml
 ```
 
