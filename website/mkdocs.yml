@@ -55,6 +55,7 @@ nav:
   - Home: index.md
   - Getting Started:
     - Quickstart (Helm): getting-started/quickstart.md
+    - Multi-Node Inference (LAN): getting-started/multi-node-inference.md
     - Architecture: getting-started/architecture.md
     - Deploy Your First Model: getting-started/deploy-model.md
   - Install:
