@@ -48,20 +48,33 @@ A fresh stack has an empty catalog, so the Catalog page is blank and `GET /v1/mo
 make demo-seed
 ```
 
-### What the demo stack can and cannot do
+### What this path gives you — and what it does not
 
-The demo stack runs the Control Plane, Gateway, dashboard and database — the entire control path. It deliberately ships **no Agent**, and the Agent is where inference happens: the Gateway is a reverse proxy and holds no model weights or inference code of its own.
+**What you get:** the whole control path. The Control Plane and its full REST API, the dashboard, the Gateway's OpenAI-compatible surface, a Postgres-backed registry, and a model in the catalog. That is enough to explore the API, the Catalog and Playground pages, node pools, API keys and RBAC — everything except a generated token.
 
-So on the compose stack alone:
+**What you do not get: an inference response.** Two independent reasons, both structural:
+
+1. Inference runs in the **Agent**, not the Gateway. The Gateway is a reverse proxy; it holds no weights and no inference code, and even the mock engine lives in the Agent. The compose stack ships no Agent service.
+2. You cannot add one to this stack. Agents enrol over the Control Plane's gRPC **RegistrationService on `:9443`**, and compose publishes only port `3000` — nginx proxies HTTP paths only. So the port an Agent would join through is not reachable from your machine, even if you already had an Agent binary.
+
+Concretely:
 
 ```bash
 curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 # -> {"object":"list","data":[]}
 ```
 
-That is expected, not a fault. The Gateway serves a model only once the Control Plane has published a route for it, which happens after an inference engine reports ready on an enrolled node. `make demo-seed` puts the model in the catalog and tells you exactly this, and a chat call returns `503 "model not available"` until a node joins.
+That is expected, not a fault: the Gateway lists and serves a model only once the Control Plane publishes a route for it, which happens after an inference engine reports ready on an enrolled node. Until then a chat call returns `503 "model not available"`.
 
-To get a real completion without a GPU, enrol a mock Agent against the native dev stack — see [Development setup](#development-setup) below. For real inference on real hardware, continue with the Helm quickstart.
+!!! warning "`make demo-agent` will not work against the compose stack"
+    `make demo-agent` targets the **native** `make dev` Control Plane on `:8080`/`:9443`. Under compose neither port is published, so it can neither mint a join token nor enrol. It also runs `./bin/purser-agent`, which does not exist until you build it from source.
+
+**The two paths that do reach inference:**
+
+| Path | What it needs | Use it when |
+|---|---|---|
+| Native `make dev` + mock Agent | The Rust toolchain, to build `./bin/purser-agent` | You want a canned response locally, no GPU — see [Development setup](#development-setup) |
+| Agent package on a Linux host | A host outside the cluster, and a Control Plane that publishes `:9443` | You want real inference — see the [Helm quickstart](#quickstart-helm-production) and [Linux Agent install](../install/linux-agent.md) |
 
 Stop the demo at any time:
 

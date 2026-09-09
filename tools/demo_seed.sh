@@ -15,9 +15,15 @@
 #   (rust/crates/agent/src/mock_inference.rs) — the gateway is a pure reverse
 #   proxy with no inference code of its own. With zero enrolled nodes the
 #   planner cannot place the model, so the deploy returns 422
-#   model_does_not_fit and no chat completion is possible. This script seeds
-#   the catalog, reports that state honestly, and prints the next step rather
-#   than pretending a completion is coming.
+#   model_does_not_fit and no chat completion is possible.
+#
+#   Nor can a node be added to this stack: agents enrol over the gRPC
+#   RegistrationService (rust/crates/agent/src/discovery.rs:104), which lives
+#   on :9443, and compose publishes only 3000:80 while nginx proxies HTTP
+#   paths only. So `make demo-agent` must NOT be suggested here — it targets
+#   the native `make dev` control plane. This script seeds the catalog,
+#   reports that state honestly, and points at the two paths that do reach
+#   inference rather than pretending a completion is coming.
 #
 # All URLs go through the single published port (proxy 3000:80); nginx
 # path-routes /api/ to the control plane and /v1/ to the gateway. See
@@ -215,21 +221,30 @@ case "$STATE" in
     echo "   GET  $GW/models            -> {\"object\":\"list\",\"data\":[]}"
     echo "   POST $GW/chat/completions  -> 503 \"model not available\""
     echo ""
-    echo " Why: the compose stack runs no agent, and mock inference lives in the"
-    echo " agent, not in the gateway. The gateway only serves models the control"
-    echo " plane published a route for after an engine reported READY on a real"
-    echo " node, so at least one enrolled READY node is required."
+    echo " Why: inference needs an enrolled node, and this stack cannot have one."
+    echo " Mock inference lives in the agent, not the gateway, and the compose"
+    echo " stack ships no agent service. It also publishes only port 3000, so the"
+    echo " RegistrationService (gRPC :9443) that an agent enrols through is not"
+    echo " reachable from your machine -- even a prebuilt agent could not join."
     echo " Ready nodes right now: $READY."
     echo ""
-    echo " To get a real completion, enrol a node against the native dev stack:"
+    echo " Do NOT run 'make demo-agent' against this stack. It targets the native"
+    echo " 'make dev' control plane on :8080/:9443, which compose does not expose."
     echo ""
-    echo "   make build            # produces ./bin/purser-agent"
-    echo "   make dev              # control plane natively on :8080"
-    echo "   make demo-agent       # enrols a mock agent (separate terminal)"
+    echo " Two paths that do reach inference:"
     echo ""
-    echo " then re-run this script against that stack:"
+    echo " 1. Local development -- needs the Rust toolchain to build the agent:"
+    echo "      make setup && make build   # produces ./bin/purser-agent"
+    echo "      make dev                   # control plane on :8080 + gRPC :9443"
+    echo "      make demo-agent            # enrols a mock agent (separate terminal)"
+    echo "      PURSER_DEMO_API=http://localhost:8080/api ./tools/demo_seed.sh"
     echo ""
-    echo "   PURSER_DEMO_API=http://localhost:8080/api ./tools/demo_seed.sh"
+    echo " 2. Real hardware -- install the agent package on a Linux host and point"
+    echo "    it at a control plane that publishes :9443 (see the Helm quickstart"
+    echo "    and website/docs/install/linux-agent.md)."
+    echo ""
+    echo " What you DO have right now: the dashboard, the whole control-plane REST"
+    echo " API, and '$MODEL_ID' in the catalog to explore both with."
     echo ""
     ;;
 esac
