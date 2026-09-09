@@ -10,3 +10,5 @@ Each one captures a non-obvious root cause that is NOT derivable from the code.
 | `rust_disk_build.md` | Rust / disk | Full workspace build is 3–4 GB; scope to one crate |
 | `e2e_hardcoded_path.md` | E2E / CI | E2E scripts have old `ROOT` path hardcoded |
 | `ghcr_visibility.md` | GHCR / release | New packages start private; PATCH API is broken for user packages |
+| `macos_case_collision.md` | Git / macOS | `enterprise/LICENSE` vs `enterprise/license/` collide on APFS — never `git add -A` |
+| `macos_toolchain_bootstrap.md` | Build / toolchain | `make setup` fetches linux-amd64; `env.sh` "ready" is not proof; `GOPROXY=direct` behind the proxy |

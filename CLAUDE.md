@@ -140,6 +140,15 @@ These capture the WHY behind non-obvious decisions, not derivable from the code.
   (old path); the CI workflow works around this with a symlink.
 - `docs/postmortems/ghcr_visibility.md` — new GHCR packages start private;
   the PATCH API returns 404 for user-owned packages — set public via the UI.
+- `docs/postmortems/macos_case_collision.md` — on macOS/APFS `enterprise/LICENSE`
+  and `enterprise/license/` collide, so `git status` permanently shows a phantom
+  ` D enterprise/LICENSE`. **Never `git add -A` / `git add .` / `git commit -a` /
+  `git stash -u`** — it stages the deletion of the Enterprise License text.
+  Always stage explicit paths.
+- `docs/postmortems/macos_toolchain_bootstrap.md` — `make setup` only supports
+  linux/amd64, so `.toolchain/` must be populated by hand on Apple Silicon;
+  `env.sh` prints "toolchain ready" even when nothing is installed. Behind the
+  corporate proxy some module zips arrive truncated — use `GOPROXY=direct`.
 
 Index: `docs/postmortems/README.md`. When you find a new non-obvious gotcha,
 write a post-mortem there and link it from the list above.

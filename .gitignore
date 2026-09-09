@@ -42,7 +42,10 @@ license-signing.key
 purser-license-signing.key
 
 # --- Internal solution-design & strategy docs (kept local, not published) ---
-docs/
+# NOTE: must be `docs/*`, not `docs/`. Excluding the directory itself stops git
+# descending into it, which makes the !docs/postmortems/ re-include below dead
+# ("it is not possible to re-include a file if a parent directory is excluded").
+docs/*
 # Post-mortems and decision docs ARE versioned (contributor knowledge)
 !docs/postmortems/
 # Exception: published website documentation is tracked in website/
