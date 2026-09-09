@@ -2,23 +2,66 @@
 
 ## Quickstart — 2 minutes, no GPU required
 
+### 1. Clone and start
+
 ```bash
-# 1. Clone and start
 git clone https://github.com/andrew19881123/purser.git
 cd purser
 docker compose up -d
+```
 
-# 2. Open the dashboard
+### 2. Check that all five services came up
+
+Do not skip this — if a service failed to start, every command below fails with a confusing connection error instead of a useful one.
+
+```bash
+docker compose ps
+```
+
+You should see **five** services, all `running`:
+
+```
+NAME                     SERVICE         STATUS              PORTS
+purser-control-plane-1   control-plane   running             8080/tcp, 9443/tcp
+purser-gateway-1         gateway         running             8081/tcp
+purser-postgres-1        postgres        running (healthy)   5432/tcp
+purser-proxy-1           proxy           running             0.0.0.0:3000->80/tcp
+purser-ui-1              ui              running             80/tcp
+```
+
+The `NAME` column is prefixed with the Compose project name, which defaults to the directory you cloned into — so yours may read `myclone-gateway-1`. What matters is that five services are listed and none is `exited` or `restarting`. If one is unhealthy, read its logs with `docker compose logs <service>`.
+
+!!! note "Only one port is published"
+    `proxy` is the only service with a host port (`3000->80`). The Control Plane (`:8080`) and Gateway (`:8081`) are container-internal; nginx path-routes `/api/` to the Control Plane and `/v1/` to the Gateway. From your machine the addresses are therefore `http://localhost:3000` (dashboard), `http://localhost:3000/api` (Control Plane REST) and `http://localhost:3000/v1` (OpenAI-compatible Gateway) — **not** `:8080` or `:8081`, which will refuse the connection.
+
+### 3. Open the dashboard
+
+```bash
 open http://localhost:3000
 ```
 
-The demo stack uses the built-in mock engine — real inference comes when you install the Agent on GPU nodes.
+### 4. Seed the catalog
 
-Try the OpenAI-compatible Gateway immediately:
+A fresh stack has an empty catalog, so the Catalog page is blank and `GET /v1/models` returns `{"object":"list","data":[]}`. Register a small demo model with one command — it is idempotent, so re-running is safe:
+
+```bash
+make demo-seed
+```
+
+### What the demo stack can and cannot do
+
+The demo stack runs the Control Plane, Gateway, dashboard and database — the entire control path. It deliberately ships **no Agent**, and the Agent is where inference happens: the Gateway is a reverse proxy and holds no model weights or inference code of its own.
+
+So on the compose stack alone:
 
 ```bash
 curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
+# -> {"object":"list","data":[]}
 ```
+
+That is expected, not a fault. The Gateway serves a model only once the Control Plane has published a route for it, which happens after an inference engine reports ready on an enrolled node. `make demo-seed` puts the model in the catalog and tells you exactly this, and a chat call returns `503 "model not available"` until a node joins.
+
+To get a real completion without a GPU, enrol a mock Agent against the native dev stack — see [Development setup](#development-setup) below. For real inference on real hardware, continue with the Helm quickstart.
 
 Stop the demo at any time:
 
@@ -53,6 +96,23 @@ helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
 ```
 
 `--set controlPlane.service.type=LoadBalancer` exposes the Control Plane's gRPC RegistrationService (`:9443`) and REST API (`:8080`) so Agents running on the LAN can reach it. With the default `ClusterIP`, the Control Plane is only reachable inside the cluster.
+
+!!! tip "No cloud load balancer?"
+    `LoadBalancer` only resolves to an address if something in the cluster provisions one. On a managed cloud cluster that is automatic; on bare metal, k3s, k0s, or kind there is usually no provisioner, so `kubectl get svc purser-control-plane` shows `EXTERNAL-IP: <pending>` forever and Agents can never reach the Control Plane.
+
+    Two escape hatches:
+
+    ```bash
+    # A. NodePort — reachable at <any-node-IP>:<nodePort> from the LAN
+    helm upgrade purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
+      --set controlPlane.service.type=NodePort
+    kubectl get svc purser-control-plane   # read the :3xxxx ports
+
+    # B. port-forward — quick local test only, not for Agents on other hosts
+    kubectl port-forward svc/purser-control-plane 8080:8080 9443:9443
+    ```
+
+    k3s ships ServiceLB, so `LoadBalancer` there usually does get a node IP. If you want a real load balancer on bare metal, install MetalLB and keep `LoadBalancer`.
 
 Wait for all pods to be ready:
 
@@ -160,6 +220,11 @@ Create a model spec file `model.json`:
   "engine": "mock"
 }
 ```
+
+!!! warning "`"engine": "mock"` returns canned responses — testing only"
+    The `mock` engine does not load model weights and does not perform inference. It returns a fixed, canned reply to every request, which makes it useful for validating enrolment, planning, and routing without a GPU — and useless for anything else.
+
+    Setting `mock` on a real GPU node is a common mistake: the deployment goes `ACTIVE`, the Gateway answers `200`, and the replies are nonsense, which reads like a broken product. For real inference use `"engine": "llamacpp"` (the Helm chart default) and install the Agent built with `--features llamacpp`.
 
 Register it:
 
@@ -293,6 +358,19 @@ The control plane listens at `http://localhost:8080`. To run the dashboard along
 
 ```bash
 cd ui && npm install && npm run dev   # separate terminal — serves on :5173
+```
+
+To enrol a mock Agent against this native stack — this is what gives you a real (canned) chat response without a GPU:
+
+```bash
+make build        # produces ./bin/purser-agent
+make demo-agent   # mints a join token and starts a mock agent (separate terminal)
+```
+
+`make demo-agent` targets the **native** `make dev` stack on `:8080`/`:9443`, not the `make demo` compose stack, which publishes neither port. Once the node is `NODE_STATE_READY` you can seed and deploy against it:
+
+```bash
+PURSER_DEMO_API=http://localhost:8080/api ./tools/demo_seed.sh
 ```
 
 Ports forwarded by the devcontainer:
