@@ -149,14 +149,15 @@ plane reads `PURSER_LICENSE_KEY` at startup and enables the licensed features.
 
 ## Feature reference
 
-| Feature flag | What it unlocks |
-|---|---|
-| `audit` | Tamper-evident, hash-chained audit log (append-only; every entry signed) |
-| `ha` | High-availability mode: Raft leader election, replicated registry, Gateway HA behind a VIP |
-| `rbac` | Role-based access control, SSO/SAML/OIDC, LDAP/Active Directory integration |
-| `fleet-scale` | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, multi-cluster fleet management |
+The flag strings the control plane enforces are listed once, in the
+[feature gate reference](license.md#feature-gate-reference) on the License
+Management page. Use that table when choosing the `--feature` values to sign
+into a key — it also records which product names differ from their flag string
+(**Chargeback** is signed as `billing`) and which capabilities carry no gate.
 
 Features are additive — include as many as the customer's license entitles.
+`purser-license sign` does not validate feature names, so a typo produces a
+valid key that unlocks nothing.
 
 ---
 

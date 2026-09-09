@@ -6,6 +6,15 @@ plane, and continuously evaluated against live inference traffic. The compliance
 status for each model is available through a dedicated REST endpoint and can be
 wired to Prometheus alerting.
 
+!!! note "No licence feature required"
+    Although this page sits in the Enterprise section, SLO contracts are not
+    gated by a licence feature in v0.6. `GET /api/v1/slo/compliance` answers for
+    any admin or viewer role, with or without a `PURSER_LICENSE_KEY`, and no flag
+    string enables or disables it. Do not request an SLO entitlement when
+    ordering a key — there is none to grant. See the
+    [feature gate reference](license.md#feature-gate-reference) for the flags that
+    are enforced.
+
 ---
 
 ## What SLO contracts give you
