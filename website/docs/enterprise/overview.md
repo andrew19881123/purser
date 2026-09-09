@@ -21,19 +21,54 @@ The MIT-licensed core is the **full single-cluster orchestration stack**:
 
 ---
 
-## Enterprise Source-Available — what's gated
+## Enterprise Source-Available
 
 The `enterprise/` directory is **source-available** under the [Purser Enterprise License](https://github.com/andrew19881123/purser/blob/main/enterprise/LICENSE). The code is **public** — you can view, compile, modify, and use it for development, evaluation, and testing. However, **use in production or for commercial purposes requires a valid commercial license**.
 
-Enterprise features:
+### Capabilities requiring a licence flag — v0.6
 
-| Feature area | Status in v0.3 | Capabilities |
-|---|---|---|
-| **Identity & Access** | ✅ Shipped | RBAC (per-API-key roles), OIDC PKCE (EntraID / Okta / Keycloak). See [OIDC configuration](../configuration/oidc.md) and [RBAC](../configuration/rbac.md). |
-| **Compliance** | ✅ Shipped | **Tamper-evident audit log** (hash-chained, offline-verifiable), strong per-tenant isolation, chargeback/usage accounting. See [Audit Log](audit-log.md). |
-| **Policy-as-Code** | ✅ Shipped | Embedded OPA/Rego engine — version-controlled governance rules for deploy gating, model allowlists, and team-based access control. See [Policy-as-Code](policy-as-code.md). |
-| **Fleet at Scale** | ✅ Shipped | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, offline license validation. |
-| **High Availability** | Targeted v0.4 | Leader election (Raft) + replicated registry; Gateway HA behind a VIP. Required for `replicaCount > 1` on the Control Plane. |
+Each of these returns `402 Payment Required` unless the active key's `features` array contains the exact flag string. The [feature gate reference](license.md#feature-gate-reference) is the authoritative list and records the product names that differ from their flag.
+
+| Capability | Licence flag |
+|---|---|
+| Tamper-evident audit log (hash-chained, offline-verifiable). See [Audit Log](audit-log.md). | `audit` |
+| Inference audit log — read access; recording is always active. See [Inference Audit Log](inference-audit.md). | `inference_audit` |
+| Per-tenant usage accounting and chargeback reports. See [Chargeback](chargeback.md). | `billing` |
+| Deployment approval gates. See [Deployment Approvals](deployment-approvals.md). | `deployment_approvals` |
+| Embedded OPA/Rego policy engine. See [Policy-as-Code](policy-as-code.md). | `policy_engine` |
+| AI Act Art.11 / Annex IV technical documentation. See [AI Act Compliance](ai-act-compliance.md). | `ai_act_compliance` **or** `inference_audit` |
+| GDPR right to erasure. See [GDPR Compliance](gdpr-compliance.md). | `gdpr` |
+
+### Shipped in v0.6 with no licence flag
+
+These are implemented and no entitlement is checked for them. A key does not need a flag for any of them, and no flag would enable or disable them.
+
+| Capability | Notes |
+|---|---|
+| RBAC (per-API-key roles) | Always enforced, in every edition. See [RBAC](../configuration/rbac.md). |
+| OIDC / SSO with Authorization Code Flow + PKCE (EntraID, Okta, Keycloak) | See [OIDC configuration](../configuration/oidc.md). |
+| Per-tenant scoping of registry records, keys, and usage data | Underlies the chargeback and audit surfaces. |
+| Raft HA control plane — leader election and replicated registry | Reachable through configuration; needs an external PostgreSQL, since SQLite requires `replicaCount=1`. See [HA Control Plane](ha-control-plane.md). |
+| SLO contracts and the what-if planner | See [SLO Contracts](slo.md). |
+| Ansible fleet enrollment | See [Ansible](../integrations/ansible.md). |
+| Internal CA / PKI — root → intermediate → leaf issuance, renewal, revocation, rotation | Purser's own CA; not an integration with an external corporate CA. |
+| Offline licence validation | The enforcement mechanism itself — see below. |
+
+### Not implemented in v0.6
+
+Earlier revisions of this page listed these as shipped. They are not, and no licence flag enables them:
+
+| Capability | State |
+|---|---|
+| MDM enrollment | No implementation. |
+| Golden-image enrollment | No implementation. |
+| Signed air-gap bundles | No implementation — see the distinction below. |
+| Multi-cluster fleet management | No implementation. |
+| Gateway HA behind a VIP | No implementation in this repository; it would be load-balancer configuration rather than a Purser feature. |
+
+Whether any of these is built, and in which release, is not decided — this page deliberately gives no target version, and will name one only once there is something to point at. Please do not rely on them in a procurement decision; ask first.
+
+**Air-gapped operation is a separate matter, and it is fully supported.** Licence verification is offline by design — no phone-home, no licence server, no network dependency — and telemetry degrades to no-ops. What does not exist is a *signed bundle artefact* for shipping releases into a disconnected environment. Running Purser air-gapped works today; being handed a signed offline bundle does not.
 
 ---
 

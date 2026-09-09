@@ -117,9 +117,11 @@ License: VALID
 ```
 
 The `Features:` line echoes the flag strings exactly as they were signed into the
-key. Compare it against the table below before sending a key to a customer —
-`purser-license sign` accepts any `--feature` string and does not check it
-against the list of gates the control plane actually enforces.
+key. `purser-license sign` validates every `--feature` value against the gates
+below and refuses to sign an unrecognised one, so a fresh key cannot carry a dead
+flag by accident. Two cases still warrant a look at this output: keys minted
+before that check existed, and keys deliberately signed with
+`--allow-unknown-feature`. `verify` names any dead flags it finds.
 
 ---
 

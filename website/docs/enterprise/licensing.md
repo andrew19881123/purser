@@ -156,8 +156,8 @@ into a key — it also records which product names differ from their flag string
 (**Chargeback** is signed as `billing`) and which capabilities carry no gate.
 
 Features are additive — include as many as the customer's license entitles.
-`purser-license sign` does not validate feature names, so a typo produces a
-valid key that unlocks nothing.
+`purser-license sign` validates each `--feature` value against that list and
+refuses an unrecognised one.
 
 ---
 
