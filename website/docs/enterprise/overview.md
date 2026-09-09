@@ -51,24 +51,27 @@ These are implemented and no entitlement is checked for them. A key does not nee
 | Raft HA control plane — leader election and replicated registry | Reachable through configuration; needs an external PostgreSQL, since SQLite requires `replicaCount=1`. See [HA Control Plane](ha-control-plane.md). |
 | SLO contracts and the what-if planner | See [SLO Contracts](slo.md). |
 | Ansible fleet enrollment | See [Ansible](../integrations/ansible.md). |
-| Internal CA / PKI — root → intermediate → leaf issuance, renewal, revocation, rotation | Purser's own CA; not an integration with an external corporate CA. |
+| Internal CA / PKI — root → intermediate → leaf issuance, renewal, revocation, rotation | Purser's own CA, used for agent mTLS enrolment. |
+| Certificates issued by your existing CA, via cert-manager | The chart renders a `cert-manager.io/v1` Certificate for the control-plane TLS secret from a `ClusterIssuer` or `Issuer` you name, with configurable duration and renewal. See [cert-manager](../configuration/cert-manager.md) and [certificate renewal](../operations/cert-renewal.md). |
+| Gateway horizontal scaling behind a Kubernetes Service | Multiple gateway replicas behind a Service whose type is configurable (ClusterIP by default, LoadBalancer or NodePort for clients outside the cluster). |
+| Signed release artefacts | SLSA L2 provenance, cosign SBOM attestations on image digests, and `SHA256SUMS` for the `.deb`/`.rpm`/tarball artefacts. |
 | Offline licence validation | The enforcement mechanism itself — see below. |
 
 ### Not implemented in v0.6
 
-Earlier revisions of this page listed these as shipped. They are not, and no licence flag enables them:
+Earlier revisions of this page listed these as shipped under the heading "Fleet at Scale". Each row below says what is genuinely missing and what nearby capability does exist, because in several cases part of the ground is covered by something under a different name. No licence flag enables any of them:
 
 | Capability | State |
 |---|---|
-| MDM enrollment | No implementation. |
-| Golden-image enrollment | No implementation. |
-| Signed air-gap bundles | No implementation — see the distinction below. |
-| Multi-cluster fleet management | No implementation. |
-| Gateway HA behind a VIP | No implementation in this repository; it would be load-balancer configuration rather than a Purser feature. |
+| A dedicated MDM integration (Jamf, Intune, or similar) | None. Fleet enrolment is offered through Ansible, and the join-token model works with any tool that can set three environment variables — including an MDM-delivered package — but there is no MDM-specific integration to configure. |
+| Golden-image build pipeline | No image-building tooling ships here (no Packer, cloud image, or kickstart/preseed templates). Enrolment itself supports scripted provisioning, so you can bake an image yourself — see [enrollment bundle](../install/enrollment-bundle.md). |
+| An offline install bundle for air-gapped sites | No single downloadable archive of images, charts, and dependencies for a disconnected install. Note that release artefacts *are* signed and air-gapped *operation* is supported — see the distinction below. |
+| Multi-cluster fleet management | None. A control plane serves one cluster: its cluster ID is a single value, and there is no federation, peering, or remote-cluster concept. |
+| A bare-metal virtual IP (keepalived / VRRP) | Not provided. In Kubernetes, gateway and control-plane replicas sit behind Services, as above; on bare metal you would supply your own VIP or load balancer. No PodDisruptionBudget ships with the chart. |
 
 Whether any of these is built, and in which release, is not decided — this page deliberately gives no target version, and will name one only once there is something to point at. Please do not rely on them in a procurement decision; ask first.
 
-**Air-gapped operation is a separate matter, and it is fully supported.** Licence verification is offline by design — no phone-home, no licence server, no network dependency — and telemetry degrades to no-ops. What does not exist is a *signed bundle artefact* for shipping releases into a disconnected environment. Running Purser air-gapped works today; being handed a signed offline bundle does not.
+**Three things are easy to conflate here, and two of the three ship.** *Air-gapped operation* is fully supported: licence verification is offline by design — no phone-home, no licence server, no network dependency of any kind — and telemetry degrades to no-ops. *Artefact signing* also ships: releases carry SLSA L2 provenance and cosign SBOM attestations, so you can verify what you received. What does not exist is the third thing — a *packaged offline bundle* that collects images, charts, and dependencies into one archive for installing into a disconnected site. Running Purser air-gapped works today, and you can verify the artefacts you fetch; assembling them for transfer is currently your own step.
 
 ---
 
