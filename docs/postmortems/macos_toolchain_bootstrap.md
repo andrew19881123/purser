@@ -100,6 +100,15 @@ The script deliberately does not install these, and says so in its closing summa
 - **mkdocs is not hash-pinned**: `website/requirements.txt` uses ranges
   (`mkdocs-material>=9.5`), so `pip --require-hashes` is not possible without a
   lock file. Adding one would close this gap.
+- **CI's helm is unpinned.** `.github/workflows/release.yml` installs helm via
+  `azure/setup-helm` with no `version:` input, and that action's default is
+  `latest`. So the chart is packaged and pushed to the GHCR OCI registry with
+  whatever helm is current on the day of the release — in a workflow that
+  otherwise pins every action by commit SHA, and for a project that ships SLSA3
+  provenance and cosign attestations for its own artefacts. `HELM_VERSION` in
+  `tools/setup-toolchain.sh` is pinned to match what that resolves to today
+  (v4.2.4), but the two will drift apart the next time helm ships a release.
+  Fix belongs in `release.yml` (`with: version: v4.2.4`), not here.
 
 ## Corporate proxy breaks `go mod download`
 Behind the Unipol proxy (`HTTP_PROXY=http://proxyu.ha.servizi.gr-u.it:80`) the

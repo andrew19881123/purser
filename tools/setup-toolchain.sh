@@ -27,6 +27,21 @@ VENV="$TOOLCHAIN/pyvenv"
 # --- Pinned versions ------------------------------------------------------
 # Bumping a version means bumping its checksums below, in lockstep.
 GO_VERSION="go1.27.1"
+# helm: chosen to match what CI actually resolves. .github/workflows/release.yml
+# installs helm via azure/setup-helm with no `version:` input, and that action's
+# default is `latest` — so CI publishes the chart with whatever helm is current
+# (v4.2.4 at the time of writing). Pinning a 3.x here would have made the local
+# toolchain diverge from CI rather than match it.
+#
+# Verified before pinning: `helm lint deploy/helm/purser` is clean under 4.2.4,
+# and `helm package` produces a BYTE-IDENTICAL chart tarball under 3.16.3 and
+# 4.2.4. Note the publish path (`helm package` + `helm push` to the GHCR OCI
+# registry) runs only in CI with CI's own helm — this binary is never used for
+# it; locally the only documented helm command is `helm lint`.
+#
+# Known gap, in release.yml not here: CI's helm is unpinned, in a workflow that
+# otherwise pins every action by SHA. It will silently follow helm upstream
+# across major versions.
 HELM_VERSION="v4.2.4"
 
 DRY_RUN=0
