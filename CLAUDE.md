@@ -34,6 +34,7 @@ dependencies between tasks, and sequence work to maximise parallel throughput.**
 ## Build & test (project-local toolchain — NEVER global installs)
 
 ```bash
+make setup                    # one-time: installs Go/Rust/buf/helm/mkdocs into .toolchain/
 source ./env.sh               # puts .toolchain/bin on PATH — always run first
 make gen                      # regenerate Go + Rust proto bindings (buf)
 make build                    # build all workspaces
@@ -47,9 +48,19 @@ cd ui && npm run typecheck && npm run build
 helm lint deploy/helm/purser
 ```
 
+`make setup` supports macOS and Linux on `arm64` and `amd64`; it pins Go and helm
+and verifies SHA256 checksums before extracting. `--dry-run` shows the plan;
+`--skip-rust` omits the ~1 GB Rust toolchain for Go-only or docs-only work. It
+does **not** install python3, nfpm, or Node — it names those in its summary.
+
 **Critical:** `.toolchain/` is git-ignored. In a worktree it won't exist — always
 `source /path/to/main-worktree/env.sh` (absolute path) to get the toolchain on PATH.
 See `docs/postmortems/worktree_toolchain.md`.
+
+`source ./env.sh` now reports what is actually present and names what is missing —
+it no longer prints "toolchain ready" unconditionally. If it says something is
+missing, believe it and run `make setup`; it never exits non-zero, so
+`source ./env.sh && <cmd>` still works.
 
 ---
 
@@ -145,10 +156,11 @@ These capture the WHY behind non-obvious decisions, not derivable from the code.
   ` D enterprise/LICENSE`. **Never `git add -A` / `git add .` / `git commit -a` /
   `git stash -u`** — it stages the deletion of the Enterprise License text.
   Always stage explicit paths.
-- `docs/postmortems/macos_toolchain_bootstrap.md` — `make setup` only supports
-  linux/amd64, so `.toolchain/` must be populated by hand on Apple Silicon;
-  `env.sh` prints "toolchain ready" even when nothing is installed. Behind the
-  corporate proxy some module zips arrive truncated — use `GOPROXY=direct`.
+- `docs/postmortems/macos_toolchain_bootstrap.md` — **fixed**: `make setup` now
+  detects macOS/Linux × arm64/amd64 and installs helm + mkdocs too, and `env.sh`
+  reports real status. Still live: behind the corporate proxy some Go module zips
+  arrive truncated (`unexpected EOF`) — use `GOPROXY=direct`. Read it for what
+  remains manual (python3, nfpm, Node) before assuming `make setup` covers it.
 
 Index: `docs/postmortems/README.md`. When you find a new non-obvious gotcha,
 write a post-mortem there and link it from the list above.

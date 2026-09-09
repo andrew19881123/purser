@@ -284,10 +284,12 @@ Open the repo in a [GitHub Codespace](https://github.com/features/codespaces) or
 If you prefer to work locally, `make dev` builds the control plane and starts it with an in-memory SQLite database and the mock engine — no GPU, no real nodes, instant feedback:
 
 ```bash
-make setup          # installs project-local Rust / Go / buf into .toolchain/ (once)
-source ./env.sh     # puts .toolchain/bin on PATH
+make setup          # installs project-local Go / Rust / buf / helm / mkdocs into .toolchain/ (once)
+source ./env.sh     # puts .toolchain/bin on PATH, and reports anything missing
 make dev            # builds control-plane and starts it on :8080
 ```
+
+`make setup` supports macOS (Apple Silicon and Intel) and Linux (`amd64` and `arm64`); it detects the platform, pins Go and helm to exact versions, and verifies their checksums before extracting. Add `--skip-rust` to skip the ~1 GB Rust toolchain if you are only working on Go or the docs. See [CONTRIBUTING.md](https://github.com/andrew19881123/purser/blob/main/CONTRIBUTING.md) for the full matrix and the few prerequisites it does not install.
 
 The control plane listens at `http://localhost:8080`. To run the dashboard alongside it:
 
