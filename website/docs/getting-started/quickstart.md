@@ -343,7 +343,7 @@ for chunk in response:
 ```
 
 !!! note "Engine backends"
-    **Production default is `llamacpp`** (set by the Helm chart). The `docker-compose.yml` demo stack uses `mock` explicitly because it runs without a GPU — mock returns canned responses and must never be used in production. To enable real inference on a bare binary, set `PURSER_ENGINE_BACKEND=llamacpp` and install the agent built with `--features llamacpp`. See [Architecture: Engine backends](architecture.md#engine-backends) for details.
+    **Production default is `llamacpp`** (set by the Helm chart). Both backends live in the Agent, so the `docker-compose.yml` demo stack — which ships no Agent — selects neither and cannot serve inference; the `PURSER_ENGINE_BACKEND: mock` line in that file sits on the control-plane service, which never reads it. A bare agent binary falls back to `mock`, which returns canned responses and must never be used in production. To enable real inference, set `PURSER_ENGINE_BACKEND=llamacpp` and install an agent built with `--features llamacpp`. See [Architecture: Engine backends](architecture.md#engine-backends) for details.
 
 ---
 

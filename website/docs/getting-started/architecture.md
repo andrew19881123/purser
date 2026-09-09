@@ -233,9 +233,12 @@ The Agent ships two engine backends:
 | Backend | Availability | Default in… | Description |
 |---------|-------------|-------------|-------------|
 | `llamacpp` | Compiled with `--features llamacpp` | **Helm chart, production** | Real llama.cpp RPC worker/host processes. Requires `rpc-server` and `llama-server` binaries accessible via `PURSER_LLAMACPP_BIN` or `PATH`. |
-| `mock` | Always | Raw binary (no env var set), demo `docker-compose.yml` | GPU-free deterministic in-process backend. Returns canned responses. **Never use in production.** |
+| `mock` | Always | Raw agent binary (no env var set), CI | GPU-free deterministic in-process backend. Returns canned responses. **Never use in production.** |
 
-The Helm `purser-dataplane` chart sets `engineBackend: llamacpp` in `values.yaml`, so production deployments automatically use real llama.cpp inference. The `docker-compose.yml` demo stack sets `PURSER_ENGINE_BACKEND=mock` explicitly because it runs without a GPU.
+The Helm `purser-dataplane` chart sets `engineBackend: llamacpp` in `values.yaml`, so production deployments automatically use real llama.cpp inference.
+
+!!! note "The `docker-compose.yml` demo stack selects no engine at all"
+    Both backends live in the **Agent**, and the compose demo stack ships no Agent service — so neither is in play. `docker-compose.yml` does set `PURSER_ENGINE_BACKEND: mock`, but on the *control-plane* service, which never reads that variable — it is dead configuration. The compose stack runs the Control Plane, Gateway, dashboard and database only, and cannot serve inference. See [Quickstart: what that path gives you](quickstart.md#what-this-path-gives-you-and-what-it-does-not).
 
 The raw agent binary falls back to `mock` when `PURSER_ENGINE_BACKEND` is unset — useful for CI and local development without a GPU. Always set `PURSER_ENGINE_BACKEND=llamacpp` explicitly in production environments that are not using the Helm chart.
 
