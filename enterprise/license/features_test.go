@@ -208,6 +208,46 @@ func TestSuggestFeatureNoSuggestionForGibberish(t *testing.T) {
 	}
 }
 
+// TestFeatureHint covers the accessor the verify report uses to render its
+// per-offender explanations. It must give the same explanation the sign error
+// gives, and stay empty for a valid flag.
+func TestFeatureHint(t *testing.T) {
+	if h := license.FeatureHint("audit"); h != "" {
+		t.Errorf("FeatureHint(%q) = %q, want empty for a valid flag", "audit", h)
+	}
+	if h := license.FeatureHint("chargeback"); !strings.Contains(h, "billing") {
+		t.Errorf("FeatureHint(%q) = %q, want it to name %q", "chargeback", h, "billing")
+	}
+	// An ungated capability must be explained, not guessed at.
+	h := license.FeatureHint("ha")
+	if h == "" {
+		t.Fatal(`FeatureHint("ha") is empty; the ungated explanation should be shown`)
+	}
+	if strings.Contains(h, "did you mean") {
+		t.Errorf(`FeatureHint("ha") = %q, want an explanation rather than a guess`, h)
+	}
+	// A typo gets the nearest-match phrasing.
+	if h := license.FeatureHint("gdrp"); !strings.Contains(h, "gdpr") {
+		t.Errorf("FeatureHint(%q) = %q, want it to name %q", "gdrp", h, "gdpr")
+	}
+	// The hint must be exactly what the error embeds, so the two paths cannot
+	// drift apart.
+	var ufe *license.UnknownFeatureError
+	if !errors.As(license.ValidateFeature("chargeback"), &ufe) {
+		t.Fatal("ValidateFeature(chargeback) did not yield *UnknownFeatureError")
+	}
+	if ufe.Hint() != license.FeatureHint("chargeback") {
+		t.Errorf("FeatureHint and (*UnknownFeatureError).Hint disagree: %q vs %q",
+			license.FeatureHint("chargeback"), ufe.Hint())
+	}
+	if ufe.Feature != "chargeback" {
+		t.Errorf("UnknownFeatureError.Feature = %q, want %q", ufe.Feature, "chargeback")
+	}
+	if ufe.Suggestion != "billing" {
+		t.Errorf("UnknownFeatureError.Suggestion = %q, want %q", ufe.Suggestion, "billing")
+	}
+}
+
 // TestUnknownFeaturesReportsAllOffenders is the helper the verify path uses to
 // diagnose an already-issued key: it must list every unknown string, in order,
 // and nothing else.
