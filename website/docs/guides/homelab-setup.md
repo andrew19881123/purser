@@ -93,6 +93,18 @@ curl -s http://192.168.1.10:8080/api/v1/cluster/health
 
 If that works from machine B, the wiring is right.
 
+!!! warning "The shipped Compose stack does not expose the gRPC port"
+    Agents enrol and heartbeat over **gRPC**, against the port given in
+    `PURSER_CONTROL_PLANE_ADDR` (`:9443` by default). The demo Compose stack
+    publishes only `3000`, behind an HTTP-only reverse proxy, and keeps `:9443`
+    container-internal. As shipped it therefore **cannot accept an agent
+    enrolment**, so Step 2 below will not complete against it unmodified.
+
+    You need the control plane's gRPC port reachable from every agent — by
+    publishing `9443` from the control-plane container, or by running the control
+    plane outside Compose. Steps 2 to 4 are otherwise correct, and are the same
+    on either path.
+
 !!! warning "The demo stack is not hardened"
     The Compose stack ships demo credentials and a demo gateway API key, and the
     gateway serves plaintext HTTP by design — TLS belongs on an ingress in front.

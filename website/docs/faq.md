@@ -34,10 +34,13 @@ requests and returns synthetic output, so the whole control path — enrolment,
 planning, deployment, routing, streaming, metrics — can be exercised on a laptop
 with no GPU and no model weights.
 
-It is the **default**: the agent uses `mock` unless you set
-`PURSER_ENGINE_BACKEND` to something else, and the Docker Compose demo stack
-relies on it. That is why `docker compose up` gives you a working
-OpenAI-compatible endpoint in two minutes.
+It is the agent's **default**: an agent uses `mock` unless you set
+`PURSER_ENGINE_BACKEND` to something else.
+
+The mock engine is **not** part of the Docker Compose demo stack. No agent ships
+in that stack, so nothing in it serves inference of any kind — compose gives you
+the control plane, gateway, and dashboard, and the mock engine only comes into
+play once you run an agent yourself.
 
 !!! warning "Mock output is not inference"
     The mock engine does not load weights and does not run a model. Text it

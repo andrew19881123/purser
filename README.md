@@ -44,18 +44,34 @@ If you know Kubernetes, the mental model is familiar:
 
 ## Try it now — no GPU, no Kubernetes
 
-The demo stack runs entirely in Docker (the inference engine is a deterministic mock — no GPU needed):
+The demo stack brings up the **control plane, API gateway, and dashboard** in
+Docker — the whole control path, with no GPU and no Kubernetes:
 
 ```bash
 git clone https://github.com/andrew19881123/purser.git
 cd purser
 docker compose up -d
-
-# Wait ~10s for services to start, then:
-curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 ```
 
-Open the dashboard at **http://localhost:3000** — username/password not required in demo mode.
+Open the dashboard at **http://localhost:3000** — username/password not required
+in demo mode. You can browse the fleet, models, and deployment views, and
+exercise the REST API.
+
+What the stack does **not** include is an agent, and inference needs one, so the
+gateway starts with an empty routing table:
+
+```bash
+# Wait ~10s for services to start, then:
+curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
+# {"object":"list","data":[]}
+```
+
+That empty list is the expected result, not a failure: a model appears here only
+once a node has enrolled and a deployment is active. Enrolling a node against
+this stack is not currently possible — the agent joins over gRPC, and compose
+does not expose the control plane's gRPC port. See the
+[Quickstart](https://andrew19881123.github.io/purser/getting-started/quickstart/)
+for what this path gives you and what it does not.
 
 ## Purser vs alternatives
 
