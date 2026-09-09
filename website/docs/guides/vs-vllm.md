@@ -128,22 +128,39 @@ for the split itself.
 
 ## How Purser plans the split
 
-The planner is a dynamic program over cut points. It minimises the **bottleneck
-stage**: of all the ways to cut the layer list into contiguous ranges and assign
-them to nodes in order, it finds the one whose slowest stage is fastest.
+Two distinct steps are involved, and it is worth keeping them apart.
 
-Per stage it charges:
+**Choosing the cut points.** A throughput-aware dynamic program walks the layer
+chain and minimises the **bottleneck stage**: of all the ways to cut the layers
+into contiguous ranges and assign them to nodes in a given order, it finds the one
+whose slowest stage is fastest. Per stage it charges:
 
 - **Compute** — the bytes of active weights the stage must stream, divided by
   that node's memory bandwidth
 - **Communication** — the incoming link's round-trip time plus the activation
   transfer above
 - **Infeasible** — a stage whose weights, KV-cache share, and per-node overhead
-  exceed the node's usable memory is excluded outright
+  exceed the node's usable memory is excluded outright, which prunes infeasible
+  splits rather than scoring them
+
+**Choosing the node order.** Which machine is stage one, stage two, and so on is a
+separate problem: the minimum-cost path visiting every node over the
+activation-transfer edge costs. Purser solves this exactly for small fleets and
+falls back to a heuristic beyond ten nodes.
 
 Memory is a hard constraint; bandwidth drives the balance. That distinction has
 real consequences on mismatched consumer cards, and is covered in
 [Consumer GPU Setup](consumer-gpu-setup.md).
+
+!!! note "Prior art"
+    Neither step is a Purser invention, and the source says so. The layer-split
+    dynamic program follows **PipeEdge**
+    ([arXiv:2110.14895](https://arxiv.org/abs/2110.14895)), and treating memory as
+    a hard constraint that prunes the search follows the "water-filling" approach
+    of **Parallax** ([arXiv:2509.26182](https://arxiv.org/abs/2509.26182)). The
+    node-ordering step is textbook Held-Karp. What Purser contributes is the
+    engineering around them: running this planning automatically, over a fleet of
+    machines that differ from each other, with no hand-tuning from the operator.
 
 !!! warning "The planner does not measure your network"
     The cost model has terms for per-link round-trip time and bandwidth, but

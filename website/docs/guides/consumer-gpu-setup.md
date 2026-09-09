@@ -80,9 +80,11 @@ layers than fit inside roughly 5 GB of weights-plus-KV. That is the ceiling.
 
 ### Bandwidth mismatch sets the balance
 
-The planner minimises the **slowest stage**. A stage's compute cost is modelled as
-the bytes of active weights it must stream divided by that node's memory
-bandwidth. Minimising the maximum therefore equalises
+The planner minimises the **slowest stage** — a dynamic program over cut points
+that follows the PipeEdge line of work, described with its prior art in
+[Purser vs vLLM](vs-vllm.md#how-purser-plans-the-split). A stage's compute cost is
+modelled as the bytes of active weights it must stream divided by that node's
+memory bandwidth. Minimising the maximum therefore equalises
 `layers ÷ bandwidth` — which means:
 
 > Layers are distributed in proportion to **memory bandwidth**, not in proportion
