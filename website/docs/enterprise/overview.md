@@ -68,7 +68,7 @@ The Helm chart stores the key in a Kubernetes Secret and injects it into the Con
 The **Settings** page of the operator dashboard shows a **License** section at the bottom. It displays:
 
 - **Community edition**: a neutral "Community" badge and a link to upgrade documentation.
-- **Enterprise edition**: the licensee name, a badge per enabled feature (`audit`, `ha`, `rbac`, …), and the expiry date. A red "Expired" badge appears when the key has passed its `expires` date.
+- **Enterprise edition**: the licensee name, a badge per enabled feature (`audit`, `billing`, `policy_engine`, …), and the expiry date. A red "Expired" badge appears when the key has passed its `expires` date. The badges show the raw flag strings from the key — see the [feature gate reference](license.md#feature-gate-reference) for the full list and for the product names that differ from their flag.
 
 ### API
 
@@ -92,7 +92,7 @@ Enterprise response:
 {
   "edition": "enterprise",
   "licensee": "Acme Corp",
-  "features": ["audit", "ha", "rbac"],
+  "features": ["audit", "billing", "inference_audit"],
   "expires": "2027-09-04T00:00:00Z"
 }
 ```

@@ -50,6 +50,8 @@ docs/*
 !docs/postmortems/
 # Exception: published website documentation is tracked in website/
 !website/docs/
+# Generated output of `mkdocs build` — never committed (build to -d /tmp instead)
+website/site/
 
 # --- Misc ---
 *.tmp
