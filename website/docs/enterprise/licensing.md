@@ -42,7 +42,7 @@ base64url(payloadJSON) "." base64url(ed25519_signature)
 ```json
 {
   "licensee": "Acme Corp",
-  "features": ["audit", "ha", "rbac"],
+  "features": ["audit", "billing"],
   "issued": "2026-01-01T00:00:00Z",
   "expires": "2027-01-01T00:00:00Z"
 }
@@ -50,6 +50,12 @@ base64url(payloadJSON) "." base64url(ed25519_signature)
 
 The signature covers the raw payload bytes (not the base64 text). The whole
 key is a single shell-safe string — no spaces, no special characters.
+
+The strings in `features` are matched **byte-exactly** against the gates the
+control plane enforces. The authoritative list of those strings, with the
+product name each one corresponds to, is the
+[feature gate reference](license.md#feature-gate-reference) — that table is the
+single source of truth and is deliberately not repeated on this page.
 
 ---
 
@@ -89,7 +95,11 @@ Step 2: Embed this PUBLIC key in your Purser build by replacing
 
 Step 3: Sign licenses with: purser-license sign --key purser-license-signing.key \
           --licensee "Acme Corp" --expires 2027-01-01T00:00:00Z \
-          --feature audit --feature ha
+          --feature audit --feature billing
+
+        Valid --feature values are the gates the control plane enforces;
+        see website/docs/enterprise/license.md ("Feature gate reference").
+        sign rejects anything else, so a mistyped flag cannot reach a customer.
 ```
 
 **Store the private key in a secret manager** (HashiCorp Vault, AWS Secrets
@@ -115,13 +125,14 @@ purser-license sign \
   --licensee "Acme Corp" \
   --expires 2027-01-01T00:00:00Z \
   --feature audit \
-  --feature ha \
-  --feature rbac
+  --feature billing \
+  --feature policy_engine
 ```
 
-This prints a single-line license key to stdout. Send it to the customer
-over any channel (email, ticket, secure paste). The key is not secret — its
-integrity is protected by the ed25519 signature, not by secrecy.
+This prints a single-line license key to **stdout** and nothing else, so it can
+be piped or redirected safely. Send it to the customer over any channel (email,
+ticket, secure paste). The key is not secret — its integrity is protected by the
+ed25519 signature, not by secrecy.
 
 For a time-bounded key using duration instead of a date:
 
@@ -130,8 +141,14 @@ purser-license sign \
   --key purser-license-signing.key \
   --licensee "Acme Corp" \
   --ttl 8760h \
-  --feature audit --feature ha
+  --feature audit --feature billing
 ```
+
+Take each `--feature` value from the
+[feature gate reference](license.md#feature-gate-reference). Product names are
+not flag strings: the Chargeback capability is `billing`, and Policy-as-Code is
+`policy_engine`. `sign` checks every value before it signs anything, so a wrong
+one fails loudly rather than producing a key that quietly grants nothing.
 
 ### Step 4 — Customer sets the key
 
@@ -149,15 +166,111 @@ plane reads `PURSER_LICENSE_KEY` at startup and enables the licensed features.
 
 ## Feature reference
 
-The flag strings the control plane enforces are listed once, in the
-[feature gate reference](license.md#feature-gate-reference) on the License
-Management page. Use that table when choosing the `--feature` values to sign
-into a key — it also records which product names differ from their flag string
-(**Chargeback** is signed as `billing`) and which capabilities carry no gate.
+The authoritative list of feature flag strings lives in one place only:
+**[feature gate reference](license.md#feature-gate-reference)** on the License
+Management page. It gives each flag, the product name it corresponds to, and
+what it unlocks — including which product names differ from their flag string
+(**Chargeback** is signed as `billing`) and which capabilities carry no gate at
+all. Use that table when choosing the `--feature` values to sign into a key.
+
+It is not duplicated here on purpose. An earlier revision of this page carried
+its own copy of the table, and that copy drifted: it listed `ha`, `rbac` and
+`fleet-scale` as flags (none of them is checked anywhere) and omitted most of
+the flags that are. A second copy is how that happens, so there is now one
+table and everything else links to it.
 
 Features are additive — include as many as the customer's license entitles.
 `purser-license sign` validates each `--feature` value against that list and
 refuses an unrecognised one.
+
+---
+
+## Feature string validation
+
+`purser-license sign` validates every `--feature` and `--features` value against
+the gates the control plane actually enforces, and refuses to sign if any value
+is unrecognised.
+
+### Why the guard exists
+
+Entitlement checking is a byte-exact string comparison — there is no
+normalisation, aliasing, or wildcard. Before this validation existed, signing a
+key with a wrong string failed silently on **both** sides of a commercial deal:
+
+- the person signing saw a successful command and a valid-looking key;
+- the customer installing it saw the feature listed in
+  `GET /api/v1/enterprise/status`;
+- every gated endpoint kept returning `402 Payment Required`.
+
+And because `features` is inside the ed25519-signed payload, the key cannot be
+corrected in place. It has to be reissued. The guard turns a silent commercial
+failure into a loud local one.
+
+### What a rejection looks like
+
+Passing a product name where a flag string is required:
+
+```console
+$ purser-license sign --key purser-license-signing.key \
+    --licensee "Acme Corp" --expires 2027-01-01T00:00:00Z \
+    --feature audit --feature chargeback
+purser-license: "chargeback" is not a feature flag the control plane enforces: "chargeback" is the product name; the licence flag for that capability is "billing"
+  A key granting it would verify but unlock nothing, and the features array is
+  inside the signed payload — such a key cannot be corrected, only reissued.
+  Authoritative flag list: website/docs/enterprise/license.md (Feature gate reference).
+
+Nothing was signed. Correct the flag, or pass --allow-unknown-feature to sign it deliberately (e.g. for an unreleased feature)
+```
+
+Nothing is written to stdout and the exit status is **1**. The valid features in
+the same command are not signed either — the command is all-or-nothing, so there
+is no half-issued key to clean up.
+
+The error adapts to the kind of mistake:
+
+| What you passed | What the error says |
+|---|---|
+| A product name (`chargeback`, `opa_policies`, `finops`) | Names the flag string that actually works |
+| A typo (`inference_audi`, `gdrp`) | `did you mean "inference_audit"?` — nearest match by edit distance |
+| A case or separator variant (`Billing`, `policy-engine`) | Points at the exact spelling, since matching is byte-exact |
+| A capability with no gate (`ha`, `rbac`, `fleet-scale`, `slo`) | Explains that the capability is shipped and ungated, or never a licence feature, so no flag is needed. It does **not** offer a substitute, because there isn't one |
+
+That last row matters: `--feature ha` is not a typo for anything. Suggesting a
+nearest match would send you looking for a flag that does not exist.
+
+### Signing an unreleased feature — `--allow-unknown-feature`
+
+A flag string may legitimately need to be signed before the gate that reads it
+ships. Pass `--allow-unknown-feature` to sign anyway:
+
+```console
+$ purser-license sign --key purser-license-signing.key \
+    --licensee "Acme Corp" --ttl 8760h \
+    --feature audit --feature unreleased_thing --allow-unknown-feature
+WARNING: ============================================================
+WARNING: --allow-unknown-feature was passed. Signed WITHOUT validation:
+WARNING:   "unreleased_thing"
+WARNING:
+WARNING: No gate in the control plane checks these strings, so this key
+WARNING: will verify and appear correct in /api/v1/enterprise/status while
+WARNING: unlocking nothing. The features array is inside the ed25519-signed
+WARNING: payload: this key CANNOT be corrected in place: it must be reissued.
+WARNING: Do not send it to a customer unless you intend exactly this.
+WARNING: ============================================================
+eyJsaWNlbnNlZSI6IkFjbWUgQ29ycCIsImZlYXR1cmVz...
+```
+
+Notes on the override:
+
+- It is an **explicit command-line flag, deliberately not an environment
+  variable** — nothing in a shell profile or CI environment can switch the guard
+  off by accident.
+- The warning goes to **stderr**; stdout still contains only the key, so
+  `sign ... > key.txt` keeps working and the warning still reaches a human.
+- It only warns about the strings that failed validation. Valid features in the
+  same command are not mentioned, and a command whose features are all valid
+  prints no warning at all even with the flag present.
+- Exit status is **0** — the key was produced.
 
 ---
 
@@ -182,7 +295,7 @@ Example output for a valid key:
 License: VALID
   Licensee:  Acme Corp
   Expires:   2027-01-01
-  Features:  audit, ha, rbac
+  Features:  audit, billing
   Valid now: yes
 ```
 
@@ -195,6 +308,37 @@ License: INVALID
 
 Exit codes: **0** = valid signature (check "Valid now" to know if it is in
 date), **1** = invalid or malformed.
+
+### Diagnosing a key that grants nothing
+
+`verify` also flags feature strings that match no enforced gate. This is the
+tool to reach for when a customer reports that a feature they were sold does
+nothing — including for keys issued before `sign` validated its input:
+
+```
+License: VALID
+  Licensee:  Acme Corp
+  Expires:   2027-01-01
+  Features:  audit, chargeback, ha
+  Valid now: yes
+
+  WARNING: 2 feature strings match no gate the control plane enforces:
+    - "chargeback" — "chargeback" is the product name; the licence flag for that capability is "billing"
+    - "ha" — the Raft HA control plane is shipped and ungated — no licence flag is checked for it, so a key does not need one
+  These flags unlock nothing. Because they are inside the signed payload,
+  the key must be reissued to fix them — it cannot be edited.
+  Authoritative flag list: website/docs/enterprise/license.md
+```
+
+The **exit code stays 0**: the signature really is valid, and a key that grants
+a useless string is not a forgery. Scripts that treat 0 as "good signature"
+continue to work unchanged. Read the warning, not the exit status, to judge
+whether a key entitles what it was meant to.
+
+In the example above only `chargeback` needs a reissued key — the customer wanted
+the Chargeback capability and the flag should have been `billing`. The `ha` entry
+needs no key at all, because the HA control plane is not gated; dropping the
+string from the next key is enough.
 
 ### Verifying against the development key
 
@@ -237,3 +381,15 @@ the output to distinguish the two cases.
   cryptographic signature, not by keeping the key string hidden.
 - The license check is **entirely offline**. Air-gapped deployments are fully
   supported with no special configuration.
+- `--allow-unknown-feature` weakens no cryptography — it only skips the check
+  that a flag string means something. A key signed with it is exactly as
+  tamper-proof as any other; it simply may grant nothing.
+
+---
+
+## Related pages
+
+- [Feature gate reference](license.md#feature-gate-reference) — the authoritative
+  flag strings, and the product name each one corresponds to
+- [License Status Tile](license.md) — installing a key and reading it in the dashboard
+- [Enterprise overview](overview.md)

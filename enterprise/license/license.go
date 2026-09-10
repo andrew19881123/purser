@@ -16,8 +16,11 @@
 //
 // where payloadJSON is:
 //
-//	{"licensee":"Acme Corp","features":["audit","rbac"],
+//	{"licensee":"Acme Corp","features":["audit","billing"],
 //	 "issued":"2026-01-01T00:00:00Z","expires":"2027-01-01T00:00:00Z"}
+//
+// The strings in features are matched byte-exactly by [License.HasFeature]; the
+// set that means anything is [KnownFeatures] (see features.go).
 //
 // The signature is computed over the raw payload JSON bytes (not the base64
 // text). base64url is RFC 4648 URL-safe base64 without padding, so a key is a
@@ -147,6 +150,12 @@ func (l *License) ValidAt(t time.Time) bool {
 }
 
 // HasFeature reports whether name is in the license's feature set.
+//
+// The comparison is byte-exact: there is no normalisation, aliasing, or
+// wildcard, so "Billing" and "chargeback" are simply absent as far as an
+// entitlement check is concerned. Signing is guarded against that mistake by
+// [ValidateFeatures]; this method is deliberately left literal, because
+// loosening it would change what keys already issued to customers grant.
 func (l *License) HasFeature(name string) bool {
 	if l == nil {
 		return false

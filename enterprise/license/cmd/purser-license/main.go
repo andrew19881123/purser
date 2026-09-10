@@ -14,12 +14,18 @@
 // # sign — mint a license key
 //
 //	purser-license sign --licensee "Acme Corp" \
-//	  --feature audit --feature ha --feature rbac \
+//	  --feature audit --feature billing \
 //	  --expires 2027-01-01T00:00:00Z \
 //	  --key purser-license-signing.key
 //
 // Reads the private key from --key or $PURSER_LICENSE_SIGNING_KEY and prints
 // the signed key to stdout. Hand it to the customer who sets $PURSER_LICENSE_KEY.
+//
+// Every --feature / --features value is checked against the flags the control
+// plane actually enforces (license.KnownFeatures) before anything is signed; an
+// unrecognised string aborts the command with a suggestion. --allow-unknown-feature
+// overrides the check for an unreleased feature and prints a loud warning.
+// The authoritative flag list is website/docs/enterprise/license.md.
 //
 // # verify — inspect a license key
 //
@@ -29,7 +35,9 @@
 //
 // Verifies the ed25519 signature and prints licensee, expiry, features, and
 // whether the key is currently valid. Exits 0 for a valid signature, 1 for
-// invalid (regardless of expiry — check "Valid now" in the output).
+// invalid (regardless of expiry — check "Valid now" in the output). Feature
+// strings that match no enforced gate are flagged with a warning; this does not
+// change the exit code, since the signature is genuinely valid.
 package main
 
 import (
@@ -98,12 +106,21 @@ Environment:
 
 Flags for sign:
   --licensee NAME    licensee / customer name (required)
-  --feature FEAT     feature to grant; repeat for multiple (--feature audit --feature ha)
+  --feature FEAT     feature to grant; repeat for multiple (--feature audit --feature billing)
   --features a,b     comma-separated features (deprecated; use --feature)
   --expires RFC3339  expiry date, e.g. 2027-01-01T00:00:00Z
   --ttl DURATION     validity duration from issue time, e.g. 8760h
   --issued RFC3339   issue date (default: now)
   --key FILE         path to private signing key
+  --allow-unknown-feature
+                     sign a feature string that matches no enforced gate (for an
+                     unreleased feature). Prints a loud warning; the resulting
+                     key unlocks nothing for that string and cannot be corrected
+                     without reissuing it.
+
+Feature strings are validated against the gates the control plane enforces
+before signing. The authoritative list, with the product name for each flag, is
+website/docs/enterprise/license.md ("Feature gate reference").
 
 Flags for verify:
   --dev   verify against the development key (DevPublicKeyBase64) instead of
@@ -180,7 +197,38 @@ func verifyCmd(args []string) error {
 	fmt.Printf("  Expires:   %s\n", expires)
 	fmt.Printf("  Features:  %s\n", features)
 	fmt.Printf("  Valid now: %s\n", validNow)
+
+	// Keys minted before the signing guard existed can carry flags that no gate
+	// checks. This is the path an operator reaches for when a feature they paid
+	// for does nothing, so name the dead flags explicitly rather than leaving
+	// them to diff the Features line against the docs by eye.
+	//
+	// The exit code deliberately stays 0: the signature IS valid, and the
+	// documented contract is that 0 means a good signature. Scripts depend on
+	// it, and an unlockable feature is not a forgery.
+	if unknown := license.UnknownFeatures(lic.Features); len(unknown) > 0 {
+		fmt.Println()
+		fmt.Printf("  WARNING: %s\n", pluraliseFeatures(len(unknown)))
+		for _, u := range unknown {
+			line := fmt.Sprintf("    - %q", u)
+			if hint := license.FeatureHint(u); hint != "" {
+				line += " — " + hint
+			}
+			fmt.Println(line)
+		}
+		fmt.Println("  These flags unlock nothing. Because they are inside the signed payload,")
+		fmt.Println("  the key must be reissued to fix them — it cannot be edited.")
+		fmt.Println("  Authoritative flag list: website/docs/enterprise/license.md")
+	}
 	return nil
+}
+
+// pluraliseFeatures renders the warning headline for n dead feature flags.
+func pluraliseFeatures(n int) string {
+	if n == 1 {
+		return "1 feature string matches no gate the control plane enforces:"
+	}
+	return fmt.Sprintf("%d feature strings match no gate the control plane enforces:", n)
 }
 
 // keygen generates an ed25519 keypair and prints step-by-step onboarding
@@ -244,12 +292,16 @@ func keygen(args []string) error {
 	}
 	fmt.Printf("Step 3: Sign licenses with: purser-license sign --key %s \\\n", keyArg)
 	fmt.Printf("          --licensee \"Acme Corp\" --expires 2027-01-01T00:00:00Z \\\n")
-	fmt.Printf("          --feature audit --feature ha\n")
+	fmt.Printf("          --feature audit --feature billing\n")
+	fmt.Println()
+	fmt.Println("        Valid --feature values are the gates the control plane enforces;")
+	fmt.Println("        see website/docs/enterprise/license.md (\"Feature gate reference\").")
+	fmt.Println("        sign rejects anything else, so a mistyped flag cannot reach a customer.")
 	return nil
 }
 
 // multiFlag is a flag.Value that accumulates repeated --feature flags into a
-// string slice (e.g. --feature audit --feature ha --feature rbac).
+// string slice (e.g. --feature audit --feature billing).
 type multiFlag []string
 
 func (f *multiFlag) String() string { return strings.Join(*f, ",") }
@@ -266,12 +318,14 @@ func sign(args []string) error {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	licensee := fs.String("licensee", "", "licensee / customer name (required)")
 	var featureMulti multiFlag
-	fs.Var(&featureMulti, "feature", "feature to grant (repeatable: --feature audit --feature ha)")
+	fs.Var(&featureMulti, "feature", "feature to grant (repeatable: --feature audit --feature billing)")
 	features := fs.String("features", "", "comma-separated feature entitlements (deprecated: use --feature)")
 	ttl := fs.Duration("ttl", 0, "validity duration from --issued, e.g. 8760h (mutually exclusive with --expires)")
 	expiresStr := fs.String("expires", "", "explicit expiry as RFC3339 (mutually exclusive with --ttl)")
 	issuedStr := fs.String("issued", "", "issue time as RFC3339 (default: now)")
 	keyPath := fs.String("key", "", "path to the private key file (overrides $"+signingKeyEnv+")")
+	allowUnknown := fs.Bool("allow-unknown-feature", false,
+		"sign feature strings that match no enforced gate (for unreleased features; prints a warning)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -327,6 +381,19 @@ func sign(args []string) error {
 		}
 	}
 
+	// Guard: refuse to mint a key granting a flag no gate checks. Such a key
+	// verifies, lists the flag in /api/v1/enterprise/status, and unlocks
+	// nothing — and it cannot be patched, because the features array is inside
+	// the signed payload. Failing silently here costs a key reissue at best and
+	// a broken customer install at worst.
+	if err := license.ValidateFeatures(feats); err != nil {
+		if !*allowUnknown {
+			return fmt.Errorf("%w\n\nNothing was signed. Correct the flag, or pass "+
+				"--allow-unknown-feature to sign it deliberately (e.g. for an unreleased feature)", err)
+		}
+		warnUnvalidatedFeatures(feats)
+	}
+
 	key, err := license.Sign(priv, license.Payload{
 		Licensee: *licensee,
 		Features: feats,
@@ -338,6 +405,36 @@ func sign(args []string) error {
 	}
 	fmt.Println(key)
 	return nil
+}
+
+// warnUnvalidatedFeatures prints a deliberately loud notice naming every flag
+// that was signed without matching an enforced gate. It writes to STDERR so
+// that stdout stays exactly one line — the key — and remains pipeable.
+//
+// The override exists so the guard can never become a reason to work around the
+// tool, but a key minted this way is a commercial liability: it looks correct to
+// everyone involved and grants nothing. Saying so at the moment of signing is
+// the only cheap place to say it.
+func warnUnvalidatedFeatures(feats []string) {
+	unknown := license.UnknownFeatures(feats)
+	if len(unknown) == 0 {
+		return
+	}
+	quoted := make([]string, len(unknown))
+	for i, u := range unknown {
+		quoted[i] = fmt.Sprintf("%q", u)
+	}
+	w := os.Stderr
+	fmt.Fprintln(w, "WARNING: ============================================================")
+	fmt.Fprintf(w, "WARNING: --allow-unknown-feature was passed. Signed WITHOUT validation:\n")
+	fmt.Fprintf(w, "WARNING:   %s\n", strings.Join(quoted, ", "))
+	fmt.Fprintln(w, "WARNING:")
+	fmt.Fprintln(w, "WARNING: No gate in the control plane checks these strings, so this key")
+	fmt.Fprintln(w, "WARNING: will verify and appear correct in /api/v1/enterprise/status while")
+	fmt.Fprintln(w, "WARNING: unlocking nothing. The features array is inside the ed25519-signed")
+	fmt.Fprintln(w, "WARNING: payload: this key CANNOT be corrected in place: it must be reissued.")
+	fmt.Fprintln(w, "WARNING: Do not send it to a customer unless you intend exactly this.")
+	fmt.Fprintln(w, "WARNING: ============================================================")
 }
 
 // loadSigningKey resolves the ed25519 private key from an explicit path, or the
