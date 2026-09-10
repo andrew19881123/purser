@@ -29,6 +29,22 @@ API keys are created via the Control Plane (`POST /api/v1/apikeys`) and stored a
 
 ---
 
+## How inference requests are handled
+
+The three inference endpoints — `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings` — share one code path, so the following applies identically to all of them.
+
+**Your request body is forwarded verbatim.** The gateway parses only two fields out of it: `model`, to resolve the deployment host from the routing table, and `stream`, to decide how to relay the response. Every other field — `temperature`, `max_tokens`, `tools`, `input`, `encoding_format`, anything an engine supports — is passed through untouched. The gateway neither validates nor rewrites them.
+
+**`stream` is read the same way on every endpoint.** `stream: true` pipes the upstream's SSE bytes to you chunk by chunk; `stream: false` (the default) buffers the full JSON body. This decision is made from the field alone, not from which endpoint you called.
+
+**Response shapes come from the engine, not from Purser.** Because the gateway proxies rather than synthesises, what you get back for a given endpoint is whatever the engine behind that deployment returns — and whether the engine serves that endpoint at all is the engine's business. The examples below show the shapes the bundled mock engine produces; a different engine may differ, and an engine that does not implement an endpoint will fail at the upstream rather than at the gateway.
+
+**Request bodies are capped at 4 MB** on the three POST endpoints. The cap is enforced by the HTTP framework before the handler runs, so an oversized request is rejected without a Purser error envelope. `GET /v1/models` has no body and is not affected.
+
+**Authentication, quota, and rate limiting** apply to all three identically — see [Authentication](#authentication) and [Rate limiting and backpressure](#rate-limiting-and-backpressure).
+
+---
+
 ## Chat Completions
 
 ### `POST /v1/chat/completions`
@@ -115,6 +131,76 @@ X-Queue-Position: 0
 
 ---
 
+## Text Completions
+
+### `POST /v1/completions`
+
+The legacy (non-chat) text-completion endpoint, for clients written against the older OpenAI Completions API. Authenticated, quota-checked, and proxied exactly as chat completions are; `stream: true` is honoured the same way.
+
+**Request:**
+
+```json
+{
+  "model": "llama-8b",
+  "prompt": "Write a haiku about GPUs",
+  "max_tokens": 64,
+  "stream": false
+}
+```
+
+Only `model` and `stream` are interpreted by the gateway. `prompt`, `max_tokens` and any other field are forwarded to the engine unchanged.
+
+**Response `200`:** the engine's `text_completion` object, relayed verbatim. With `stream: true`, `text/event-stream` chunks terminated by `data: [DONE]`, as for chat completions.
+
+**Error responses:** identical to [`POST /v1/chat/completions`](#post-v1chatcompletions) — same authentication, routing, backpressure, and upstream failure mapping.
+
+!!! note "Prefer chat completions for new work"
+    OpenAI treats the Completions API as legacy, and so should you for new integrations. This endpoint exists so that existing clients keep working when they are pointed at Purser.
+
+---
+
+## Embeddings
+
+### `POST /v1/embeddings`
+
+Returns embedding vectors for one or more inputs, from a deployed embedding model.
+
+**Request:**
+
+```json
+{
+  "model": "purser/mock-embed",
+  "input": "the quick brown fox",
+  "encoding_format": "float"
+}
+```
+
+`input` accepts a string or an array of strings. As everywhere on this plane, `input` and `encoding_format` are forwarded to the engine rather than interpreted by the gateway.
+
+**Response `200`** — the shape the bundled mock engine returns:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "embedding": [0.0123, -0.0456, "..."], "index": 0}
+  ],
+  "model": "purser/mock-embed",
+  "usage": {"prompt_tokens": 5, "total_tokens": 5}
+}
+```
+
+The mock engine emits a 128-dimension vector normalised to unit length, with values drawn at random on each run — the norm is the only property you can assert on. It is useful for wiring up a client, and carries no semantic meaning whatsoever. A real embedding model returns its own dimensionality.
+
+**Error responses:** identical to [`POST /v1/chat/completions`](#post-v1chatcompletions).
+
+!!! warning "`stream` is not special-cased for embeddings"
+    The gateway makes its streaming decision from the `stream` field alone, on every inference endpoint. Embedding responses are buffered in practice because clients do not set `stream: true` and engines do not stream embeddings — but the gateway does not reject or ignore the field. Sending `stream: true` here puts the gateway into SSE relay mode over a response the engine never streams; leave it unset.
+
+**Model must be an embedding model.** `GET /v1/models` lists every actively deployed model without distinguishing embedding models from generative ones, so the routing table will happily send an embedding request to a chat model. The resulting error comes from the engine.
+
+---
+
 ## Models
 
 ### `GET /v1/models`
@@ -130,13 +216,16 @@ Lists all models with active deployments and active routes (populated by the Con
     {
       "id": "llama-8b",
       "object": "model",
-      "created": 1725494400
+      "created": 1725494400,
+      "owned_by": "purser"
     }
   ]
 }
 ```
 
 If no models are deployed, `data` is an empty array `[]`.
+
+Entries carry no capability or modality field, so this list does not tell you which models are embedding models and which are generative. Sending an embedding request to a chat model is therefore routed normally and fails at the engine.
 
 ---
 

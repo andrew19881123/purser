@@ -23,12 +23,22 @@ the **ChargebackPage** in the UI require the `billing` feature in the active lic
 
 ## Enabling chargeback
 
-1. Obtain a Purser Enterprise license that includes the `billing` feature.
+1. Obtain a Purser Enterprise license whose `features` array contains the exact
+   string **`billing`**.
 2. Set the `PURSER_LICENSE_KEY` environment variable (or `--license-key` flag) on
    the control plane.
 3. The feature is active immediately — no restart required after the key is loaded.
 
-Verify the feature is enabled:
+!!! warning "The flag string is `billing`, not `chargeback`"
+    This capability is called *chargeback* throughout the product and the
+    documentation, but the licence flag it is gated on is `billing`. A key signed
+    with `--feature chargeback` verifies successfully and lists `chargeback` in
+    `/api/v1/enterprise/status`, yet every gated endpoint below still returns
+    `402`. Since the payload is signed, such a key cannot be patched — it must be
+    reissued. See the [feature gate reference](license.md#feature-gate-reference).
+
+Verify the feature is enabled — check for `billing` in the output, not
+`chargeback`:
 
 ```bash
 curl -s https://purser.example.com/api/v1/enterprise/status | jq .features
