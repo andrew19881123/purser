@@ -56,4 +56,28 @@ export XDG_DATA_HOME="$PURSER_TOOLCHAIN/xdg/data"
 # --- PATH (project-local binaries take precedence) -------------------------
 export PATH="$PURSER_ROOT/.toolchain/bin:$CARGO_HOME/bin:$GOROOT/bin:$GOBIN:$PATH"
 
-echo "purser: toolchain ready (root=$PURSER_ROOT)" 1>&2
+# --- Status report ---------------------------------------------------------
+# This used to print "toolchain ready" unconditionally, which meant it said
+# "ready" on a machine where .toolchain/ did not exist at all — a status
+# message that cannot be false is not a status report. It now reports what is
+# actually on PATH and names what is missing.
+#
+# Deliberately never exits or returns non-zero: this file is *sourced*, so an
+# exit would terminate the caller's interactive shell, and a non-zero return
+# would break the documented `source ./env.sh && <command>` idiom.
+_purser_missing=""
+for _purser_tool in go cargo buf helm mkdocs; do
+  command -v "$_purser_tool" >/dev/null 2>&1 || _purser_missing="$_purser_missing $_purser_tool"
+done
+
+if [ -z "$_purser_missing" ]; then
+  echo "purser: toolchain ready (root=$PURSER_ROOT)" 1>&2
+elif [ ! -d "$PURSER_TOOLCHAIN" ]; then
+  echo "purser: PATH set (root=$PURSER_ROOT) — but .toolchain/ does not exist." 1>&2
+  echo "purser: nothing is installed. Run: make setup" 1>&2
+else
+  echo "purser: PATH set (root=$PURSER_ROOT) — incomplete toolchain." 1>&2
+  echo "purser: missing:$_purser_missing" 1>&2
+  echo "purser: run 'make setup' to install what is missing." 1>&2
+fi
+unset _purser_missing _purser_tool

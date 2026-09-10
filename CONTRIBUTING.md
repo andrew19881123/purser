@@ -5,13 +5,46 @@ Thanks for your interest in contributing! Purser is a polyglot monorepo
 
 ## Development setup
 
-Everything is **project-local** — no global installs.
+Everything is **project-local** — no global installs. `make setup` writes only
+into `.toolchain/` (git-ignored); `$HOME` and `/usr/local` are never touched.
 
 ```bash
-make setup       # installs Rust, Go, buf into .toolchain/
-source ./env.sh  # cargo / go / buf on PATH
+make setup       # installs Go, Rust, buf, helm, mkdocs into .toolchain/
+source ./env.sh  # puts them on PATH, and reports anything missing
 make build test  # verify a green baseline
 ```
+
+### Supported platforms
+
+| OS | Architecture |
+|---|---|
+| macOS (Darwin) | `arm64` (Apple Silicon), `amd64` (Intel) |
+| Linux | `amd64`, `arm64` |
+
+Anything else stops with a message naming the platform it detected rather than
+downloading an archive that cannot run. Go and helm are pinned to exact
+versions and verified against in-repo SHA256 checksums before extraction.
+
+Useful flags:
+
+```bash
+./tools/setup-toolchain.sh --dry-run     # print the plan, download nothing
+./tools/setup-toolchain.sh --skip-rust   # skip Rust (~1 GB) for Go-only or docs-only work
+```
+
+`make setup` is idempotent — re-running skips anything already present at the
+pinned version, and an interrupted download never leaves a half-installed
+toolchain behind. Note `--skip-rust` means `make build` will not work, since
+that builds the Rust workspace.
+
+### Prerequisites the script does not install
+
+- **python3** — required to create the venv that provides `mkdocs`. If it is
+  absent, setup continues and tells you the docs build is unavailable.
+- **nfpm** — only needed for `make package-agent` (`.deb`/`.rpm`). Release
+  packaging runs in CI, so most contributors never need it.
+- **Node / npm** — for `ui/` work (`cd ui && npm install`).
+- **shellcheck** — optional, for linting `tools/*.sh`.
 
 ## Running E2E tests locally
 
