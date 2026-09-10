@@ -26,10 +26,10 @@ from purser import PurserClient
 client = PurserClient("http://localhost:8080")
 
 # With an API key
-client = PurserClient("http://localhost:8080", api_key="psk_...")
+client = PurserClient("http://localhost:8080", api_key="sk-...")
 
 # As a context manager (recommended — closes the connection pool on exit)
-with PurserClient("http://localhost:8080", api_key="psk_...") as client:
+with PurserClient("http://localhost:8080", api_key="sk-...") as client:
     health = client.cluster_health()
     print(health.status)          # "ok" | "degraded" | "empty" | "unavailable"
     print(health.ready_nodes)     # int
@@ -331,7 +331,7 @@ import asyncio
 from purser import AsyncPurserClient
 
 async def main():
-    async with AsyncPurserClient("http://localhost:8080", api_key="psk_...") as client:
+    async with AsyncPurserClient("http://localhost:8080", api_key="sk-...") as client:
         # Any method that exists on PurserClient is available here as a coroutine.
         nodes = await client.list_nodes()
         for node in nodes:
@@ -369,7 +369,7 @@ cadence).  Each dict contains:
 ```python
 from purser import PurserClient
 
-with PurserClient("http://localhost:8080", api_key="psk_...") as client:
+with PurserClient("http://localhost:8080", api_key="sk-...") as client:
     for snapshot in client.stream_metrics():
         print(f"[{snapshot['at']}] {snapshot['aggregate_decode_tok_s']:.1f} tok/s")
 ```
@@ -381,7 +381,7 @@ import asyncio
 from purser import AsyncPurserClient
 
 async def watch():
-    async with AsyncPurserClient("http://localhost:8080", api_key="psk_...") as client:
+    async with AsyncPurserClient("http://localhost:8080", api_key="sk-...") as client:
         async for snapshot in client.stream_metrics():
             print(f"[{snapshot['at']}] {snapshot['aggregate_decode_tok_s']:.1f} tok/s")
 

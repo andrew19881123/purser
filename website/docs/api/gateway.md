@@ -13,7 +13,7 @@ The gateway serves **plaintext HTTP**. TLS is terminated upstream at the ingress
 All inference endpoints require a bearer token:
 
 ```http
-Authorization: Bearer psk_<your-api-key>
+Authorization: Bearer sk-<your-api-key>
 ```
 
 API keys are created via the Control Plane (`POST /api/v1/apikeys`) and stored as gateway API keys (`PURSER_GATEWAY_API_KEYS`).
@@ -264,7 +264,7 @@ Any limit exceeded returns `429` with a `Retry-After` header. Set any limit to `
 
     client = OpenAI(
         base_url="http://<gateway-host>:<port>/v1",
-        api_key="psk_<your-api-key>"
+        api_key="sk-<your-api-key>"
     )
 
     # Non-streaming
@@ -291,7 +291,7 @@ Any limit exceeded returns `429` with a `Retry-After` header. Set any limit to `
 
     const client = new OpenAI({
       baseURL: "http://<gateway-host>:<port>/v1",
-      apiKey: "psk_<your-api-key>",
+      apiKey: "sk-<your-api-key>",
     });
 
     const stream = await client.chat.completions.create({
@@ -310,7 +310,7 @@ Any limit exceeded returns `429` with a `Retry-After` header. Set any limit to `
     ```bash
     # Non-streaming
     curl -sS http://<gateway-host>:<port>/v1/chat/completions \
-      -H "Authorization: Bearer psk_<your-api-key>" \
+      -H "Authorization: Bearer sk-<your-api-key>" \
       -H "Content-Type: application/json" \
       -d '{
         "model": "llama-8b",
@@ -320,7 +320,7 @@ Any limit exceeded returns `429` with a `Retry-After` header. Set any limit to `
 
     # Streaming (SSE)
     curl -N http://<gateway-host>:<port>/v1/chat/completions \
-      -H "Authorization: Bearer psk_<your-api-key>" \
+      -H "Authorization: Bearer sk-<your-api-key>" \
       -H "Content-Type: application/json" \
       -d '{
         "model": "llama-8b",

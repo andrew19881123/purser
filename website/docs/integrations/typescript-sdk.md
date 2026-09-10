@@ -24,10 +24,10 @@ import { PurserClient } from '@purser/sdk';
 const client = new PurserClient('http://localhost:8080');
 
 // With an API key
-const client = new PurserClient('http://localhost:8080', 'psk_...');
+const client = new PurserClient('http://localhost:8080', 'sk-...');
 
 // Custom timeout (milliseconds, default 30 000)
-const client = new PurserClient('http://localhost:8080', 'psk_...', 60_000);
+const client = new PurserClient('http://localhost:8080', 'sk-...', 60_000);
 ```
 
 ### List nodes
@@ -44,7 +44,7 @@ for (const node of nodes) {
 ```typescript
 import { PurserClient, ModelSpec } from '@purser/sdk';
 
-const client = new PurserClient('http://localhost:8080', 'psk_...');
+const client = new PurserClient('http://localhost:8080', 'sk-...');
 
 // Register the model in the catalog
 const spec: ModelSpec = {

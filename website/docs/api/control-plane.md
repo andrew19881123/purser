@@ -12,10 +12,11 @@ All responses are `application/json`. All request bodies that carry a payload us
 Every non-public endpoint requires an API key supplied as a Bearer token:
 
 ```http
-Authorization: Bearer psk_<base64>
+Authorization: Bearer sk-a3f8bc12de456789abcdef0123456789abcdef01
 ```
 
-Keys are minted via `POST /api/v1/apikeys` (see below). The plaintext secret
+Keys are minted via `POST /api/v1/apikeys` (see below) and have the form `sk-`
+followed by exactly 40 lowercase hexadecimal characters. The plaintext secret
 is returned **once** at creation time; only its SHA-256 hash is persisted.
 
 ### RBAC
@@ -475,11 +476,17 @@ Mints a single-use, expiring cluster join token. The operator hands the returned
 
 ```json
 {
-  "token": "psk_...",
+  "token": "eyJleHAiOjE3ODkyMDAwMDAsIm5vbmNlIjoiNGYxYzhhMmJlOWQwNzYzNGE1YzFlOGYyOTBiM2Q3NDYifQ.KuWaWIO9iPAuISxsW5rXuVybY7Vr9BbWA7gGzUkQUSE",
   "expires_at": "2026-09-05T01:00:00Z",
   "cluster_id": "default"
 }
 ```
+
+A join token carries **no prefix**. It is two `base64url` segments joined by a
+`.` — a payload holding the expiry and a single-use nonce, followed by an
+HMAC-SHA256 signature over that payload. Treat it as opaque and pass it through
+verbatim: the signature covers the payload byte-for-byte, so an added prefix or
+stray whitespace invalidates the token.
 
 The plaintext token is returned **once** and never persisted.
 
@@ -499,7 +506,7 @@ The bundle format is a shell-sourceable env file (KEY=value per line). Save it t
 
 ```
 PURSER_CONTROL_PLANE_ADDR=http://10.0.0.1:9443
-PURSER_JOIN_TOKEN=psk_...
+PURSER_JOIN_TOKEN=eyJleHAiOjE3ODkyMDAwMDAsIm5vbmNlIjoiNGYxYzhhMmJlOWQwNzYzNGE1YzFlOGYyOTBiM2Q3NDYifQ.KuWaWIO9iPAuISxsW5rXuVybY7Vr9BbWA7gGzUkQUSE
 PURSER_CLUSTER_ID=default
 ```
 
