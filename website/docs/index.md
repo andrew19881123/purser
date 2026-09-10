@@ -97,13 +97,21 @@ docker compose up -d
 open http://localhost:3000
 ```
 
-No GPU required — the demo uses the built-in mock engine.
+No GPU required — the stack brings up the control plane, API gateway, and
+dashboard, which is the whole control path.
+
+What it does not include is an agent, and inference needs one, so the gateway
+starts with an empty routing table:
 
 ```bash
 curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
+# {"object":"list","data":[]}
 ```
 
-For production Kubernetes deployments see the [Quickstart guide](getting-started/quickstart.md).
+That empty list is the expected result, not a failure: a model appears here only
+once a node has enrolled and a deployment is active. See the
+[Quickstart guide](getting-started/quickstart.md) for what this path gives you and
+what it does not, and for production Kubernetes deployments.
 
 ## Component ports
 

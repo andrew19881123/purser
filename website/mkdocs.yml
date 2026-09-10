@@ -58,6 +58,14 @@ nav:
     - Multi-Node Inference (LAN): getting-started/multi-node-inference.md
     - Architecture: getting-started/architecture.md
     - Deploy Your First Model: getting-started/deploy-model.md
+  - Guides:
+    - Purser vs Ollama: guides/vs-ollama.md
+    - Purser vs vLLM: guides/vs-vllm.md
+    - Migrating from the OpenAI API: guides/openai-migration.md
+    - Homelab Setup (Docker Compose): guides/homelab-setup.md
+    - Consumer GPU Setup (mismatched cards): guides/consumer-gpu-setup.md
+  - FAQ: faq.md
+  - Benchmarks: benchmarks/index.md
   - Install:
     - Kubernetes (Helm): install/kubernetes.md
     - Kubernetes Enterprise (CP + DP): install/kubernetes-enterprise.md
