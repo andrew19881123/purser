@@ -94,11 +94,13 @@ function CapacityCard({
 }
 
 function hardwareSummary(n: NodeView): string {
+  const gpus = n.profile.gpus ?? [];
   const gpu =
-    n.profile.gpus.length > 0
-      ? n.profile.gpus.map((g) => `${g.count}× ${g.name} (${g.vramGb}GB)`).join(', ')
+    gpus.length > 0
+      ? gpus.map((g) => `${g.count}× ${g.name} (${g.vramGb}GB)`).join(', ')
       : 'CPU only';
-  return `${gpu} · ${gb(n.profile.ramTotalGb)} RAM · ${n.profile.backends.join('/')}`;
+  const backends = n.profile.backends ?? [];
+  return `${gpu} · ${gb(n.profile.ramTotalGb)} RAM${backends.length > 0 ? ` · ${backends.join('/')}` : ''}`;
 }
 
 /**
