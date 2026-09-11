@@ -20,12 +20,13 @@ import {
   useNodes,
   useNodeAction,
   useReconcilerStatus,
+  useSloCompliance,
   type ReconcilerStatus,
 } from '../hooks/queries';
 import { useT, type TFunc } from '../i18n';
 import { gb, tokS } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView } from '../api/types';
+import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView, SloModelCompliance } from '../api/types';
 
 const LINK_TONE: Record<LinkQuality, Tone> = {
   excellent: 'success',
@@ -211,6 +212,64 @@ export function ReconcilerStatusCard({
   );
 }
 
+// ---------------------------------------------------------------------------
+// SLO Status card
+// ---------------------------------------------------------------------------
+
+const SLO_TONE: Record<SloModelCompliance['status'], Tone> = {
+  met: 'success',
+  breached: 'danger',
+  insufficient_data: 'neutral',
+};
+
+function SloStatusCard({ t }: { t: TFunc }) {
+  const { data, isLoading, isError, error } = useSloCompliance(24);
+
+  return (
+    <Card title={t('slo.title')}>
+      {isLoading && <LoadingBlock />}
+      {isError && (
+        <ErrorState message={errorMessage(error, t, 'error.slo')} />
+      )}
+      {data && data.models.length === 0 && (
+        <EmptyState message={t('slo.empty')} />
+      )}
+      {data && data.models.length > 0 && (
+        <div className="table-wrap">
+          <table className="table" data-testid="slo-table">
+            <thead>
+              <tr>
+                <th scope="col">{t('slo.col.model')}</th>
+                <th scope="col">{t('slo.col.ttftTarget')}</th>
+                <th scope="col">{t('slo.col.compliance')}</th>
+                <th scope="col">{t('slo.col.status')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.models.map((m) => (
+                <tr key={m.model_id}>
+                  <td>{m.model_id}</td>
+                  <td>{m.ttft_target_ms}</td>
+                  <td>{m.ttft_actual_compliance_pct.toFixed(1)}%</td>
+                  <td>
+                    <Badge tone={SLO_TONE[m.status]}>
+                      {m.status === 'met'
+                        ? t('slo.status.met')
+                        : m.status === 'breached'
+                          ? t('slo.status.breached')
+                          : t('slo.status.insufficientData')}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function NodeRow({
   node,
   liveMetrics,
@@ -363,6 +422,8 @@ export function FleetPage() {
       {!reconcilerStatus.isLoading && (
         <ReconcilerStatusCard status={reconcilerStatus.data} />
       )}
+
+      <SloStatusCard t={t} />
 
       <Card title={t('fleet.title')}>
         {nodes.isLoading && <LoadingBlock />}

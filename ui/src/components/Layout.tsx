@@ -34,6 +34,7 @@ const OPERATE: NavItem[] = [
   { to: '/catalog', labelKey: 'nav.catalog', icon: <IconGrid /> },
   { to: '/model-studio', labelKey: 'nav.modelStudio', icon: <IconBox /> },
   { to: '/deployments', labelKey: 'nav.deployments', icon: <IconLayers /> },
+  { to: '/planner/what-if', labelKey: 'nav.whatIfPlanner', icon: <IconGrid /> },
   { to: '/platform/orgs', labelKey: 'nav.organizations', icon: <IconBuildingOffice /> },
   { to: '/platform/pools', labelKey: 'nav.nodePools', icon: <IconServer /> },
   { to: '/audit', labelKey: 'nav.audit', icon: <IconShield /> },

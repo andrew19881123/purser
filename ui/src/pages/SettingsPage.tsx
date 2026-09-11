@@ -15,6 +15,7 @@ import {
   type Tone,
 } from '../components/ui';
 import {
+  useApiKeyTeamSlugs,
   useApiKeys,
   useCreateApiKey,
   useEnterpriseStatus,
@@ -48,6 +49,7 @@ function CreateKeyModal({
   t: TFunc;
 }) {
   const create = useCreateApiKey();
+  const teamSlugs = useApiKeyTeamSlugs();
   const [name, setName] = useState('');
   const [team, setTeam] = useState('');
   const [quota, setQuota] = useState('');
@@ -59,8 +61,10 @@ function CreateKeyModal({
 
   const submit = () => {
     if (!name.trim() || !team.trim()) return;
+    // Convert quota: empty or "0" → null (unlimited); otherwise use the number.
+    const parsedQuota = quota.trim() && Number(quota) > 0 ? Number(quota) : null;
     create.mutate(
-      { name: name.trim(), team: team.trim(), monthlyQuota: quota ? Number(quota) : null, role },
+      { name: name.trim(), team: team.trim(), monthlyQuota: parsedQuota, role },
       { onSuccess: (k) => onCreated(k) },
     );
   };
@@ -84,7 +88,27 @@ function CreateKeyModal({
         <input id={nameId} className="input" value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <Field label={t('settings.create.team')} htmlFor={teamId}>
-        <input id={teamId} className="input" value={team} onChange={(e) => setTeam(e.target.value)} />
+        {teamSlugs.length > 0 ? (
+          <select
+            id={teamId}
+            className="input"
+            value={team}
+            onChange={(e) => setTeam(e.target.value)}
+          >
+            <option value="">Select team…</option>
+            {teamSlugs.map((slug) => (
+              <option key={slug} value={slug}>{slug}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            id={teamId}
+            className="input"
+            value={team}
+            placeholder="e.g. platform"
+            onChange={(e) => setTeam(e.target.value)}
+          />
+        )}
       </Field>
       <Field
         label={t('settings.create.role')}
@@ -108,6 +132,7 @@ function CreateKeyModal({
           className="input"
           type="number"
           min={0}
+          placeholder={t('settings.create.quotaPlaceholder')}
           value={quota}
           onChange={(e) => setQuota(e.target.value)}
         />

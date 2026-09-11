@@ -7,7 +7,7 @@
 // cache invalidation after operator actions, and — crucially for Phase 2 — it
 // keeps every component decoupled from *how* data is fetched. Swapping the mock
 // client for a real `fetch('/api/v1')` implementation touches zero components.
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useMutation,
   useQuery,
@@ -22,6 +22,7 @@ import type {
   ImportSource,
   InferenceAuditParams,
   MetricsSnapshot,
+  WhatIfRequest,
 } from '../api/types';
 
 export const qk = {
@@ -38,6 +39,7 @@ export const qk = {
   apiKeys: ['apiKeys'] as const,
   gatewayModels: (baseUrl: string) => ['gatewayModels', baseUrl] as const,
   reconcilerStatus: ['reconcilerStatus'] as const,
+  sloCompliance: (windowHours: number) => ['sloCompliance', windowHours] as const,
 };
 
 // --- fleet ------------------------------------------------------------------
@@ -650,6 +652,48 @@ export function useMyTeamPermissions(teamId: string | undefined) {
 }
 
 // --- live metrics (SSE) -----------------------------------------------------
+
+// --- team slugs derived from API keys (for API key creation form) -----------
+
+/**
+ * Returns the unique set of team slugs already used in existing API keys.
+ * Used to populate the "Team" dropdown in the Create API Key form so
+ * operators pick from existing tenants rather than free-typing.
+ */
+export function useApiKeyTeamSlugs(): string[] {
+  const { data: keys } = useApiKeys();
+  return useMemo(() => {
+    if (!keys || keys.length === 0) return [];
+    return Array.from(new Set(keys.map((k) => k.team).filter(Boolean)));
+  }, [keys]);
+}
+
+// --- what-if planner --------------------------------------------------------
+
+export function useWhatIfPlan() {
+  return useMutation({
+    mutationFn: (request: WhatIfRequest) => api.whatIfPlan(request),
+  });
+}
+
+// --- SLO compliance ---------------------------------------------------------
+
+export function useSloCompliance(windowHours = 24) {
+  return useQuery({
+    queryKey: qk.sloCompliance(windowHours),
+    queryFn: () => api.getSloCompliance(windowHours),
+    refetchInterval: 60_000,
+  });
+}
+
+// --- billing forecast -------------------------------------------------------
+
+export function useBillingForecast() {
+  return useQuery({
+    queryKey: ['billingForecast'],
+    queryFn: () => api.getBillingForecast(),
+  });
+}
 
 /**
  * Subscribe to GET /api/v1/metrics for the lifetime of the component and expose

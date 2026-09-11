@@ -23,6 +23,7 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { OrganizationsPage } from './pages/OrganizationsPage';
 import { TeamPage } from './pages/TeamPage';
 import { NodePoolsPage } from './pages/NodePoolsPage';
+import { WhatIfPlannerPage } from './pages/WhatIfPlannerPage';
 
 export const router = createBrowserRouter([
   {
@@ -41,6 +42,8 @@ export const router = createBrowserRouter([
       { path: 'audit', element: <AuditPage /> },
       { path: 'approvals', element: <ApprovalsPage /> },
       { path: 'chargeback', element: <ChargebackPage /> },
+      // v0.4 platform model routes
+      { path: 'planner/what-if', element: <WhatIfPlannerPage /> },
       // v0.4 platform model routes
       { path: 'platform/orgs', element: <OrganizationsPage /> },
       { path: 'platform/orgs/:orgId/teams/:teamId', element: <TeamPage /> },

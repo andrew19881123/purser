@@ -10,19 +10,21 @@
 //   - CSV export button (direct download from the API endpoint)
 import { useState } from 'react';
 import {
+  Badge,
   Button,
   Card,
   EmptyState,
   ErrorState,
   LoadingBlock,
   PageHeader,
+  type Tone,
 } from '../components/ui';
 import { useT } from '../i18n';
-import { useBillingReport } from '../hooks/queries';
+import { useBillingForecast, useBillingReport } from '../hooks/queries';
 import { api } from '../api/client';
 import { ApiError } from '../api/http';
 import { errorMessage } from '../lib/errors';
-import type { BillingTenantUsage } from '../api/types';
+import type { BillingForecastEntry, BillingTenantUsage } from '../api/types';
 
 // ---------------------------------------------------------------------------
 // Period picker
@@ -91,6 +93,76 @@ function UsageTable({ rows }: { rows: BillingTenantUsage[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Forecast color logic
+// ---------------------------------------------------------------------------
+
+function forecastTone(entry: BillingForecastEntry): Tone {
+  if (entry.days_until_exhaustion !== null && entry.days_until_exhaustion < 7) return 'danger';
+  if (entry.budget_monthly_usd > 0 && entry.projected_monthly_usd > entry.budget_monthly_usd * 0.8) return 'warning';
+  return 'success';
+}
+
+// ---------------------------------------------------------------------------
+// Forecast card
+// ---------------------------------------------------------------------------
+
+function ForecastCard() {
+  const t = useT();
+  const { data, isLoading, error } = useBillingForecast();
+
+  // Enterprise gate: silently hide when 402 (not licensed) or not loaded yet.
+  if (error instanceof ApiError && error.status === 402) return null;
+  if (!isLoading && !data) return null;
+
+  return (
+    <Card title={t('chargeback.forecast.title')}>
+      {isLoading && <LoadingBlock />}
+      {error && !(error instanceof ApiError) && (
+        <ErrorState message={errorMessage(error, t, 'error.billingForecast')} />
+      )}
+      {data && data.entries.length === 0 && (
+        <EmptyState message={t('chargeback.forecast.empty')} />
+      )}
+      {data && data.entries.length > 0 && (
+        <div className="table-wrap">
+          <table className="table" data-testid="forecast-table">
+            <thead>
+              <tr>
+                <th scope="col">{t('chargeback.forecast.col.team')}</th>
+                <th scope="col">{t('chargeback.forecast.col.burnRate')}</th>
+                <th scope="col">{t('chargeback.forecast.col.projected')}</th>
+                <th scope="col">{t('chargeback.forecast.col.daysLeft')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.entries.map((entry, i) => {
+                const tone = forecastTone(entry);
+                return (
+                  <tr key={`${entry.org_id}-${entry.team_id}-${i}`}>
+                    <td>{entry.team_id || entry.org_id}</td>
+                    <td>${entry.burn_rate_daily_usd.toFixed(2)}</td>
+                    <td>
+                      <Badge tone={tone}>
+                        ${entry.projected_monthly_usd.toFixed(2)}
+                      </Badge>
+                    </td>
+                    <td>
+                      {entry.days_until_exhaustion !== null
+                        ? <Badge tone={tone}>{entry.days_until_exhaustion}</Badge>
+                        : <span className="muted">∞</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -213,6 +285,9 @@ export function ChargebackPage() {
           <UsageTable rows={report.tenants} />
         ) : null}
       </Card>
+
+      {/* Spending forecast — enterprise feature; hidden when 402 */}
+      <ForecastCard />
     </div>
   );
 }

@@ -11,6 +11,7 @@ import type {
   ApiKeyWithSecret,
   AuditEntry,
   AuditLog,
+  BillingForecastResponse,
   BillingReport,
   BillingSummary,
   CatalogEntry,
@@ -36,9 +37,12 @@ import type {
   PlanPreviewResult,
   PoolTeamQuota,
   ReconcilerStatus,
+  SloComplianceResponse,
   Team,
   TeamMember,
   UsageSummary,
+  WhatIfRequest,
+  WhatIfResult,
 } from '../api/types';
 import type { CreateApiKeyInput, PurserApi } from '../api/client';
 import { ApiError } from '../api/http';
@@ -742,5 +746,51 @@ export const mockBackend: PurserApi = {
     const { limit = 50, apiKeyId } = params;
     const filtered = apiKeyId ? allEntries.filter((e) => e.apiKeyId === apiKeyId) : allEntries;
     return delay({ entries: filtered.slice(0, limit), count: filtered.length });
+  },
+
+  // --- what-if planner ---
+
+  whatIfPlan(body: WhatIfRequest): Promise<WhatIfResult> {
+    if (body.hypothetical_nodes.length === 0 && !body.include_existing_nodes) {
+      return delay({ feasible: false, reason: 'No nodes available for simulation.' }, 400);
+    }
+    const assignments: WhatIfResult['assignments'] = body.hypothetical_nodes.map((n, i) => ({
+      node_id: n.node_id || `virtual-${i + 1}`,
+      layer_start: i * 12,
+      layer_end: (i + 1) * 12 - 1,
+    }));
+    return delay({
+      feasible: true,
+      assignments,
+      estimated_decode_tok_s_min: 38,
+      estimated_decode_tok_s_max: 72,
+      current_plan: { feasible: body.include_existing_nodes },
+      improvement_delta: 0.28,
+    }, 600);
+  },
+
+  // --- SLO compliance ---
+
+  getSloCompliance(_windowHours = 24): Promise<SloComplianceResponse> {
+    const modelIds = Array.from(new Set(
+      Array.from(deployments.values()).map((d) => d.plan.modelId),
+    ));
+    return delay({
+      models: modelIds.map((modelId, i) => ({
+        model_id: modelId,
+        ttft_target_ms: 500,
+        ttft_actual_compliance_pct: 82 + (i % 3) * 6,
+        status: i % 3 === 2 ? 'breached' as const : 'met' as const,
+      })),
+      window_hours: _windowHours,
+    }, 300);
+  },
+
+  // --- billing forecast ---
+  // In mock mode, behave like there is no enterprise license.
+  getBillingForecast(): Promise<BillingForecastResponse> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
   },
 };

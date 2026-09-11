@@ -18,13 +18,14 @@ import type { ChatMessage } from '../api/types';
 const DEFAULT_MODEL = 'qwen3-moe-235b';
 const SYSTEM_PROMPT = 'You are a helpful assistant running on a private Purser cluster.';
 const KEY_STORAGE = 'purser.gatewayKey';
+const DEMO_KEY = 'demo-key-12345';
 
 export function PlaygroundPage() {
   const t = useT();
   const deployments = useDeployments();
 
-  // Gateway Bearer key (persisted locally); rebuilds the chat client on change.
-  const [apiKey, setApiKey] = useState<string>(() => sessionStorage.getItem(KEY_STORAGE) ?? '');
+  // Gateway Bearer key (persisted locally); pre-fill with demo key when nothing is stored.
+  const [apiKey, setApiKey] = useState<string>(() => sessionStorage.getItem(KEY_STORAGE) ?? DEMO_KEY);
   const chat = useMemo(() => makeChat(apiKey.trim() || undefined), [apiKey]);
   const gatewayModels = useGatewayModels(chat);
 
@@ -167,14 +168,14 @@ export function PlaygroundPage() {
           <Field
             label={t('playground.apikey')}
             htmlFor={keyFieldId}
-            hint={`Sent as Authorization: Bearer to the Gateway.${import.meta.env.DEV ? ' Ignored in mock mode.' : ''}`}
+            hint={t('playground.apikeyHelp')}
           >
             <input
               id={keyFieldId}
               className="input"
               type="password"
               autoComplete="off"
-              placeholder="sk-purser-…"
+              placeholder={DEMO_KEY}
               value={apiKey}
               onChange={(e) => onApiKeyChange(e.target.value)}
             />

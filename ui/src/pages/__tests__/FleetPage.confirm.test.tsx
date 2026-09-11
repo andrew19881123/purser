@@ -38,6 +38,7 @@ vi.mock('../../hooks/queries', () => ({
     remove: { mutate: removeMutate, isPending: false },
   }),
   useReconcilerStatus: () => ({ isLoading: false, isError: false, data: undefined }),
+  useSloCompliance: () => ({ isLoading: false, isError: false, data: null }),
 }));
 
 // ---- helpers ----------------------------------------------------------------

@@ -27,6 +27,7 @@ import type {
   AuditEntry,
   AuditLog,
   Backend,
+  BillingForecastResponse,
   BillingReport,
   BillingSummary,
   CatalogEntry,
@@ -60,9 +61,12 @@ import type {
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
+  SloComplianceResponse,
   Team,
   TeamMember,
   UsageSummary,
+  WhatIfRequest,
+  WhatIfResult,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
 
@@ -301,17 +305,25 @@ function normalizeNodeView(raw: unknown): NodeView {
   const n = (raw ?? {}) as Record<string, unknown>;
   // Already a composite NodeView.
   if (n.profile && typeof n.profile === 'object') {
+    // Shallow-clone so we can back-fill nodeId without mutating the original.
+    const profile = { ...(n.profile as Record<string, unknown>) };
+    // API may use top-level `id` as the primary key when profile.nodeId is absent.
+    if (!profile.nodeId && n.id) profile.nodeId = n.id;
     return {
-      profile: n.profile as NodeView['profile'],
+      profile: profile as unknown as NodeView['profile'],
       metrics: (n.metrics as NodeView['metrics']) ?? null,
       role: (n.role as Role | null) ?? null,
       linkQuality: (str(n.linkQuality, 'unknown') as LinkQuality) || 'unknown',
       deploymentId: (n.deploymentId as string | null) ?? null,
     };
   }
-  // Bare HardwareProfile — wrap it.
+  // Bare HardwareProfile — wrap it. Back-fill nodeId from flat `id` field.
+  const profile = {
+    ...n,
+    nodeId: n.nodeId ?? n.id,
+  } as unknown as NodeView['profile'];
   return {
-    profile: n as unknown as NodeView['profile'],
+    profile,
     metrics: null,
     role: null,
     linkQuality: 'unknown',
@@ -362,7 +374,9 @@ function normalizeFit(raw: unknown, model: ModelSpec, deployable: unknown): FitV
 function normalizeJoinInfo(raw: unknown): JoinInfo {
   const j = (raw ?? {}) as Record<string, unknown>;
   return {
-    joinToken: str(j.joinToken),
+    // API returns "token" in the wire format; camelizeKeys keeps it as "token".
+    // Support both "joinToken" (legacy) and "token" (current) for back-compat.
+    joinToken: str(j.joinToken ?? j.token),
     controlPlaneUrl: str(j.controlPlaneUrl),
     expiresAt: str(j.expiresAt),
   };
@@ -478,9 +492,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // GET /api/v1/nodes
     listNodes: () =>
-      request<unknown>('/nodes').then((raw) =>
-        Array.isArray(raw) ? raw.map(normalizeNodeView) : [],
-      ),
+      request<unknown>('/nodes').then((raw) => {
+        // API returns { nodes: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.nodes ?? raw;
+        return Array.isArray(arr) ? arr.map(normalizeNodeView) : [];
+      }),
 
     // GET /api/v1/nodes/{id}
     getNode: (nodeId) =>
@@ -500,9 +516,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // --- catalog ---
     // GET /api/v1/models -> [ModelSpec] (+ fit/deployable) -> CatalogEntry[]
     getCatalog: () =>
-      request<unknown>('/models').then((raw) =>
-        Array.isArray(raw) ? raw.map(normalizeCatalogEntry) : [],
-      ),
+      request<unknown>('/models').then((raw) => {
+        // API returns { models: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.models ?? raw;
+        return Array.isArray(arr) ? arr.map(normalizeCatalogEntry) : [];
+      }),
 
     // DELETE /api/v1/models/{id} — guarded delete; 409 when active deployments reference it.
     deleteModel: (modelId) => request<void>(`/models/${enc(modelId)}`, { method: 'DELETE' }),
@@ -510,7 +528,8 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // Model detail is derived from the public catalog list (no private route).
     getModel: (modelId) =>
       request<unknown>('/models').then((raw) => {
-        const entries = Array.isArray(raw) ? raw.map(normalizeCatalogEntry) : [];
+        const arr = (raw as any)?.models ?? raw;
+        const entries = Array.isArray(arr) ? arr.map(normalizeCatalogEntry) : [];
         const found = entries.find((e) => e.model.modelId === modelId);
         if (!found) throw new ApiError(404, `Model ${modelId} is not in the catalog.`);
         return found.model;
@@ -574,9 +593,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // GET /api/v1/deployments
     listDeployments: () =>
-      request<unknown>('/deployments').then((raw) =>
-        Array.isArray(raw) ? raw.map(normalizeDeployment) : [],
-      ),
+      request<unknown>('/deployments').then((raw) => {
+        // API returns { deployments: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.deployments ?? raw;
+        return Array.isArray(arr) ? arr.map(normalizeDeployment) : [];
+      }),
 
     // GET /api/v1/deployments/{id}
     getDeployment: (id) =>
@@ -606,7 +627,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // --- settings / api keys ---
     listApiKeys: () =>
-      request<unknown>('/apikeys').then((raw) => (Array.isArray(raw) ? (raw as ApiKey[]) : [])),
+      request<unknown>('/apikeys').then((raw) => {
+        // API returns { apikeys: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.apikeys ?? raw;
+        return Array.isArray(arr) ? (arr as ApiKey[]) : [];
+      }),
 
     // POST /api/v1/apikeys -> ApiKeyWithSecret (full secret shown once)
     createApiKey: (input: CreateApiKeyInput) =>
@@ -818,5 +843,29 @@ export function createHttpApi(baseUrl: string): PurserApi {
       const qs = p.toString() ? `?${p.toString()}` : '';
       return request<AccessLogResponse>(`/logs/access${qs}`);
     },
+
+    // --- what-if planner ---
+    whatIfPlan: (body: WhatIfRequest): Promise<WhatIfResult> =>
+      request<WhatIfResult>('/planner/what-if', { method: 'POST', body }),
+
+    // --- SLO compliance ---
+    getSloCompliance: (windowHours = 24): Promise<SloComplianceResponse> =>
+      request<unknown>(`/slo/compliance?window_hours=${windowHours}`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        const models = Array.isArray(r.models) ? r.models : [];
+        return {
+          models: models as SloComplianceResponse['models'],
+          window_hours: typeof r.windowHours === 'number' ? r.windowHours : windowHours,
+        };
+      }),
+
+    // --- billing forecast ---
+    getBillingForecast: (): Promise<BillingForecastResponse> =>
+      request<unknown>('/billing/forecast').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          entries: Array.isArray(r.entries) ? r.entries as BillingForecastResponse['entries'] : [],
+        };
+      }),
   };
 }

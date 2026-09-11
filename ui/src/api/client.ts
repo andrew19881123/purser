@@ -21,6 +21,7 @@ import type {
   ApiKey,
   ApiKeyWithSecret,
   AuditLog,
+  BillingForecastResponse,
   BillingReport,
   BillingSummary,
   CatalogEntry,
@@ -47,9 +48,12 @@ import type {
   PlanPreviewResult,
   PoolTeamQuota,
   ReconcilerStatus,
+  SloComplianceResponse,
   Team,
   TeamMember,
   UsageSummary,
+  WhatIfRequest,
+  WhatIfResult,
 } from './types';
 import { config } from './config';
 import { createChatClient, fetchOpenAIModels, makeSseChatTransport, type ChatClient } from './openai';
@@ -197,6 +201,18 @@ export interface PurserApi {
   // --- v0.4 platform model: current user ---
   getMe(): Promise<{ actor: string; orgs: Organization[]; teams: Team[] }>;
   getMyTeamPermissions(teamId: string): Promise<EffectivePermissions>;
+
+  // --- what-if planner ---
+  /** POST /api/v1/planner/what-if — simulate hardware ROI without committing a deployment. */
+  whatIfPlan(request: WhatIfRequest): Promise<WhatIfResult>;
+
+  // --- SLO compliance ---
+  /** GET /api/v1/slo/compliance — per-model TTFT SLO compliance for a rolling window. */
+  getSloCompliance(windowHours?: number): Promise<SloComplianceResponse>;
+
+  // --- billing forecast ---
+  /** GET /api/v1/billing/forecast — projected spend and days to budget exhaustion. 402 without billing feature. */
+  getBillingForecast(): Promise<BillingForecastResponse>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

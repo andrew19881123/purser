@@ -788,3 +788,70 @@ export interface AccessLogResponse {
   entries: AccessLogEntry[];
   count: number;
 }
+
+// ---------------------------------------------------------------------------
+// What-if Hardware ROI Planner — POST /api/v1/planner/what-if
+// ---------------------------------------------------------------------------
+
+export interface WhatIfNode {
+  node_id: string;
+  gpu_vram_gb: number;
+  gpu_count: number;
+  net_bandwidth_gbps: number;
+}
+
+export interface WhatIfRequest {
+  model_id: string;
+  hypothetical_nodes: WhatIfNode[];
+  include_existing_nodes: boolean;
+}
+
+export interface WhatIfAssignment {
+  node_id: string;
+  layer_start: number;
+  layer_end: number;
+}
+
+export interface WhatIfResult {
+  feasible: boolean;
+  assignments?: WhatIfAssignment[];
+  estimated_decode_tok_s_min?: number;
+  estimated_decode_tok_s_max?: number;
+  current_plan?: { feasible: boolean };
+  improvement_delta?: number;
+  reason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// SLO Compliance — GET /api/v1/slo/compliance
+// ---------------------------------------------------------------------------
+
+export interface SloModelCompliance {
+  model_id: string;
+  ttft_target_ms: number;
+  ttft_actual_compliance_pct: number;
+  status: 'met' | 'breached' | 'insufficient_data';
+}
+
+export interface SloComplianceResponse {
+  models: SloModelCompliance[];
+  window_hours: number;
+}
+
+// ---------------------------------------------------------------------------
+// Billing Forecast — GET /api/v1/billing/forecast
+// Enterprise-gated: requires the "billing" feature (402 without).
+// ---------------------------------------------------------------------------
+
+export interface BillingForecastEntry {
+  org_id: string;
+  team_id: string;
+  burn_rate_daily_usd: number;
+  projected_monthly_usd: number;
+  budget_monthly_usd: number;
+  days_until_exhaustion: number | null;
+}
+
+export interface BillingForecastResponse {
+  entries: BillingForecastEntry[];
+}
