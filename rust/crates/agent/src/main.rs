@@ -133,14 +133,30 @@ async fn main() -> anyhow::Result<()> {
         .build(&backend_name)
         .with_context(|| backend_error_msg(&backend_name, &registry))?;
 
-    // Warn when the llamacpp backend is active but its binary directory is not
-    // configured — the adapter will fall back to searching PATH, which may not
-    // find the binaries on a fresh node.
+    // Warn when the llamacpp or cpu backend is active but its binary directory
+    // is not configured — the adapter will fall back to searching PATH, which
+    // may not find the binaries on a fresh node.
     #[cfg(feature = "llamacpp")]
-    if backend_name == "llamacpp" && std::env::var("PURSER_LLAMACPP_BIN").is_err() {
+    if (backend_name == "llamacpp" || backend_name == "cpu")
+        && std::env::var("PURSER_LLAMACPP_BIN").is_err()
+    {
         tracing::warn!(
-            "PURSER_ENGINE_BACKEND=llamacpp but PURSER_LLAMACPP_BIN is not set; \
-             llama.cpp binaries (rpc-server, llama-server) will be searched in PATH"
+            backend = %backend_name,
+            "PURSER_LLAMACPP_BIN is not set; \
+             llama.cpp binaries (rpc-server, llama-server) will be searched in PATH. \
+             Run tools/setup-cpu-inference.sh to download them."
+        );
+    }
+    // Log CPU-specific configuration when the cpu backend starts.
+    #[cfg(feature = "llamacpp")]
+    if backend_name == "cpu" {
+        let threads = purser_agent::config::cpu_thread_count();
+        let ctx = purser_agent::config::cpu_context_size();
+        tracing::info!(
+            threads,
+            context_size = ctx,
+            n_gpu_layers = purser_agent::config::CPU_GPU_LAYERS,
+            "CPU inference backend selected (no GPU offload)"
         );
     }
     // The GPU-free `mock` backend has no serving process of its own, so a HOST

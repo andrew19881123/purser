@@ -56,6 +56,7 @@ nav:
   - Getting Started:
     - Quickstart (Helm): getting-started/quickstart.md
     - Multi-Node Inference (LAN): getting-started/multi-node-inference.md
+    - CPU-only Inference (No GPU): getting-started/cpu-inference.md
     - Architecture: getting-started/architecture.md
     - Deploy Your First Model: getting-started/deploy-model.md
   - Guides:

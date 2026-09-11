@@ -62,7 +62,7 @@ impl BackendRegistry {
 
     /// A registry pre-populated with the built-in GPU-free `mock` backend and,
     /// when the crate is compiled with `--features llamacpp`, the real
-    /// llama.cpp backend.
+    /// llama.cpp backend and the `cpu` alias.
     pub fn with_builtins() -> Self {
         let mut reg = Self::new();
         reg.register("mock", || Arc::new(MockEngine::new()));
@@ -70,6 +70,10 @@ impl BackendRegistry {
         reg.register("llamacpp", || {
             Arc::new(purser_adapter_llamacpp::LlamaCppBackend::default())
         });
+        // `cpu` is a llamacpp alias with n_gpu_layers=0 and CPU-optimised
+        // defaults (threads from PURSER_CPU_THREADS, ctx from PURSER_CPU_CONTEXT_SIZE).
+        #[cfg(feature = "llamacpp")]
+        reg.register("cpu", || Arc::new(CpuEngineBackend::new()));
         reg
     }
 
@@ -98,20 +102,96 @@ impl BackendRegistry {
 /// backend name.
 ///
 /// When the binary was *not* compiled with `--features llamacpp` and the caller
-/// requests the `llamacpp` backend, the generic "unknown engine backend" message
-/// would be confusing — this returns the specific compilation hint instead.
+/// requests the `llamacpp` or `cpu` backend, the generic "unknown engine backend"
+/// message would be confusing — this returns the specific compilation hint instead.
 pub fn backend_error_msg(name: &str, registry: &BackendRegistry) -> String {
     #[cfg(not(feature = "llamacpp"))]
-    if name == "llamacpp" {
-        return "llama.cpp backend requested but binary was not compiled with \
-                --features llamacpp"
-            .to_string();
+    if name == "llamacpp" || name == "cpu" {
+        return format!(
+            "{name} backend requested but binary was not compiled with --features llamacpp"
+        );
     }
     format!(
         "unknown engine backend {:?}; known: {:?}",
         name,
         registry.names()
     )
+}
+
+// ── CPU engine backend ────────────────────────────────────────────────────────
+//
+// A thin wrapper around `LlamaCppBackend` that forces `n_gpu_layers=0` and
+// injects CPU-optimised defaults (thread count, context window) when the
+// control plane does not supply them explicitly.
+//
+// Only compiled when the `llamacpp` feature is enabled — `cpu` shares the same
+// llama.cpp binary; it just does not offload any layers to the GPU.
+#[cfg(feature = "llamacpp")]
+struct CpuEngineBackend {
+    inner: purser_adapter_llamacpp::LlamaCppBackend,
+}
+
+#[cfg(feature = "llamacpp")]
+impl CpuEngineBackend {
+    fn new() -> Self {
+        use crate::config::CPU_GPU_LAYERS;
+        let cfg = purser_adapter_llamacpp::config::LlamaCppConfig {
+            n_gpu_layers: CPU_GPU_LAYERS,
+            ..purser_adapter_llamacpp::config::LlamaCppConfig::from_env()
+        };
+        Self {
+            inner: purser_adapter_llamacpp::LlamaCppBackend::with_config(cfg),
+        }
+    }
+}
+
+#[cfg(feature = "llamacpp")]
+#[async_trait::async_trait]
+impl EngineBackend for CpuEngineBackend {
+    fn capabilities(&self) -> purser_engine_adapter::Capabilities {
+        self.inner.capabilities()
+    }
+
+    async fn start_worker(
+        &self,
+        layer_start: u32,
+        layer_end: u32,
+        model_ref: &str,
+        bind_addr: &str,
+    ) -> purser_engine_adapter::Result<purser_engine_adapter::WorkerStart> {
+        self.inner
+            .start_worker(layer_start, layer_end, model_ref, bind_addr)
+            .await
+    }
+
+    /// Start a host, injecting CPU defaults for thread count and context window
+    /// when the caller has not provided them explicitly.
+    async fn start_host(
+        &self,
+        model_ref: &str,
+        worker_addrs: &[String],
+        mut params: EngineParams,
+    ) -> purser_engine_adapter::Result<purser_engine_adapter::HostStart> {
+        use crate::config::{cpu_context_size, cpu_thread_count};
+        // Inject context-window default when the caller left it at 0 (unset).
+        if params.context == 0 {
+            params.context = cpu_context_size();
+        }
+        // Inject thread count when the caller has not set it via the extra map.
+        params
+            .extra
+            .entry("threads".to_string())
+            .or_insert_with(|| cpu_thread_count().to_string());
+        self.inner.start_host(model_ref, worker_addrs, params).await
+    }
+
+    async fn stop(&self, handle: &EngineHandle) -> purser_engine_adapter::Result<String> {
+        self.inner.stop(handle).await
+    }
+
+    async fn metrics(&self, handle: &EngineHandle) -> purser_engine_adapter::Result<EngineMetrics> {
+        self.inner.metrics(handle).await
+    }
 }
 
 /// What to start and how, distilled from a `StartEngineRequest`.

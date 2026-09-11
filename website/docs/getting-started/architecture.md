@@ -233,6 +233,7 @@ The Agent ships two engine backends:
 | Backend | Availability | Default in… | Description |
 |---------|-------------|-------------|-------------|
 | `llamacpp` | Compiled with `--features llamacpp` | **Helm chart, production** | Real llama.cpp RPC worker/host processes. Requires `rpc-server` and `llama-server` binaries accessible via `PURSER_LLAMACPP_BIN` or `PATH`. |
+| `cpu` | Compiled with `--features llamacpp` | **CPU-only machines, no GPU** | Alias for `llamacpp` with `-ngl 0` (all layers on CPU). Sets thread count from `PURSER_CPU_THREADS` (default: `num_cpus/2`) and context window from `PURSER_CPU_CONTEXT_SIZE` (default: 2048). See [CPU-only Inference](cpu-inference.md). |
 | `mock` | Always | Raw agent binary (no env var set), CI | GPU-free deterministic in-process backend. Returns canned responses. **Never use in production.** |
 
 The Helm `purser-dataplane` chart sets `engineBackend: llamacpp` in `values.yaml`, so production deployments automatically use real llama.cpp inference.
