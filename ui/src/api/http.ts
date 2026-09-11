@@ -544,10 +544,12 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // POST /api/v1/models/import — register a model from an external registry.
     // The backend fetches metadata from the source and persists a ModelSpec.
-    importModel: (source: ImportSource) =>
-      request<unknown>('/models/import', {
+    // NOTE: the server field is "source" (not "type") — destructure to rename.
+    importModel: (src: ImportSource) => {
+      const { type, ...rest } = src;
+      return request<unknown>('/models/import', {
         method: 'POST',
-        body: source,
+        body: { source: type, ...rest },
       }).then((raw) => {
         const r = (raw ?? {}) as Record<string, unknown>;
         // Backend may return the full ModelSpec or just { model_id: "..." }.
@@ -555,7 +557,8 @@ export function createHttpApi(baseUrl: string): PurserApi {
           return (r.model ?? raw) as ModelSpec;
         }
         throw new ApiError(500, 'Import returned no model spec');
-      }),
+      });
+    },
 
     // POST /api/v1/models/{id}/plan — dry-run plan, never persisted.
     // A 200 body is always returned: { feasible, reason? } or { feasible, ...planFields }.
