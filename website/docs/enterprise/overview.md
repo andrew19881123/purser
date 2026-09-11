@@ -21,19 +21,57 @@ The MIT-licensed core is the **full single-cluster orchestration stack**:
 
 ---
 
-## Enterprise Source-Available — what's gated
+## Enterprise Source-Available
 
 The `enterprise/` directory is **source-available** under the [Purser Enterprise License](https://github.com/andrew19881123/purser/blob/main/enterprise/LICENSE). The code is **public** — you can view, compile, modify, and use it for development, evaluation, and testing. However, **use in production or for commercial purposes requires a valid commercial license**.
 
-Enterprise features:
+### Capabilities requiring a licence flag — v0.6
 
-| Feature area | Status in v0.3 | Capabilities |
-|---|---|---|
-| **Identity & Access** | ✅ Shipped | RBAC (per-API-key roles), OIDC PKCE (EntraID / Okta / Keycloak). See [OIDC configuration](../configuration/oidc.md) and [RBAC](../configuration/rbac.md). |
-| **Compliance** | ✅ Shipped | **Tamper-evident audit log** (hash-chained, offline-verifiable), strong per-tenant isolation, chargeback/usage accounting. See [Audit Log](audit-log.md). |
-| **Policy-as-Code** | ✅ Shipped | Embedded OPA/Rego engine — version-controlled governance rules for deploy gating, model allowlists, and team-based access control. See [Policy-as-Code](policy-as-code.md). |
-| **Fleet at Scale** | ✅ Shipped | MDM/Ansible/golden-image enrollment, signed air-gap bundles, enterprise CA integration, offline license validation. |
-| **High Availability** | Targeted v0.4 | Leader election (Raft) + replicated registry; Gateway HA behind a VIP. Required for `replicaCount > 1` on the Control Plane. |
+Each of these returns `402 Payment Required` unless the active key's `features` array contains the exact flag string. The [feature gate reference](license.md#feature-gate-reference) is the authoritative list and records the product names that differ from their flag.
+
+| Capability | Licence flag |
+|---|---|
+| Tamper-evident audit log (hash-chained, offline-verifiable). See [Audit Log](audit-log.md). | `audit` |
+| Inference audit log — read access; recording is always active. See [Inference Audit Log](inference-audit.md). | `inference_audit` |
+| Per-tenant usage accounting and chargeback reports. See [Chargeback](chargeback.md). | `billing` |
+| Deployment approval gates. See [Deployment Approvals](deployment-approvals.md). | `deployment_approvals` |
+| Embedded OPA/Rego policy engine. See [Policy-as-Code](policy-as-code.md). | `policy_engine` |
+| AI Act Art.11 / Annex IV technical documentation. See [AI Act Compliance](ai-act-compliance.md). | `ai_act_compliance` **or** `inference_audit` |
+| GDPR right to erasure. See [GDPR Compliance](gdpr-compliance.md). | `gdpr` |
+
+### Shipped in v0.6 with no licence flag
+
+These are implemented and no entitlement is checked for them. A key does not need a flag for any of them, and no flag would enable or disable them.
+
+| Capability | Notes |
+|---|---|
+| RBAC (per-API-key roles) | Always enforced, in every edition. See [RBAC](../configuration/rbac.md). |
+| OIDC / SSO with Authorization Code Flow + PKCE (EntraID, Okta, Keycloak) | See [OIDC configuration](../configuration/oidc.md). |
+| Per-tenant scoping of registry records, keys, and usage data | Underlies the chargeback and audit surfaces. |
+| Raft HA control plane — leader election and replicated registry | Reachable through configuration; needs an external PostgreSQL, since SQLite requires `replicaCount=1`. See [HA Control Plane](ha-control-plane.md). |
+| SLO contracts and the what-if planner | See [SLO Contracts](slo.md). |
+| Ansible fleet enrollment | See [Ansible](../integrations/ansible.md). |
+| Internal CA / PKI — root → intermediate → leaf issuance, renewal, revocation, rotation | Purser's own CA, used for agent mTLS enrolment. |
+| Certificates issued by your existing CA, via cert-manager | The chart renders a `cert-manager.io/v1` Certificate for the control-plane TLS secret from a `ClusterIssuer` or `Issuer` you name, with configurable duration and renewal. See [cert-manager](../configuration/cert-manager.md) and [certificate renewal](../operations/cert-renewal.md). |
+| Gateway horizontal scaling behind a Kubernetes Service | Multiple gateway replicas behind a Service whose type is configurable (ClusterIP by default, LoadBalancer or NodePort for clients outside the cluster). |
+| Signed release artefacts | SLSA L2 provenance, cosign SBOM attestations on image digests, and `SHA256SUMS` for the `.deb`/`.rpm`/tarball artefacts. |
+| Offline licence validation | The enforcement mechanism itself — see below. |
+
+### Not implemented in v0.6
+
+Earlier revisions of this page listed these as shipped under the heading "Fleet at Scale". Each row below says what is genuinely missing and what nearby capability does exist, because in several cases part of the ground is covered by something under a different name. No licence flag enables any of them:
+
+| Capability | State |
+|---|---|
+| A dedicated MDM integration (Jamf, Intune, or similar) | None. Fleet enrolment is offered through Ansible, and the join-token model works with any tool that can set three environment variables — including an MDM-delivered package — but there is no MDM-specific integration to configure. |
+| Golden-image build pipeline | No image-building tooling ships here (no Packer, cloud image, or kickstart/preseed templates). Enrolment itself supports scripted provisioning, so you can bake an image yourself — see [enrollment bundle](../install/enrollment-bundle.md). |
+| An offline install bundle for air-gapped sites | No single downloadable archive of images, charts, and dependencies for a disconnected install. Note that release artefacts *are* signed and air-gapped *operation* is supported — see the distinction below. |
+| Multi-cluster fleet management | None. A control plane serves one cluster: its cluster ID is a single value, and there is no federation, peering, or remote-cluster concept. |
+| A bare-metal virtual IP (keepalived / VRRP) | Not provided. In Kubernetes, gateway and control-plane replicas sit behind Services, as above; on bare metal you would supply your own VIP or load balancer. No PodDisruptionBudget ships with the chart. |
+
+Whether any of these is built, and in which release, is not decided — this page deliberately gives no target version, and will name one only once there is something to point at. Please do not rely on them in a procurement decision; ask first.
+
+**Three things are easy to conflate here, and two of the three ship.** *Air-gapped operation* is fully supported: licence verification is offline by design — no phone-home, no licence server, no network dependency of any kind — and telemetry degrades to no-ops. *Artefact signing* also ships: releases carry SLSA L2 provenance and cosign SBOM attestations, so you can verify what you received. What does not exist is the third thing — a *packaged offline bundle* that collects images, charts, and dependencies into one archive for installing into a disconnected site. Running Purser air-gapped works today, and you can verify the artefacts you fetch; assembling them for transfer is currently your own step.
 
 ---
 
@@ -68,7 +106,7 @@ The Helm chart stores the key in a Kubernetes Secret and injects it into the Con
 The **Settings** page of the operator dashboard shows a **License** section at the bottom. It displays:
 
 - **Community edition**: a neutral "Community" badge and a link to upgrade documentation.
-- **Enterprise edition**: the licensee name, a badge per enabled feature (`audit`, `ha`, `rbac`, …), and the expiry date. A red "Expired" badge appears when the key has passed its `expires` date.
+- **Enterprise edition**: the licensee name, a badge per enabled feature (`audit`, `billing`, `policy_engine`, …), and the expiry date. A red "Expired" badge appears when the key has passed its `expires` date. The badges show the raw flag strings from the key — see the [feature gate reference](license.md#feature-gate-reference) for the full list and for the product names that differ from their flag.
 
 ### API
 
@@ -92,7 +130,7 @@ Enterprise response:
 {
   "edition": "enterprise",
   "licensee": "Acme Corp",
-  "features": ["audit", "ha", "rbac"],
+  "features": ["audit", "billing", "inference_audit"],
   "expires": "2027-09-04T00:00:00Z"
 }
 ```

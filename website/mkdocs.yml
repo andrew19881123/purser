@@ -58,9 +58,18 @@ nav:
     - Multi-Node Inference (LAN): getting-started/multi-node-inference.md
     - Architecture: getting-started/architecture.md
     - Deploy Your First Model: getting-started/deploy-model.md
+  - Guides:
+    - Purser vs Ollama: guides/vs-ollama.md
+    - Purser vs vLLM: guides/vs-vllm.md
+    - Migrating from the OpenAI API: guides/openai-migration.md
+    - Homelab Setup (Docker Compose): guides/homelab-setup.md
+    - Consumer GPU Setup (mismatched cards): guides/consumer-gpu-setup.md
+  - FAQ: faq.md
+  - Benchmarks: benchmarks/index.md
   - Install:
     - Kubernetes (Helm): install/kubernetes.md
     - Kubernetes Enterprise (CP + DP): install/kubernetes-enterprise.md
+    - ARM64 Support (Apple Silicon, Graviton): install/arm64.md
     - Linux Agent (.deb/.rpm): install/linux-agent.md
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md
@@ -98,6 +107,7 @@ nav:
     - Usage Accounting (Chargeback): enterprise/usage-accounting.md
     - Chargeback Reports (Multi-Tenant): enterprise/chargeback.md
     - Billing Forecast (FinOps): enterprise/finops.md
+    - SLO Contracts: enterprise/slo.md
     - Policy-as-Code (OPA/Rego): enterprise/policy-as-code.md
     - HA Control Plane (Raft): enterprise/ha-control-plane.md
   - Integrations:
@@ -121,6 +131,7 @@ nav:
     - Encryption at Rest: operations/security-at-rest.md
     - Security Headers: operations/security-headers.md
     - CI/CD Supply Chain Security: operations/ci-security.md
+    - What-if Planner (Hardware ROI): operations/what-if-planner.md
   - API Reference:
     - Control Plane (/api/v1): api/control-plane.md
     - Platform Orgs & Teams: api/platform-orgs.md

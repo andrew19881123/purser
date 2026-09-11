@@ -33,7 +33,7 @@ When a data subject requests deletion of their personal data under **GDPR Art.17
 
 ```bash
 # 1. Compute the SHA-256 hex hash of the API key to erase.
-SUBJECT_HASH=$(echo -n "psk_the_plaintext_key" | sha256sum | awk '{print $1}')
+SUBJECT_HASH=$(echo -n "sk-a3f8bc12de456789abcdef0123456789abcdef01" | sha256sum | awk '{print $1}')
 
 # 2. Submit the erasure request.
 curl -X POST https://purser.example.com/api/v1/gdpr/erasure \

@@ -154,6 +154,16 @@ export interface PurserApi {
    * navigate to it directly — no fetch needed.
    */
   getBillingCsvUrl(start: string, end: string, tenantId?: string): string;
+  /**
+   * Returns the URL for XLSX download (format=xlsx). Callers create a link and
+   * navigate to it directly — no fetch needed.
+   */
+  getBillingXlsxUrl(start: string, end: string, tenantId?: string): string;
+  /**
+   * Returns the URL for PDF download (format=pdf). Callers create a link and
+   * navigate to it directly — no fetch needed.
+   */
+  getBillingPdfUrl(start: string, end: string, tenantId?: string): string;
   /** GET /api/v1/billing/summary — quick stats, not enterprise-gated. */
   getBillingSummary(tenantId?: string): Promise<BillingSummary>;
 

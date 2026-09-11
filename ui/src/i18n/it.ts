@@ -461,6 +461,9 @@ export const it: Record<StringKey, string> = {
   'chargeback.period.label': 'Periodo',
   'chargeback.empty': 'Nessun utilizzo registrato in questo periodo.',
   'chargeback.action.exportCsv': 'Esporta CSV',
+  'chargeback.action.exportXlsx': 'Esporta XLSX',
+  'chargeback.action.exportPdf': 'Esporta PDF',
+  'chargeback.action.downloading': 'Download in corso…',
   'chargeback.stat.totalRequests': 'Richieste totali',
   'chargeback.stat.totalTokens': 'Token totali',
   'chargeback.stat.activeTenants': 'Tenant attivi',
@@ -514,4 +517,7 @@ export const it: Record<StringKey, string> = {
   'error.inferenceAudit': 'Impossibile caricare il log di audit inferenza.',
   'error.accessLog': 'Impossibile caricare il log di accesso.',
   'error.chainVerify': 'Impossibile verificare la catena di audit.',
+  'approvals.quorum.progress': '{received} di {required} approvazioni ricevute',
+  'approvals.quorum.approvers': 'Approvatori finora',
+  'approvals.quorum.alreadyVoted': 'Hai già votato su questa approvazione.',
 };

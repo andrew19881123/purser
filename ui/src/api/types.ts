@@ -569,9 +569,29 @@ export interface EnterpriseStatus {
 // Enterprise-gated: requires the "deployment_approvals" feature.
 // ---------------------------------------------------------------------------
 
+/** Progress of a multi-person approval quorum (AI Act Art.14 dual-control). */
+export interface ApprovalQuorumStatus {
+  /** Number of approvals required before the deployment is released. */
+  required: number;
+  /** Number of qualifying approvals received so far. */
+  received: number;
+  /** Number of approvals still needed (required - received, clamped to 0). */
+  remaining: number;
+  /** Ordered list of reviewers who have already approved. */
+  approvers?: Array<{
+    /** SHA-256 hash of the reviewer's API key token. */
+    actor: string;
+    /** When this reviewer approved. */
+    approved_at: string; // ISO8601
+  }>;
+}
+
 /**
  * One row from the deployment approval queue (AI Act Art.14 human oversight).
  * Enterprise-gated: requires the "deployment_approvals" feature.
+ *
+ * When returned by GET /api/v1/approvals/{id} the `quorum` field is always
+ * present and shows the current vote progress.
  */
 export interface DeploymentApproval {
   id: number;
@@ -583,6 +603,8 @@ export interface DeploymentApproval {
   reviewer?: string;
   reviewedAt?: string;
   notes?: string;
+  /** Quorum progress — present on GET /approvals/{id}, absent on list responses. */
+  quorum?: ApprovalQuorumStatus;
 }
 
 /** Response shape for GET /api/v1/approvals */

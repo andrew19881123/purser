@@ -58,7 +58,7 @@ curl -sS -X POST http://<control-plane>:8080/api/v1/apikeys \
   -d '{"name": "litellm-proxy", "tenant": "litellm"}'
 ```
 
-The `key` in the response (`psk_...`) is your `PURSER_GATEWAY_API_KEY`. Store it securely — it is only returned once.
+The `key` in the response (`sk-...`) is your `PURSER_GATEWAY_API_KEY`. Store it securely — it is only returned once.
 
 !!! warning "API keys are returned once"
     The plaintext key is returned only at creation time. Only the SHA-256 hash is persisted. If you lose the key, create a new one with `POST /api/v1/apikeys` and revoke the old one with `DELETE /api/v1/apikeys/{id}`.
@@ -123,7 +123,7 @@ The correct setup:
       -d '{"name": "litellm-svc", "tenant": "litellm"}'
     ```
 
-2. Use the returned `psk_...` key as the `api_key` in LiteLLM's config. This key is validated by the Gateway, not by the Control Plane OIDC layer.
+2. Use the returned `sk-...` key as the `api_key` in LiteLLM's config. This key is validated by the Gateway, not by the Control Plane OIDC layer.
 
 3. Restrict LiteLLM's access to only the Gateway endpoint — it does not need access to the Control Plane REST API (`/api/v1`).
 
@@ -169,7 +169,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://<purser-gateway-host>:<port>/v1",
-    api_key="psk_<your-gateway-api-key>"
+    api_key="sk-<your-gateway-api-key>"
 )
 
 response = client.chat.completions.create(

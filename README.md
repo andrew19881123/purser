@@ -8,6 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/andrew19881123/purser)](https://github.com/andrew19881123/purser/releases/latest)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](PROJECT_STATUS.md)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://andrew19881123.github.io/purser/)
+[![Stars](https://img.shields.io/github/stars/andrew19881123/purser?style=social)](https://github.com/andrew19881123/purser)
 
 📖 **[Full documentation → andrew19881123.github.io/purser](https://andrew19881123.github.io/purser/)**
 
@@ -43,32 +44,63 @@ If you know Kubernetes, the mental model is familiar:
 
 ## Try it now — no GPU, no Kubernetes
 
-The demo stack runs entirely in Docker (the inference engine is a deterministic mock — no GPU needed):
+The demo stack brings up the **control plane, API gateway, and dashboard** in
+Docker — the whole control path, with no GPU and no Kubernetes:
 
 ```bash
 git clone https://github.com/andrew19881123/purser.git
 cd purser
 docker compose up -d
-
-# Wait ~10s for services to start, then:
-curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 ```
 
-Open the dashboard at **http://localhost:3000** — username/password not required in demo mode.
+Open the dashboard at **http://localhost:3000** — username/password not required
+in demo mode. You can browse the fleet, models, and deployment views, and
+exercise the REST API.
+
+What the stack does **not** include is an agent, and inference needs one, so the
+gateway starts with an empty routing table:
+
+```bash
+# Wait ~10s for services to start, then:
+curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
+# {"object":"list","data":[]}
+```
+
+That empty list is the expected result, not a failure: a model appears here only
+once a node has enrolled and a deployment is active. Enrolling a node against
+this stack is not currently possible — the agent joins over gRPC, and compose
+does not expose the control plane's gRPC port. See the
+[Quickstart](https://andrew19881123.github.io/purser/getting-started/quickstart/)
+for what this path gives you and what it does not.
 
 ## Purser vs alternatives
 
 | | **Purser** | Ollama | vLLM | TGI | LocalAI |
 |---|---|---|---|---|---|
-| **Multi-node LAN layer split** | ✅ automatic DP planning | ❌ | ❌ | ❌ | ❌ |
+| **Automatic layer split across *heterogeneous* nodes** | ✅ planner solves it for you | ❌ single host | manual PP/TP sizing, assumes uniform GPUs | manual sharding | ❌ single host |
+| Designed for commodity Ethernet | ✅ pipeline parallelism only | — | tensor parallelism benefits greatly from NVLink/IB | same | — |
+| **Production-validated GPU inference** | ❌ **alpha, not yet validated** | ✅ | ✅ | ✅ | ✅ |
 | OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ | ✅ |
-| No NVLink / InfiniBand required | ✅ 10GbE sufficient | — | ❌ requires NVLink | ❌ requires NVLink | — |
+| Fleet orchestration (enrolment, mTLS, RBAC) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Enterprise compliance (LDAP, audit, AI Act) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | ARM64 support (Apple Silicon, Graviton) | ✅ v0.6 | ✅ | ✅ | ✅ | ✅ |
-| Cryptographic audit chain | ✅ unique | ❌ | ❌ | ❌ | ❌ |
+| Cryptographic audit chain | ✅ | ❌ | ❌ | ❌ | ❌ |
 | 1-command Docker Compose demo | ✅ | ✅ | partial | partial | ✅ |
 
-> **The unique case:** you have 2–4 GPU machines on a LAN and want to run a 70B+ model. Ollama, vLLM, and TGI all require a single machine with enough VRAM. Purser automatically splits the model across your nodes.
+> **The case for Purser:** you have 2–4 **mismatched** GPU machines on a LAN and
+> want to run a model that fits on none of them alone. vLLM and TGI can span
+> multiple GPUs, but you size the parallelism yourself and they work best when
+> every card is identical; Ollama runs on a single host. Purser takes a fleet
+> whose nodes differ and computes the split for it.
+>
+> **The case against, today:** Purser's GPU path is not yet validated and it
+> publishes no benchmarks. If your model fits on one machine, use Ollama or vLLM.
+
+Detailed, even-handed comparisons:
+[Purser vs Ollama](https://andrew19881123.github.io/purser/guides/vs-ollama/) ·
+[Purser vs vLLM](https://andrew19881123.github.io/purser/guides/vs-vllm/) ·
+[Migrating from the OpenAI API](https://andrew19881123.github.io/purser/guides/openai-migration/) ·
+[FAQ](https://andrew19881123.github.io/purser/faq/)
 
 ## Install
 

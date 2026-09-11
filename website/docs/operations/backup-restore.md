@@ -3,17 +3,230 @@
 ## Overview
 
 Purser stores all state (model registry, active deployments, API keys, audit
-log, PKI certificates) in a single SQLite database. Regular backups protect
-against data loss and support disaster-recovery testing required by DORA
-Article 12.
+log, PKI certificates) in its database — **PostgreSQL** in production
+deployments and **SQLite** for development and single-node setups. Regular
+backups protect against data loss and support disaster-recovery testing required
+by DORA Article 12.
 
-Backups are performed **online** using SQLite's `VACUUM INTO` statement, which
-takes a consistent read-only snapshot without pausing in-flight writes or
-blocking readers for more than a few milliseconds.
+| Database | Default in | Backup tool |
+|---|---|---|
+| PostgreSQL (`PURSER_DB_DRIVER=postgres`) | Helm chart, docker-compose production | `pg_dump` / `pg_restore` |
+| SQLite (`PURSER_DB_DRIVER=sqlite`) | Development, single-node | `control-plane backup` (`VACUUM INTO`) |
+
+Jump to the section for your database:
+- [PostgreSQL backup](#postgresql-backup) / [PostgreSQL restore](#postgresql-restore)
+- [SQLite backup](#sqlite-backup) / [SQLite restore](#sqlite-restore)
 
 ---
 
-## Quick backup
+## PostgreSQL backup
+
+### One-off dump
+
+Use `pg_dump` with the custom format (`-Fc`) for maximum flexibility: it is
+compressed, supports parallel restore, and allows selective object restore.
+
+```bash
+pg_dump -Fc -h $PGHOST -U purser purser \
+  > purser-$(date +%Y%m%d-%H%M).dump
+```
+
+**Authentication** — supply the password with one of:
+
+- `PGPASSWORD` environment variable (suitable for scripts; not visible in `ps`
+  on modern Linux):
+  ```bash
+  PGPASSWORD=secret pg_dump -Fc -h $PGHOST -U purser purser \
+    > purser-$(date +%Y%m%d-%H%M).dump
+  ```
+- `~/.pgpass` file (preferred for interactive use and systemd units):
+  ```
+  # hostname:port:database:username:password
+  db.internal:5432:purser:purser:secret
+  ```
+  Set permissions: `chmod 0600 ~/.pgpass`
+
+**Custom vs. plain SQL format:**
+
+| Flag | Output | Use when |
+|---|---|---|
+| `-Fc` (custom) | Binary, compressed, splittable | Default — use with `pg_restore` |
+| `-F p` (plain) | SQL text | Pipe into `psql`, human-readable inspection |
+| `-F d` (directory) | One file per table | Parallel restore with `pg_restore -j N` |
+
+The custom format (`-Fc`) is recommended for all automated backups.
+
+### Continuous backup (WAL archiving)
+
+For production, point-in-time recovery (PITR) via WAL archiving eliminates the
+gap between daily dumps:
+
+- **[pgBackRest](https://pgbackrest.org/)** — full/differential/incremental
+  backup, WAL archiving, parallel restore. Recommended for self-managed
+  PostgreSQL.
+- **[WAL-G](https://github.com/wal-g/wal-g)** — lightweight WAL archiver to
+  S3/GCS/Azure. Drop in a `archive_command` one-liner.
+- **Managed services** (AWS RDS, Cloud SQL, Neon, Supabase) — enable automated
+  backups and PITR from the provider console; `pg_dump` is still useful for
+  logical, database-level portability.
+
+### Automated backup — cron
+
+```cron
+# /etc/cron.d/purser-pg-backup
+# Daily at 02:00, keep 30 days
+0 2 * * * purser PGPASSWORD=secret pg_dump -Fc \
+  -h $PGHOST -U purser purser \
+  -f /backup/purser-$(date +\%Y\%m\%d-\%H\%M).dump
+5 2 * * * purser find /backup -name 'purser-*.dump' -mtime +30 -delete
+```
+
+### Automated backup — systemd timer
+
+`/etc/systemd/system/purser-pg-backup.service`:
+
+```ini
+[Unit]
+Description=Purser PostgreSQL daily backup
+
+[Service]
+Type=oneshot
+User=purser
+Environment=PGHOST=db.internal
+Environment=PGPASSWORD=secret
+ExecStart=/usr/bin/pg_dump -Fc -U purser purser \
+  -f /backup/purser-%I.dump
+```
+
+`/etc/systemd/system/purser-pg-backup.timer`:
+
+```ini
+[Unit]
+Description=Daily Purser PostgreSQL backup
+
+[Timer]
+OnCalendar=daily
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable with `systemctl enable --now purser-pg-backup.timer`.
+
+### Kubernetes CronJob
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: purser-pg-backup
+  namespace: purser
+spec:
+  schedule: "0 2 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-backup
+              image: postgres:16-alpine
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  pg_dump -Fc -h $PGHOST -U $PGUSER $PGDATABASE \
+                    -f /backup/purser-$(date +%Y%m%d-%H%M).dump
+              env:
+                - name: PGHOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: purser-db
+                      key: host
+                - name: PGUSER
+                  value: purser
+                - name: PGDATABASE
+                  value: purser
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: purser-db
+                      key: password
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: purser-pg-backup
+```
+
+---
+
+## PostgreSQL restore
+
+> **Stop the control plane before restoring.** Active connections hold locks
+> that conflict with `pg_restore`; restoring while the service is running risks
+> partial writes and data corruption.
+
+```bash
+# 1. Stop the service (systemd)
+systemctl stop purser-control-plane
+
+# 2. Drop and recreate the target database
+psql -h $PGHOST -U purser postgres \
+  -c "DROP DATABASE IF EXISTS purser;" \
+  -c "CREATE DATABASE purser OWNER purser;"
+
+# 3. Restore from the custom-format dump
+pg_restore -Fc -h $PGHOST -U purser -d purser \
+  purser-20260906-0200.dump
+
+# 4. Restart the service
+systemctl start purser-control-plane
+
+# 5. Verify
+control-plane status
+```
+
+For parallel restore (faster on large databases):
+
+```bash
+pg_restore -Fc -h $PGHOST -U purser -d purser -j 4 \
+  purser-20260906-0200.dump
+```
+
+### Point-in-time recovery (WAL archiving)
+
+If you use WAL archiving (pgBackRest / WAL-G), restore to a specific moment:
+
+```bash
+# pgBackRest example — restore to 2026-09-06 03:00 UTC
+pgbackrest --stanza=purser --delta \
+  --target="2026-09-06 03:00:00+00" \
+  --target-action=promote \
+  restore
+```
+
+Consult your WAL archiver's documentation for full PITR procedures and
+`recovery.conf` / `postgresql.conf` settings (`restore_command`,
+`recovery_target_time`).
+
+---
+
+## SQLite backup
+
+!!! note "SQLite is the development/single-node default"
+    SQLite is the development/single-node default. For production deployments
+    use PostgreSQL — see [PostgreSQL backup](#postgresql-backup) above.
+
+SQLite backups are performed **online** using SQLite's `VACUUM INTO` statement,
+which takes a consistent read-only snapshot without pausing in-flight writes or
+blocking readers for more than a few milliseconds.
 
 ```bash
 control-plane backup --db /var/lib/purser/registry.db \
@@ -32,11 +245,9 @@ PURSER_DB=/var/lib/purser/registry.db \
 The backup file is a fully self-contained SQLite 3 database. Copy it off-site
 with any standard tool (`rsync`, `scp`, S3 sync, etc.).
 
----
+### Automated backup (systemd timer / cron)
 
-## Automated backup (systemd timer / cron)
-
-### cron
+#### cron
 
 ```cron
 # /etc/cron.d/purser-backup
@@ -47,7 +258,7 @@ with any standard tool (`rsync`, `scp`, S3 sync, etc.).
 5 2 * * * purser find /backup -name 'purser-*.db' -mtime +30 -delete
 ```
 
-### systemd timer
+#### systemd timer
 
 `/etc/systemd/system/purser-backup.service`:
 
@@ -80,9 +291,7 @@ WantedBy=timers.target
 
 Enable with `systemctl enable --now purser-backup.timer`.
 
----
-
-## Kubernetes CronJob
+### Kubernetes CronJob
 
 ```yaml
 apiVersion: batch/v1
@@ -126,7 +335,7 @@ spec:
 
 ---
 
-## Restore procedure
+## SQLite restore
 
 > **Stop the control plane before restoring.** A live process holds the
 > database open; restoring while it is running may corrupt the file.

@@ -32,6 +32,17 @@ type ClusterConfig struct {
 	Gateway     GatewaySpec    `yaml:"gateway"`
 	Orgs        []OrgSpec      `yaml:"orgs,omitempty"`
 	NodePools   []NodePoolSpec `yaml:"node_pools,omitempty"`
+	LDAP        *LDAPConfig    `yaml:"ldap,omitempty"`
+	Quorum      *QuorumConfig  `yaml:"quorum,omitempty"`
+	// SLO configures per-model TTFT/TBT SLO contracts.
+	SLO *SLOConfig `yaml:"slo,omitempty"`
+}
+
+// QuorumConfig defines multi-person approval requirements for AI Act Art.14.
+type QuorumConfig struct {
+	MinApprovers    int      `yaml:"min_approvers"`
+	ReviewerKeys    []string `yaml:"reviewer_keys"`
+	RequireDistinct bool     `yaml:"require_distinct"`
 }
 
 // Metadata holds identification and labelling fields for the cluster config.
@@ -129,4 +140,61 @@ type PoolQuotaSpec struct {
 	MaxDeployments int    `yaml:"max_deployments"`
 	MaxGPUNodes    int    `yaml:"max_gpu_nodes"`
 	Priority       int    `yaml:"priority"`
+}
+
+// LDAPGroupMapping maps a single LDAP / Active Directory group DN to a Purser
+// role. Used in the purser.yaml ldap.group_mappings list.
+//
+//	ldap:
+//	  group_mappings:
+//	    - dn: "CN=purser-admins,OU=groups,DC=acme,DC=com"
+//	      role: admin
+type LDAPGroupMapping struct {
+	DN   string `yaml:"dn"`
+	Role string `yaml:"role"`
+}
+
+// LDAPConfig is the optional purser.yaml LDAP configuration block. It
+// supplements (and in the case of group_mappings, overrides) the environment-
+// variable-based configuration loaded by ldapauth.FromEnv.
+type LDAPConfig struct {
+	// GroupMappings maps LDAP/AD group DNs to Purser roles.
+	// Role values: "admin", "viewer", "inference".
+	// When both purser.yaml group_mappings and the legacy
+	// PURSER_LDAP_GROUP_MAPPINGS env var are set, the YAML mapping takes
+	// precedence for DN-based checks; env var mappings remain active for
+	// name-based checks.
+	GroupMappings []LDAPGroupMapping `yaml:"group_mappings"`
+
+	// NestedGroups enables recursive group membership lookup.
+	//   - Active Directory: use the extensible match filter
+	//     (memberOf:1.2.840.113556.1.4.1941:=<userDN>) — this is already the
+	//     default GroupFilter, so NestedGroups is redundant for AD unless you
+	//     want the additional recursive parent-group walk described below.
+	//   - OpenLDAP: after the initial group search, Purser walks the parent
+	//     groups of each found group (via member searches) up to 5 levels deep.
+	NestedGroups bool `yaml:"nested_groups"`
+
+	// GroupCacheTTLS is the group-membership cache TTL in seconds.
+	// 0 falls back to the CacheTTL set in the PURSER_LDAP_CACHE_TTL_SECONDS
+	// env var (default 300 s / 5 min). Set to -1 to disable caching entirely.
+	GroupCacheTTLS int `yaml:"group_cache_ttl_s"`
+
+	// DefaultRole is assigned when the user authenticates successfully but no
+	// group_mappings entry matches any of their groups.
+	// "" (the default) means deny access when no group matches.
+	// Valid values: "admin", "viewer", "inference", or "" (deny).
+	DefaultRole string `yaml:"default_role"`
+}
+
+// SLOConfig holds per-model SLO parameters. "*" key = global default.
+type SLOConfig struct {
+	Models map[string]ModelSLO `yaml:"models"`
+}
+
+// ModelSLO defines the SLO contract for one model.
+type ModelSLO struct {
+	TTFTMs           int     `yaml:"ttft_ms"`
+	TBTMs            int     `yaml:"tbt_ms"`
+	TargetCompliance float64 `yaml:"target_compliance"`
 }

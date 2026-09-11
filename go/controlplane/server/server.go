@@ -34,6 +34,7 @@ import (
 
 	"github.com/purser/purser/enterprise/license"
 	"github.com/purser/purser/go/controlplane/audit"
+	cpconfig "github.com/purser/purser/go/controlplane/config"
 	"github.com/purser/purser/go/controlplane/fleet"
 	"github.com/purser/purser/go/controlplane/ldapauth"
 	"github.com/purser/purser/go/controlplane/planning"
@@ -369,6 +370,11 @@ type Config struct {
 	// Use in tests to inject a stub that does not require a real LDAP server;
 	// when set LDAPConfig is ignored.
 	LDAPConnector LDAPAuthenticator
+
+	// Quorum, when set, enables multi-person approval requirements for deployment
+	// gates (AI Act Art.14 dual-control). Loaded from purser.yaml quorum block at
+	// startup. Nil means single-approver mode (backward compatible default).
+	Quorum *cpconfig.QuorumConfig
 }
 
 // rateLimiterEntry tracks per-key sliding-window rate-limit state.
@@ -407,6 +413,10 @@ type Server struct {
 	raftNode          RaftNode                 // nil = standalone mode
 
 	ldapConnector LDAPAuthenticator // nil if LDAP not configured
+
+	// quorum holds the cluster-wide approval quorum configuration (from
+	// purser.yaml). Nil when no quorum config is set (single-approver mode).
+	quorum *cpconfig.QuorumConfig
 
 	// TLS: file paths (explicit mode) or pre-configured TLS config (auto mode).
 	tlsCert    string
@@ -532,6 +542,7 @@ func New(reg registry.Registry, cfg Config) *Server {
 		ipLimitersAccess:  make(map[string]time.Time),
 		keyLimiters:       make(map[string]*rate.Limiter),
 		keyLimitersAccess: make(map[string]time.Time),
+		quorum:            cfg.Quorum,
 	}
 
 	// OIDC verifier: prefer an injected verifier (for tests or pre-built
@@ -1399,6 +1410,8 @@ func (s *Server) routes() {
 	// /auth/ldap-login is in rbacPublicPaths and exempted by oidcMiddleware.
 	s.mux.HandleFunc("GET /auth/ldap-login", s.handleLDAPLoginForm)
 	s.mux.HandleFunc("POST /auth/ldap-login", s.handleLDAPLogin)
+	// LDAP diagnostic endpoint — admin-only (POST → viewer/inference blocked by RBAC).
+	s.mux.HandleFunc("POST /api/v1/ldap/test", s.handleLDAPTest)
 
 	// Service account management (admin only).
 	s.mux.HandleFunc("POST /api/v1/service-accounts", s.handleCreateServiceAccount)
@@ -1495,6 +1508,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/billing", s.handleOrgBillingReport)
 	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/billing", s.handleTeamBillingReport)
 
+	// SLO compliance (v0.6) — viewer-accessible, no enterprise gate.
+	// Returns per-model TTFT compliance rates against configured SLO contracts.
+	s.mux.HandleFunc("GET /api/v1/slo/compliance", s.handleSLOCompliance)
+
 	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
 	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
 	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)
@@ -1570,6 +1587,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleAssignNodeToDataPlane)
 	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleUnassignNodeFromDataPlane)
 	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/nodes", s.handleListDataPlaneNodes)
+
+	// What-if Planner — hardware ROI simulation (v0.6).
+	// Runs the DP planner against a hypothetical fleet without touching the
+	// registry. Auth: admin or viewer role (no registry mutations).
+	s.mux.HandleFunc("POST /api/v1/planner/what-if", s.handleWhatIfPlan)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log

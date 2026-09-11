@@ -10,6 +10,12 @@ spec:
   groups:
     - name: purser.slo
       rules:
+        # NOTE: The 2.0 s threshold below mirrors the default TTFT SLO configured
+        # in purser.yaml (slo.models."*".ttft_ms = 2000). If you change the
+        # global default in purser.yaml, update the `le` bucket selector and the
+        # comparison threshold here to match. For per-model SLO alerting, use the
+        # PurserSLOBreached alert (see below) which reads from the control-plane
+        # compliance API.
         - alert: PurserHighTTFTp99
           expr: |
             histogram_quantile(0.99,
@@ -24,7 +30,7 @@ spec:
               The p99 time-to-first-token over the last 5 minutes is
               {{ $value | humanizeDuration }}, above the 2 s SLO threshold.
               Check upstream engine health and queue depth.
-            runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"
+            runbook_url: "https://andrew19881123.github.io/purser/enterprise/slo/"
 
         - alert: PurserHighTBTp99
           expr: |
@@ -83,3 +89,29 @@ spec:
               exceeding the saturation threshold of 50. Request latency will
               increase. Consider scaling out or redirecting traffic.
             runbook_url: "https://andrew19881123.github.io/purser/operations/observability/"
+
+        # PurserSLOBreached fires when the rolling 1-hour TTFT compliance rate
+        # falls below the 95% target (matching the default SLO target configured
+        # in purser.yaml). The le="2.0" bucket selector corresponds to the
+        # default ttft_ms=2000 threshold; adjust if you've set a different global
+        # default in purser.yaml (slo.models."*".ttft_ms).
+        # For authoritative per-model SLO status see GET /api/v1/slo/compliance.
+        - alert: PurserSLOBreached
+          expr: |
+            (
+              sum(rate(purser_gateway_time_to_first_token_seconds_bucket{le="2.0"}[1h]))
+              /
+              sum(rate(purser_gateway_time_to_first_token_seconds_count[1h]))
+            ) < 0.95
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TTFT SLO compliance below 95% for 15 minutes"
+            description: >
+              The rolling 1-hour TTFT compliance rate is {{ $value | humanizePercentage }},
+              below the 95% SLO target. This means more than 5% of inference requests
+              are exceeding the 2 s TTFT threshold. Investigate engine health, GPU
+              utilisation, and queue depth. For per-model breakdown query
+              GET /api/v1/slo/compliance on the control plane.
+            runbook_url: "https://andrew19881123.github.io/purser/enterprise/slo/"

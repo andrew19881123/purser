@@ -351,9 +351,9 @@ For dynamic registration (without a Helm upgrade), use the REST API or the Opera
 
 ### Engine backend: llama.cpp (production default)
 
-Agents default to `PURSER_ENGINE_BACKEND=llamacpp`, which drives real GPU inference via llama.cpp. The `mock` backend is opt-in — it returns canned responses with no GPU and is intended for demo and CI environments only.
+The Helm chart sets `PURSER_ENGINE_BACKEND=llamacpp` on Agents, which drives real GPU inference via llama.cpp. (A bare agent binary with the variable unset falls back to `mock` — see [Architecture: Engine backends](../getting-started/architecture.md#engine-backends).) The `mock` backend is opt-in: it returns canned responses with no GPU and is intended for CI and UI smoke-tests only.
 
-The `docker-compose.yml` demo stack sets `mock` explicitly. Helm deployments always default to `llamacpp`. To override to mock for a test namespace:
+Helm deployments always default to `llamacpp`. To override to mock for a test namespace:
 
 ```bash
 helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \

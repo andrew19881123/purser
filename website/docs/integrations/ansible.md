@@ -109,7 +109,7 @@ ansible-playbook -i inventory/ playbooks/enroll_nodes.yml
 
 ```bash
 export PURSER_CP_ADDR=http://cp.internal:8080
-export PURSER_JOIN_TOKEN=psk_your-token-here
+export PURSER_JOIN_TOKEN=your-token-here
 
 ansible-playbook -i inventory/ playbooks/install_purser_agents.yml
 ```

@@ -23,12 +23,33 @@ COPY proto/ ./proto/
 
 WORKDIR /src/rust
 
-# CARGO_INCREMENTAL=0 -> smaller artifacts, better layer caching for CI.
-RUN CARGO_INCREMENTAL=0 cargo build --release -p purser-gateway
+# Cross-compilation tools for musl static targets.
+# musl-tools provides the x86_64 musl linker; gcc-aarch64-linux-gnu is the
+# cross-linker used for the aarch64-unknown-linux-musl target.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends musl-tools gcc-aarch64-linux-gnu \
+ && rm -rf /var/lib/apt/lists/*
+
+# Select Rust target based on TARGETARCH (set automatically by docker buildx).
+# Both targets produce fully-static (musl) binaries — no glibc dependency at runtime.
+# The binary is placed at /purser-gateway so the COPY in the final stage is arch-agnostic.
+ARG TARGETARCH=amd64
+RUN case "$TARGETARCH" in \
+    amd64) \
+        rustup target add x86_64-unknown-linux-musl && \
+        CARGO_INCREMENTAL=0 cargo build --release --target x86_64-unknown-linux-musl -p purser-gateway && \
+        cp target/x86_64-unknown-linux-musl/release/purser-gateway /purser-gateway ;; \
+    arm64) \
+        rustup target add aarch64-unknown-linux-musl && \
+        CARGO_INCREMENTAL=0 \
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+        cargo build --release --target aarch64-unknown-linux-musl -p purser-gateway && \
+        cp target/aarch64-unknown-linux-musl/release/purser-gateway /purser-gateway ;; \
+esac
 
 # ── Final ────────────────────────────────────────────────────────────────
-# glibc runtime (the Rust binary targets x86_64-unknown-linux-gnu). bookworm
-# matches the builder's glibc. ca-certificates is included for future TLS use.
+# The binary is fully static (musl) and runs on any Linux — base image choice
+# is for ca-certificates and a non-root user; no glibc runtime required.
 FROM debian:bookworm-slim AS final
 
 RUN apt-get update \
@@ -51,7 +72,7 @@ ENV PURSER_GATEWAY_HOST=0.0.0.0 \
 
 EXPOSE 8080
 
-COPY --from=builder /src/rust/target/release/purser-gateway /usr/local/bin/purser-gateway
+COPY --from=builder /purser-gateway /usr/local/bin/purser-gateway
 
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/purser-gateway"]

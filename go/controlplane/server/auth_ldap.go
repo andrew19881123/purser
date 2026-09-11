@@ -1,17 +1,24 @@
 // auth_ldap.go — LDAP username/password authentication endpoints.
 //
-// Two HTTP endpoints:
+// Endpoints:
 //
-//	GET  /auth/ldap-login — serves a simple HTML login form.
-//	POST /auth/ldap-login — authenticates via LDAP, issues a session cookie.
+//	GET  /auth/ldap-login        — serves a simple HTML login form.
+//	POST /auth/ldap-login        — authenticates via LDAP, issues a session cookie.
+//	POST /api/v1/ldap/test       — admin diagnostic: resolve groups + role for a user.
 //
-// Both endpoints return 404 when no LDAP connector is configured (PURSER_LDAP_URL
-// not set). The session is stored in the same oidc_sessions table with
-// auth_method='ldap' so the existing session middleware handles LDAP sessions
-// transparently alongside OIDC sessions.
+// The login endpoints return 404 when no LDAP connector is configured
+// (PURSER_LDAP_URL not set). The session is stored in the same oidc_sessions
+// table with auth_method='ldap' so the existing session middleware handles LDAP
+// sessions transparently alongside OIDC sessions.
+//
+// POST /api/v1/ldap/test is a diagnostic endpoint that lets operators verify
+// LDAP connectivity and group → role mapping without a user logging in. It
+// returns the resolved groups, mapped role, and whether the result was served
+// from the in-memory cache.
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +27,15 @@ import (
 	"github.com/purser/purser/go/controlplane/ldapauth"
 	"github.com/purser/purser/go/controlplane/registry"
 )
+
+// LDAPCacheChecker is an optional extension to LDAPAuthenticator that allows
+// inspecting the in-memory group cache without triggering a live LDAP lookup.
+// It is satisfied by *ldapauth.Connector.
+// The server uses it (via type assertion) in handleLDAPTest to populate the
+// cache_hit field of the diagnostic response.
+type LDAPCacheChecker interface {
+	CheckCache(username, password string) *ldapauth.UserInfo
+}
 
 // handleLDAPLogin processes username/password submitted via form POST.
 // Creates an OIDC-style session (same table: oidc_sessions with auth_method='ldap')
@@ -57,6 +73,11 @@ func (s *Server) handleLDAPLogin(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("LDAP server unavailable", "err", err)
 		s.writeError(w, http.StatusServiceUnavailable, "ldap_unavailable",
 			"LDAP server is temporarily unavailable")
+		return
+	}
+	if errors.Is(err, ldapauth.ErrNoGroupMapping) {
+		s.writeError(w, http.StatusForbidden, "no_group_mapping",
+			"authenticated but no group mapping grants access; contact your administrator")
 		return
 	}
 	if err != nil {
@@ -122,4 +143,104 @@ button{width:100%;padding:10px;background:#4f46e5;color:white;border:none;cursor
 </form>
 <p><a href="/auth/login">&#8592; Sign in with SSO</a></p>
 </body></html>`)
+}
+
+// handleLDAPTest is an admin diagnostic endpoint that tests LDAP connectivity
+// and group → role resolution for a given username/password pair without
+// creating a session. Useful for operators debugging group mappings.
+//
+// POST /api/v1/ldap/test
+// Content-Type: application/json
+// Body: {"username":"alice","password":"secret"}
+//
+// Successful response (200 OK):
+//
+//	{
+//	  "authenticated": true,
+//	  "user_dn":       "CN=alice,OU=users,DC=example,DC=com",
+//	  "groups":        ["CN=ml-engineers,DC=example,DC=com"],
+//	  "mapped_role":   "inference",
+//	  "cache_hit":     false
+//	}
+//
+// Error responses:
+//   - 404  LDAP not configured
+//   - 400  missing username or password
+//   - 401  invalid credentials
+//   - 403  authenticated but no group mapping matches (and no default_role)
+//   - 503  LDAP server unreachable
+func (s *Server) handleLDAPTest(w http.ResponseWriter, r *http.Request) {
+	if s.ldapConnector == nil {
+		s.writeError(w, http.StatusNotFound, "not_configured",
+			"LDAP authentication is not configured on this server")
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if req.Username == "" || req.Password == "" {
+		s.writeError(w, http.StatusBadRequest, "bad_request", "username and password are required")
+		return
+	}
+
+	// Check cache before authenticating so we can report cache_hit accurately.
+	cacheHit := false
+	if cc, ok := s.ldapConnector.(LDAPCacheChecker); ok {
+		if cc.CheckCache(req.Username, req.Password) != nil {
+			cacheHit = true
+		}
+	}
+
+	info, err := s.ldapConnector.Authenticate(r.Context(), req.Username, req.Password)
+	if errors.Is(err, ldapauth.ErrInvalidCredentials) {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"authenticated": false,
+			"error":         "invalid_credentials",
+			"message":       "invalid username or password",
+		})
+		return
+	}
+	if errors.Is(err, ldapauth.ErrLDAPUnavailable) {
+		s.log.Warn("LDAP test: server unavailable", "err", err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"authenticated": false,
+			"error":         "ldap_unavailable",
+			"message":       "LDAP server is temporarily unavailable",
+		})
+		return
+	}
+	if errors.Is(err, ldapauth.ErrNoGroupMapping) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{
+			"authenticated": true,
+			"denied":        true,
+			"mapped_role":   "",
+			"cache_hit":     cacheHit,
+			"message":       "user authenticated but no group mapping grants access",
+		})
+		return
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	// Prefer full DNs for the groups field; fall back to CN names.
+	groups := info.GroupDNs
+	if len(groups) == 0 {
+		groups = info.Groups
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user_dn":       info.DN,
+		"groups":        groups,
+		"mapped_role":   info.Role,
+		"cache_hit":     cacheHit,
+	})
 }

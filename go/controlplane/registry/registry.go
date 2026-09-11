@@ -143,6 +143,12 @@ type Registry interface {
 	// CheckApprovalQuorum reports whether the quorum for deploymentID has been
 	// reached: (reached, approvedCount, requiredCount, error).
 	CheckApprovalQuorum(ctx context.Context, deploymentID string) (bool, int, int, error)
+	// CheckApprovalQuorumFiltered is like CheckApprovalQuorum but allows the
+	// caller to restrict which votes count (reviewerKeys) and override the
+	// minimum required approvals (minApprovers). Pass nil/empty reviewerKeys to
+	// count votes from any reviewer. Pass 0 for minApprovers to use the
+	// per-record required_approvals value.
+	CheckApprovalQuorumFiltered(ctx context.Context, deploymentID string, reviewerKeys []string, minApprovers int) (bool, int, int, error)
 
 	// --- Usage log ---------------------------------------------------------
 	// RecordUsage records one inference request's token usage.
@@ -446,4 +452,26 @@ type Registry interface {
 	// ValidateDataPlaneToken returns the DataPlane whose join_token_hash matches
 	// the SHA-256 of joinToken, or ErrNotFound. Used by the DP config-pull endpoint.
 	ValidateDataPlaneToken(ctx context.Context, joinToken string) (*DataPlane, error)
+
+	// ==========================================================================
+	// SLO Contracts (v0.6)
+	// ==========================================================================
+
+	// UpsertSLOConfig inserts or replaces the SLO configuration for modelID.
+	// Use modelID="*" for the global default that applies when no per-model
+	// entry exists.
+	UpsertSLOConfig(ctx context.Context, cfg *SLOConfigRow) error
+	// GetSLOConfig returns the SLO configuration for modelID, or ErrNotFound.
+	// Use modelID="*" to fetch the global default.
+	GetSLOConfig(ctx context.Context, modelID string) (*SLOConfigRow, error)
+	// GetAllSLOConfigs returns all rows in slo_configs, ordered by model_id.
+	// Returns an empty slice when no configs have been stored yet.
+	GetAllSLOConfigs(ctx context.Context) ([]*SLOConfigRow, error)
+	// GetSLOComplianceByModel returns per-model TTFT compliance stats for the
+	// given time window. When modelID is non-empty, only that model is returned.
+	// thresholdMs is the TTFT SLO threshold used to compute compliant_count.
+	// Rows with latency_ms == 0 are counted in request_count but NOT in
+	// compliant_count (unrecorded latency is neither compliant nor non-compliant
+	// and is indicated by the gap between request_count and compliant+non).
+	GetSLOComplianceByModel(ctx context.Context, start, end time.Time, modelID string, thresholdMs float64) ([]ModelSLOStat, error)
 }

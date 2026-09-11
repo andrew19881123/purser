@@ -436,7 +436,7 @@ For machine-to-machine access (CI pipelines, LiteLLM, automated scripts), use a 
 2. Use the returned `key` value as a bearer token for Gateway requests:
 
     ```bash
-    Authorization: Bearer psk_<your-api-key>
+    Authorization: Bearer sk-<your-api-key>
     ```
 
 This key is validated by the Gateway without going through OIDC. It is independent of the OIDC configuration on the Control Plane.

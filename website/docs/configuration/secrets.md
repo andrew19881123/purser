@@ -22,7 +22,7 @@ Provide other secrets at install time:
 
 ```bash
 helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
-  --set gateway.apiKeys="psk_key1:team-a,psk_key2:team-b" \
+  --set gateway.apiKeys="sk-key1:team-a,sk-key2:team-b" \
   --set license.key="<enterprise-license-key>"
 ```
 
@@ -34,7 +34,7 @@ Recommended for production: supply secrets from a values file with restricted pe
 ```bash
 # secrets.yaml (permissions: 600, never commit to git)
 gateway:
-  apiKeys: "psk_key1:team-a,psk_key2:team-b"
+  apiKeys: "sk-key1:team-a,sk-key2:team-b"
 license:
   key: "<enterprise-license-key>"
 ```
@@ -89,7 +89,7 @@ spec:
 ```bash
 vault kv put secret/purser/gateway \
   internal_token="<shared-secret>" \
-  api_keys="psk_key1:team-a,psk_key2:team-b"
+  api_keys="sk-key1:team-a,sk-key2:team-b"
 
 vault kv put secret/purser/license \
   key="<enterprise-license-key>"

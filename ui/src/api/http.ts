@@ -705,6 +705,18 @@ export function createHttpApi(baseUrl: string): PurserApi {
       return `${baseUrl}/billing/report?${params.toString()}`;
     },
 
+    getBillingXlsxUrl: (start: string, end: string, tenantId?: string): string => {
+      const params = new URLSearchParams({ start, end, format: 'xlsx' });
+      if (tenantId) params.set('tenant_id', tenantId);
+      return `${baseUrl}/billing/report?${params.toString()}`;
+    },
+
+    getBillingPdfUrl: (start: string, end: string, tenantId?: string): string => {
+      const params = new URLSearchParams({ start, end, format: 'pdf' });
+      if (tenantId) params.set('tenant_id', tenantId);
+      return `${baseUrl}/billing/report?${params.toString()}`;
+    },
+
     getBillingSummary: (tenantId?: string): Promise<BillingSummary> => {
       const params = new URLSearchParams();
       if (tenantId) params.set('tenant_id', tenantId);

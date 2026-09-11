@@ -204,21 +204,64 @@ func (r *SQLiteRegistry) GetApprovalVotes(ctx context.Context, approvalID int64)
 // CheckApprovalQuorum returns (reached, approvedCount, requiredCount, error)
 // for the approval associated with deploymentID.
 func (r *SQLiteRegistry) CheckApprovalQuorum(ctx context.Context, deploymentID string) (bool, int, int, error) {
+	return r.CheckApprovalQuorumFiltered(ctx, deploymentID, nil, 0)
+}
+
+// CheckApprovalQuorumFiltered is like CheckApprovalQuorum but allows the caller
+// to restrict which votes count (reviewerKeys) and override the minimum required
+// approvals (minApprovers). Pass nil/empty reviewerKeys to count votes from any
+// reviewer. Pass 0 for minApprovers to use the per-record required_approvals.
+func (r *SQLiteRegistry) CheckApprovalQuorumFiltered(ctx context.Context, deploymentID string, reviewerKeys []string, minApprovers int) (bool, int, int, error) {
 	approval, err := r.GetDeploymentApproval(ctx, deploymentID)
 	if err != nil {
 		return false, 0, 0, err
 	}
-	var count int
-	row := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM deployment_approval_votes
-		WHERE approval_id = ? AND vote = 'approved'`,
-		approval.ID)
-	if err := row.Scan(&count); err != nil {
-		return false, 0, 0, fmt.Errorf("registry: check approval quorum %q: %w", deploymentID, err)
+	required := minApprovers
+	if required <= 0 {
+		required = approval.RequiredApprovals
 	}
-	required := approval.RequiredApprovals
 	if required <= 0 {
 		required = 1
+	}
+
+	var count int
+	if len(reviewerKeys) == 0 {
+		// No key restriction — count all approved votes.
+		row := r.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM deployment_approval_votes
+			WHERE approval_id = ? AND vote = 'approved'`,
+			approval.ID)
+		if err := row.Scan(&count); err != nil {
+			return false, 0, 0, fmt.Errorf("registry: check approval quorum %q: %w", deploymentID, err)
+		}
+	} else {
+		// Reviewer-key restriction: load all approved votes then filter in Go
+		// (SQLite lacks native array-IN binding for variable-length lists without
+		// dynamic query construction; the number of reviewer_keys is always small).
+		rows, err := r.db.QueryContext(ctx, `
+			SELECT reviewer FROM deployment_approval_votes
+			WHERE approval_id = ? AND vote = 'approved'`,
+			approval.ID)
+		if err != nil {
+			return false, 0, 0, fmt.Errorf("registry: check approval quorum filtered %q: %w", deploymentID, err)
+		}
+		defer rows.Close()
+		allowed := make(map[string]struct{}, len(reviewerKeys))
+		for _, k := range reviewerKeys {
+			allowed[k] = struct{}{}
+		}
+		for rows.Next() {
+			var reviewer string
+			if err := rows.Scan(&reviewer); err != nil {
+				return false, 0, 0, fmt.Errorf("registry: check approval quorum filtered %q: %w", deploymentID, err)
+			}
+			if _, ok := allowed[reviewer]; ok {
+				count++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return false, 0, 0, fmt.Errorf("registry: check approval quorum filtered %q: %w", deploymentID, err)
+		}
 	}
 	return count >= required, count, required, nil
 }

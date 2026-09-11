@@ -119,6 +119,41 @@ List approval records. Requires admin or viewer role.
 
 Retrieve a single approval record by deployment ID. Returns 404 if not found.
 
+The response includes a `quorum` block showing real-time vote progress:
+
+```json
+{
+  "id": 1,
+  "deployment_id": "a1b2c3d4",
+  "model_id": "llama3-8b",
+  "requester": "sha256-of-api-key",
+  "requested_at": "2026-09-08T20:00:00Z",
+  "status": "pending",
+  "required_approvals": 2,
+  "quorum": {
+    "required": 2,
+    "received": 1,
+    "remaining": 1,
+    "approvers": [
+      {
+        "actor": "sha256-of-alice-key",
+        "approved_at": "2026-09-08T21:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `quorum.required` | Approvals needed (from `min_approvers` or `required_approvals`) |
+| `quorum.received` | Qualifying approvals received so far |
+| `quorum.remaining` | `required − received`, clamped to 0 |
+| `quorum.approvers` | List of reviewers who have approved (actor = SHA-256 hash of API key) |
+
+When `reviewer_keys` is configured, only votes from those designated keys
+count toward `received`.
+
 ### `POST /api/v1/approvals/{deploymentId}/approve`
 
 Approve a pending deployment. Admin role required. Returns 409 if the approval
@@ -153,9 +188,21 @@ with live status badges:
 Admins can filter by status and approve or reject directly from the table via a
 confirm dialog that accepts optional notes.
 
+### Quorum progress in the UI
+
+When `min_approvers > 1` is configured, each pending row shows a compact
+progress bar beneath the status badge indicating how many approvals have been
+received out of how many are required (e.g. "1 of 2 approvals received").
+
+The **Approve** button is disabled for the current session once that reviewer
+has cast their vote, preventing accidental double-votes. Attempting to vote
+again returns `409 Conflict` with `"error": "already_voted"` which the UI
+surfaces as an inline error.
+
 !!! note "UI screenshot"
     The Approvals page renders a filterable table with status tabs (Pending / Approved / Rejected),
-    approve/reject buttons with a confirm dialog for optional notes, and color-coded status badges.
+    approve/reject buttons with a confirm dialog for optional notes, color-coded status badges,
+    and — for multi-approver quorums — a progress bar showing received vs. required votes.
 
 ## Dual control (AI Act Art.14)
 
@@ -168,16 +215,47 @@ Purser's dual-control mode requires **two distinct admins** to each cast an
 independent "approved" vote before the deployment is released, preventing any
 single person from authorising a rollout alone.
 
-### Configuring required approvals
+### Quorum configuration
 
-Set `required_approvals` when you call
-`POST /api/v1/models/{id}/deploy` (or inject it into the approval record
-directly if your workflow creates the record separately):
+The recommended way to enforce dual-control is via `purser.yaml` rather than
+per-request parameters. Add a `quorum` block to your cluster config:
+
+```yaml
+# purser.yaml
+quorum:
+  # Number of distinct approvals required (default: 1 — backward compatible).
+  min_approvers: 2
+
+  # Optional: restrict which API keys count toward quorum.
+  # Leave empty to allow any admin to approve.
+  reviewer_keys:
+    - key-alice          # API key ID for Alice (CISO)
+    - key-bob            # API key ID for Bob (Chief AI Officer)
+
+  # Prevent the same reviewer from casting two votes on the same deployment.
+  # Default: true. The storage layer always enforces this regardless.
+  require_distinct: true
+```
+
+`min_approvers` and `reviewer_keys` are applied cluster-wide to every pending
+approval gate. Individual deploy requests that already have a higher
+`required_approvals` value continue to use whichever is larger.
+
+**AI Act Art.14 compliance note (dual-control):** Setting `min_approvers: 2`
+and `reviewer_keys` to a named set of senior reviewers ensures that no single
+person can unilaterally authorise deployment of a high-risk AI model. The
+designated reviewers are recorded in the immutable audit trail. This directly
+satisfies the Art.14(1) requirement for "natural persons" being able to
+"properly oversee" the AI system and the Art.14(4)(b) requirement that the
+human oversight measures be commensurate with the risks.
+
+#### Legacy per-request override
+
+If you prefer per-request control (without a `purser.yaml` quorum block), set
+`required_approvals` when you call `POST /api/v1/models/{id}/deploy`:
 
 ```json
-{
-  "required_approvals": 2
-}
+{ "required_approvals": 2 }
 ```
 
 The default is `1` (single-approver mode — backward-compatible with existing

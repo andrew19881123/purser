@@ -367,6 +367,9 @@ export const en = {
   'approvals.confirm.reject': 'Reject deployment of {model}?',
   'approvals.notes.label': 'Notes (optional)',
   'approvals.refresh': 'Refresh',
+  'approvals.quorum.progress': '{received} of {required} approvals received',
+  'approvals.quorum.approvers': 'Approvers so far',
+  'approvals.quorum.alreadyVoted': 'You have already voted on this approval.',
   'error.approvals': 'Could not load approvals.',
 
   // RBAC role labels
@@ -413,6 +416,9 @@ export const en = {
   'chargeback.period.label': 'Period',
   'chargeback.empty': 'No usage recorded in this period.',
   'chargeback.action.exportCsv': 'Export CSV',
+  'chargeback.action.exportXlsx': 'Export XLSX',
+  'chargeback.action.exportPdf': 'Export PDF',
+  'chargeback.action.downloading': 'Downloading…',
   'chargeback.stat.totalRequests': 'Total requests',
   'chargeback.stat.totalTokens': 'Total tokens',
   'chargeback.stat.activeTenants': 'Active tenants',

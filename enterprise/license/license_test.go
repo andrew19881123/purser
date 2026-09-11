@@ -36,7 +36,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	key, err := license.Sign(priv, license.Payload{
 		Licensee: "Acme Corp",
-		Features: []string{"audit", "rbac"},
+		Features: []string{"audit", "billing"},
 		Issued:   now,
 		Expires:  now.Add(365 * 24 * time.Hour),
 	})
@@ -63,11 +63,18 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	if lic.Licensee != "Acme Corp" {
 		t.Errorf("licensee = %q, want Acme Corp", lic.Licensee)
 	}
-	if !lic.HasFeature("audit") || !lic.HasFeature("rbac") {
-		t.Errorf("features = %v, want audit+rbac", lic.Features)
+	if !lic.HasFeature("audit") || !lic.HasFeature("billing") {
+		t.Errorf("features = %v, want audit+billing", lic.Features)
 	}
-	if lic.HasFeature("sso") {
-		t.Errorf("unexpectedly has feature sso")
+	if lic.HasFeature("gdpr") {
+		t.Errorf("unexpectedly has feature gdpr")
+	}
+	// "chargeback" is the product name for the billing capability. HasFeature is
+	// byte-exact, so it must NOT match a key that grants "billing" — this is the
+	// behaviour that makes a mistyped flag silently worthless, and the reason
+	// purser-license validates --feature before signing.
+	if lic.HasFeature("chargeback") {
+		t.Errorf("HasFeature must be byte-exact; %q must not match %q", "chargeback", "billing")
 	}
 	if !lic.ValidAt(now.Add(time.Hour)) {
 		t.Errorf("license should be valid one hour after issue")
@@ -314,7 +321,7 @@ func TestProductionKeyRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	key, err := license.Sign(priv, license.Payload{
 		Licensee: "Purser Production Test",
-		Features: []string{"audit", "ha", "rbac"},
+		Features: []string{"audit", "billing", "policy_engine"},
 		Issued:   now,
 		Expires:  now.Add(8760 * time.Hour),
 	})
@@ -329,8 +336,8 @@ func TestProductionKeyRoundTrip(t *testing.T) {
 	if lic.Licensee != "Purser Production Test" {
 		t.Errorf("licensee = %q, want \"Purser Production Test\"", lic.Licensee)
 	}
-	if !lic.HasFeature("audit") || !lic.HasFeature("ha") || !lic.HasFeature("rbac") {
-		t.Errorf("features = %v, want audit+ha+rbac", lic.Features)
+	if !lic.HasFeature("audit") || !lic.HasFeature("billing") || !lic.HasFeature("policy_engine") {
+		t.Errorf("features = %v, want audit+billing+policy_engine", lic.Features)
 	}
 	if !lic.ValidAt(now.Add(time.Hour)) {
 		t.Errorf("license should be valid one hour after issue")
