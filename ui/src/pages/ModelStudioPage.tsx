@@ -903,6 +903,21 @@ export function ModelStudioPage() {
                   {errorMessage(importMutation.error, t, 'error.import')}
                 </p>
               )}
+              {/* Metadata-only clarification: weights are fetched at deploy time */}
+              <p
+                className="muted"
+                style={{
+                  fontSize: '0.8em',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.35em',
+                  marginTop: '0.5rem',
+                }}
+                data-testid="studio-import-callout"
+              >
+                <span aria-hidden="true">ℹ</span>
+                {t('studio.import.infoCallout')}
+              </p>
             </div>
           )}
         </div>

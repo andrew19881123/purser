@@ -376,4 +376,37 @@ describe('CatalogPage', () => {
       await waitFor(() => expect(previewBtn).toBeDisabled());
     });
   });
+
+  // --- Regression: real API shape guard ------------------------------------
+  // These tests would have caught bugs introduced when the API shape changed
+  // to use the nested `spec` field and `draft` became optional.
+
+  describe('Real API shape guard', () => {
+    it('renders correctly when model.draft is undefined (null guard)', async () => {
+      // Real API does not include a `draft` field in the spec — must not crash.
+      const entryWithNoDraft: CatalogEntry = {
+        ...feasibleEntry,
+        model: {
+          ...feasibleEntry.model,
+          // @ts-expect-error — intentionally omitting draft to simulate real API shape
+          draft: undefined,
+        },
+      };
+      vi.mocked(api.getCatalog).mockResolvedValue([entryWithNoDraft]);
+      renderPage();
+      // Page should render without throwing
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+    });
+
+    it('renders correctly when model.quantizations is empty', async () => {
+      const entryNoQuants: CatalogEntry = {
+        ...feasibleEntry,
+        model: { ...feasibleEntry.model, quantizations: [] },
+        fit: { ...feasibleEntry.fit, fits: false, estimated: null, quantization: null },
+      };
+      vi.mocked(api.getCatalog).mockResolvedValue([entryNoQuants]);
+      renderPage();
+      await waitFor(() => expect(screen.getByText('Llama 3.1 8B')).toBeInTheDocument());
+    });
+  });
 });
