@@ -60,9 +60,13 @@ import type {
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
+  BillingForecastResponse,
+  SloComplianceResponse,
   Team,
   TeamMember,
   UsageSummary,
+  WhatIfRequest,
+  WhatIfResult,
 } from './types';
 import type { CreateApiKeyInput, PurserApi } from './client';
 
@@ -990,5 +994,28 @@ export function createHttpApi(baseUrl: string): PurserApi {
       const qs = p.toString() ? `?${p.toString()}` : '';
       return request<AccessLogResponse>(`/logs/access${qs}`);
     },
+
+    // --- what-if planner ---
+    whatIfPlan: (body: WhatIfRequest): Promise<WhatIfResult> =>
+      request<WhatIfResult>('/planner/what-if', { method: 'POST', body }),
+
+    // --- SLO compliance ---
+    getSloCompliance: (windowHours = 24): Promise<SloComplianceResponse> =>
+      request<unknown>(`/slo/compliance?window_hours=${windowHours}`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          models: Array.isArray(r.models) ? r.models as SloComplianceResponse['models'] : [],
+          window_hours: typeof r.windowHours === 'number' ? r.windowHours : windowHours,
+        };
+      }),
+
+    // --- billing forecast ---
+    getBillingForecast: (): Promise<BillingForecastResponse> =>
+      request<unknown>('/billing/forecast').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          entries: Array.isArray(r.entries) ? r.entries as BillingForecastResponse['entries'] : [],
+        };
+      }),
   };
 }
