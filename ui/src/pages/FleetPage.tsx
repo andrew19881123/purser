@@ -270,14 +270,288 @@ function SloStatusCard({ t }: { t: TFunc }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Node expanded details panel — shown as an accordion row below the node row.
+// Design: datasheet-insert style. Small muted labels, monospace for technical
+// values. var(--surface-2) background so it reads as "inside" the parent row.
+// ---------------------------------------------------------------------------
+
+function NodeDetailPanel({ node, t }: { node: NodeView; t: TFunc }) {
+  const engines = Object.entries(node.profile.engineVersions);
+  return (
+    <div
+      style={{
+        background: 'var(--surface-2)',
+        borderRadius: 'var(--radius)',
+        padding: '12px 16px',
+        margin: '4px 0',
+      }}
+    >
+      <dl
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'max-content 1fr',
+          columnGap: '20px',
+          rowGap: '6px',
+          margin: 0,
+        }}
+      >
+        {/* Node ID */}
+        <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+          Node ID
+        </dt>
+        <dd style={{ margin: 0 }}>
+          <code className="inline-code" style={{ fontSize: '0.85em' }}>
+            {node.profile.nodeId}
+          </code>
+        </dd>
+
+        {/* Hostname */}
+        <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+          Hostname
+        </dt>
+        <dd style={{ margin: 0, fontWeight: 500 }}>{node.profile.hostname}</dd>
+
+        {/* OS / Arch */}
+        <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+          Platform
+        </dt>
+        <dd style={{ margin: 0 }}>
+          <code className="inline-code" style={{ fontSize: '0.85em' }}>
+            {node.profile.os}/{node.profile.arch}
+          </code>
+        </dd>
+
+        {/* RAM */}
+        <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+          RAM
+        </dt>
+        <dd style={{ margin: 0 }}>
+          <span style={{ fontWeight: 500 }}>{gb(node.profile.ramAvailableGb)}</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.875em' }}>
+            {' '}available / {gb(node.profile.ramTotalGb)} total
+          </span>
+        </dd>
+
+        {/* Link quality */}
+        <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+          {t('fleet.col.link')}
+        </dt>
+        <dd style={{ margin: 0 }}>
+          <Badge tone={LINK_TONE[node.linkQuality]}>{node.linkQuality}</Badge>
+        </dd>
+
+        {/* Last seen */}
+        {node.profile.lastSeen && (
+          <>
+            <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+              Last seen
+            </dt>
+            <dd style={{ margin: 0, fontSize: '0.875em', color: 'var(--text-muted)' }}>
+              <time dateTime={node.profile.lastSeen}>
+                {new Date(node.profile.lastSeen).toLocaleString()}
+              </time>
+            </dd>
+          </>
+        )}
+
+        {/* Inference engines */}
+        {engines.length > 0 && (
+          <>
+            <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'flex-start', fontWeight: 600, paddingTop: '2px' }}>
+              Engines
+            </dt>
+            <dd style={{ margin: 0, display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {engines.map(([engine, version]) => (
+                <span
+                  key={engine}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '2px 8px',
+                    fontSize: '0.8em',
+                  }}
+                >
+                  <code style={{ fontFamily: 'var(--font-mono)' }}>{engine}</code>
+                  <span style={{ color: 'var(--text-muted)' }}>{version}</span>
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+
+        {/* Advertised agent addr */}
+        {node.profile.advertisedAgentAddr && (
+          <>
+            <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+              Agent addr
+            </dt>
+            <dd style={{ margin: 0 }}>
+              <code className="inline-code" style={{ fontSize: '0.85em' }}>
+                {node.profile.advertisedAgentAddr}
+              </code>
+            </dd>
+          </>
+        )}
+
+        {/* Advertised inference addr */}
+        {node.profile.advertisedInferenceAddr && (
+          <>
+            <dt style={{ fontSize: '0.75em', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 600 }}>
+              Inference addr
+            </dt>
+            <dd style={{ margin: 0 }}>
+              <code className="inline-code" style={{ fontSize: '0.85em' }}>
+                {node.profile.advertisedInferenceAddr}
+              </code>
+            </dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Overflow action menu — ⋮ button that expands Drain / Restart / Remove.
+// Danger actions (Drain, Remove) use var(--danger-fg). A visual separator sits
+// between the neutral Restart and the destructive Remove to create a natural
+// pause before the irreversible actions.
+// ---------------------------------------------------------------------------
+
+function NodeActionMenu({
+  id,
+  busy,
+  onDrain,
+  onRestart,
+  onRemove,
+  t,
+}: {
+  id: string;
+  busy: boolean;
+  onDrain: () => void;
+  onRestart: () => void;
+  onRemove: () => void;
+  t: TFunc;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const menuItemStyle: React.CSSProperties = {
+    display: 'block',
+    width: '100%',
+    padding: '8px 16px',
+    textAlign: 'left',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '0.875em',
+    color: 'var(--text)',
+    fontFamily: 'inherit',
+  };
+
+  const dangerItemStyle: React.CSSProperties = {
+    ...menuItemStyle,
+    color: 'var(--danger-fg)',
+  };
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        onClick={() => setOpen((o) => !o)}
+        aria-label={t('fleet.col.actions') + ' ' + id}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, letterSpacing: '0.05em', lineHeight: 1 }}
+      >
+        ⋮
+      </Button>
+      {open && (
+        <>
+          {/* Transparent overlay to close menu on outside click */}
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 10 }}
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
+          <ul
+            role="menu"
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: '100%',
+              marginTop: '4px',
+              zIndex: 11,
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius)',
+              boxShadow: 'var(--shadow)',
+              padding: '4px 0',
+              minWidth: '148px',
+              listStyle: 'none',
+              margin: '4px 0 0 0',
+            }}
+          >
+            <li>
+              <button
+                role="menuitem"
+                style={dangerItemStyle}
+                onClick={() => { setOpen(false); onDrain(); }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--danger-bg)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+              >
+                {t('fleet.action.drain')}
+              </button>
+            </li>
+            <li>
+              <button
+                role="menuitem"
+                style={menuItemStyle}
+                onClick={() => { setOpen(false); onRestart(); }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-2)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+              >
+                {t('fleet.action.restart')}
+              </button>
+            </li>
+            {/* Visual separator before the destructive Remove action */}
+            <li role="separator" style={{ height: '1px', background: 'var(--border)', margin: '4px 0' }} />
+            <li>
+              <button
+                role="menuitem"
+                style={dangerItemStyle}
+                onClick={() => { setOpen(false); onRemove(); }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--danger-bg)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+              >
+                {t('fleet.action.remove')}
+              </button>
+            </li>
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function NodeRow({
   node,
   liveMetrics,
+  isExpanded,
+  onToggle,
   t,
 }: {
   node: NodeView;
   /** Live hardware metrics from the SSE stream; null if the node has not yet reported. */
   liveMetrics: EngineMetrics | null;
+  isExpanded: boolean;
+  onToggle: () => void;
   t: TFunc;
 }) {
   const { drain, restart, remove } = useNodeAction();
@@ -285,11 +559,33 @@ function NodeRow({
   const busy = drain.isPending || restart.isPending || remove.isPending;
   // Prefer SSE live data; fall back to REST snapshot metrics.
   const metrics = liveMetrics ?? node.metrics;
+  const [showDrainModal, setShowDrainModal] = useState(false);
   const [showRemoveModal, setShowRemoveModal] = useState(false);
+
   return (
     <>
       <tr>
-        <th scope="row" className="node-cell">
+        <th
+          scope="row"
+          className="node-cell"
+          onClick={onToggle}
+          style={{ cursor: 'pointer', userSelect: 'none' }}
+          aria-expanded={isExpanded}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              display: 'inline-block',
+              width: '1em',
+              marginRight: '6px',
+              fontSize: '0.7em',
+              color: 'var(--text-muted)',
+              transition: 'transform 150ms ease',
+              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}
+          >
+            ▶
+          </span>
           <span className="node-cell__host">{node.profile.hostname}</span>
           <span className="node-cell__meta">
             {node.profile.os}/{node.profile.arch}
@@ -322,28 +618,53 @@ function NodeRow({
           </span>
         </td>
         <td>
-          <div className="row-actions">
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => {
-                if (window.confirm(t('fleet.confirm.drain', { node: id }))) {
-                  drain.mutate(id);
-                }
-              }}
-            >
-              {t('fleet.action.drain')}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => restart.mutate(id)}>
-              {t('fleet.action.restart')}
-            </Button>
-            <Button size="sm" variant="danger" disabled={busy} onClick={() => setShowRemoveModal(true)}>
-              {t('fleet.action.remove')}
-            </Button>
-          </div>
+          <NodeActionMenu
+            id={id}
+            busy={busy}
+            onDrain={() => setShowDrainModal(true)}
+            onRestart={() => restart.mutate(id)}
+            onRemove={() => setShowRemoveModal(true)}
+            t={t}
+          />
         </td>
       </tr>
+
+      {/* Accordion details row */}
+      {isExpanded && (
+        <tr>
+          <td colSpan={6} style={{ padding: '0 8px 8px 8px', borderTop: 0 }}>
+            <NodeDetailPanel node={node} t={t} />
+          </td>
+        </tr>
+      )}
+
+      {/* Drain confirmation modal */}
+      {showDrainModal && (
+        <Modal
+          title={t('fleet.confirm.drainTitle')}
+          onClose={() => setShowDrainModal(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setShowDrainModal(false)}>
+                {t('action.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  drain.mutate(id);
+                  setShowDrainModal(false);
+                }}
+              >
+                {t('fleet.action.drain')}
+              </Button>
+            </>
+          }
+        >
+          {t('fleet.confirm.drainBody', { node: id })}
+        </Modal>
+      )}
+
+      {/* Remove confirmation modal */}
       {showRemoveModal && (
         <Modal
           title={t('fleet.confirm.removeTitle')}
@@ -380,6 +701,9 @@ export function FleetPage() {
   // Live hardware metrics via GET /api/v1/metrics (SSE). null until the first
   // frame arrives; each frame carries per-node engine metrics from heartbeats.
   const { snapshot: live, streamError } = useMetricsStream();
+
+  // Single expanded node at a time — toggling the same row collapses it.
+  const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
 
   // Build a fast lookup: nodeId → live EngineMetrics from the SSE stream.
   // When a node has not yet reported, its entry is absent and NodeRow falls
@@ -463,6 +787,12 @@ export function FleetPage() {
                     key={n.profile.nodeId}
                     node={n}
                     liveMetrics={liveByNode[n.profile.nodeId] ?? null}
+                    isExpanded={expandedNodeId === n.profile.nodeId}
+                    onToggle={() =>
+                      setExpandedNodeId(
+                        expandedNodeId === n.profile.nodeId ? null : n.profile.nodeId,
+                      )
+                    }
                     t={t}
                   />
                 ))}

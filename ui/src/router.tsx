@@ -17,6 +17,7 @@ import { ModelStudioPage } from './pages/ModelStudioPage';
 import { PlaygroundPage } from './pages/PlaygroundPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
+import { ApiKeysPage } from './pages/ApiKeysPage';
 import { ApprovalsPage } from './pages/ApprovalsPage';
 import { ChargebackPage } from './pages/ChargebackPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -39,6 +40,7 @@ export const router = createBrowserRouter([
       { path: 'join-token', element: <JoinTokenPage /> },
       { path: 'playground', element: <PlaygroundPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'api-keys', element: <ApiKeysPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'approvals', element: <ApprovalsPage /> },
       { path: 'chargeback', element: <ChargebackPage /> },

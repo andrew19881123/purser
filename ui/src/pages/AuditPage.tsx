@@ -26,7 +26,84 @@ import { IconRefresh, IconShield } from '../components/icons';
 import { useInferenceAudit, useAuditChainVerify, useAccessLog } from '../hooks/queries';
 import { useT } from '../i18n';
 import { errorMessage } from '../lib/errors';
+import { ApiError } from '../api/http';
 import type { InferenceAuditEvent, AccessLogEntry } from '../api/types';
+
+// ---------------------------------------------------------------------------
+// Enterprise license gate detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the API error body indicates a license_required response,
+ * i.e. `{"error":{"type":"license_required",...}}`. This allows the UI to show
+ * an upgrade prompt rather than a generic error message.
+ */
+function isLicenseRequired(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const body = error.body as Record<string, unknown> | null | undefined;
+  if (!body || typeof body !== 'object') return false;
+  const errField = body.error as Record<string, unknown> | null | undefined;
+  if (!errField || typeof errField !== 'object') return false;
+  return errField.type === 'license_required';
+}
+
+/**
+ * Upgrade prompt card — shown instead of a generic error when the backend
+ * returns license_required. Styled as "locked feature" (info palette),
+ * not as an error, so it reads as aspirational, not broken.
+ */
+function EnterpriseGate({ title, desc }: { title: string; desc: string }) {
+  const t = useT();
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-start',
+        gap: '10px',
+        background: 'var(--info-bg)',
+        border: '1px solid color-mix(in srgb, var(--info-fg) 25%, transparent)',
+        borderRadius: 'var(--radius)',
+        padding: '20px 24px',
+      }}
+      role="status"
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <span
+          aria-hidden="true"
+          style={{
+            fontSize: '1.25em',
+            lineHeight: 1,
+            color: 'var(--info-fg)',
+          }}
+        >
+          🔒
+        </span>
+        <strong style={{ color: 'var(--info-fg)', fontSize: '1em', fontWeight: 600 }}>
+          {title}
+        </strong>
+      </div>
+      <p style={{ margin: 0, color: 'var(--text)', fontSize: '0.9em', lineHeight: 1.5 }}>
+        {desc}
+      </p>
+      <a
+        href="https://andrew19881123.github.io/purser/enterprise/licensing/"
+        target="_blank"
+        rel="noreferrer"
+        style={{
+          color: 'var(--info-fg)',
+          fontWeight: 600,
+          fontSize: '0.875em',
+          textDecoration: 'none',
+          borderBottom: '1px solid color-mix(in srgb, var(--info-fg) 40%, transparent)',
+          paddingBottom: '1px',
+        }}
+      >
+        {t('audit.enterprise.link')}
+      </a>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Tab type
@@ -72,7 +149,13 @@ function ChainIntegrityPanel() {
         }}
       >
         {isLoading && <LoadingBlock />}
-        {isError && (
+        {isError && isLicenseRequired(error) && (
+          <EnterpriseGate
+            title={t('audit.enterprise.chain.title')}
+            desc={t('audit.enterprise.chain.desc')}
+          />
+        )}
+        {isError && !isLicenseRequired(error) && (
           <ErrorState
             message={errorMessage(error, t, 'error.chainVerify')}
             onRetry={() => void refetch()}
@@ -255,7 +338,13 @@ function InferenceAuditTab() {
 
       {isLoading && <LoadingBlock />}
 
-      {isError && (
+      {isError && isLicenseRequired(error) && (
+        <EnterpriseGate
+          title={t('audit.enterprise.inference.title')}
+          desc={t('audit.enterprise.inference.desc')}
+        />
+      )}
+      {isError && !isLicenseRequired(error) && (
         <ErrorState
           message={errorMessage(error, t, 'error.inferenceAudit')}
           onRetry={() => void refetch()}

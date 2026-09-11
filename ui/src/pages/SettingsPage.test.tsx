@@ -1,19 +1,20 @@
 /**
- * SettingsPage — unit tests for API key usage, usage summary and license status.
+ * SettingsPage — unit tests for quick stats, usage summary and license status.
+ *
+ * Note: API key table tests moved to ApiKeysPage.test.tsx in v0.6 when API
+ * key management was extracted to its own dedicated page (/api-keys).
  *
  * Strategy: mock the hooks layer so we never touch the real API client
  * (which contains top-level await) and have full control over returned data.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Mock the entire hooks/queries module before importing SettingsPage.
 vi.mock('../hooks/queries', () => ({
   useApiKeys: vi.fn(),
-  useCreateApiKey: vi.fn(),
-  useRevokeApiKey: vi.fn(),
-  useKeyUsage: vi.fn(),
   useUsageSummary: vi.fn(),
   useEnterpriseStatus: vi.fn(),
 }));
@@ -31,15 +32,6 @@ import * as queries from '../hooks/queries';
 function success<T>(data: T) {
   return { isLoading: false, isError: false, error: null, data, refetch: vi.fn() };
 }
-function pending() {
-  return { isLoading: true, isError: false, error: null, data: undefined, refetch: vi.fn() };
-}
-function idle() {
-  return { isLoading: false, isError: false, error: null, data: undefined, refetch: vi.fn() };
-}
-
-// Mutation stub (not under test here).
-const mutationStub = { mutate: vi.fn(), isPending: false };
 
 function mkQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -47,18 +39,17 @@ function mkQueryClient() {
 
 function renderPage() {
   return render(
-    <QueryClientProvider client={mkQueryClient()}>
-      <SettingsPage />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={mkQueryClient()}>
+        <SettingsPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
 // Typed access to mocked functions.
 const mq = queries as unknown as {
   useApiKeys: ReturnType<typeof vi.fn>;
-  useCreateApiKey: ReturnType<typeof vi.fn>;
-  useRevokeApiKey: ReturnType<typeof vi.fn>;
-  useKeyUsage: ReturnType<typeof vi.fn>;
   useUsageSummary: ReturnType<typeof vi.fn>;
   useEnterpriseStatus: ReturnType<typeof vi.fn>;
 };
@@ -66,9 +57,6 @@ const mq = queries as unknown as {
 beforeEach(() => {
   // Default: no keys, no usage, community edition.
   mq.useApiKeys.mockReturnValue(success([]));
-  mq.useCreateApiKey.mockReturnValue(mutationStub);
-  mq.useRevokeApiKey.mockReturnValue(mutationStub);
-  mq.useKeyUsage.mockReturnValue(idle());
   mq.useUsageSummary.mockReturnValue(success({ tenants: [] }));
   mq.useEnterpriseStatus.mockReturnValue(
     success({ edition: 'community', licensee: 'community', features: [] }),
@@ -76,62 +64,16 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Task A — per-key token usage
+// Task A — "Manage API Keys →" link card (API key table moved to ApiKeysPage)
 // ---------------------------------------------------------------------------
 
-describe('shows_key_usage_tokens', () => {
-  it('renders formatted in/out counts for an API key', () => {
-    const mockKey = {
-      id: 'key_abc',
-      name: 'Test key',
-      team: 'team-a',
-      prefix: 'sk-purser-xxxx',
-      role: 'admin' as const,
-      createdAt: new Date().toISOString(),
-      lastUsedAt: null,
-      monthlyQuota: null,
-      usedThisMonth: 0,
-      revoked: false,
-    };
-    mq.useApiKeys.mockReturnValue(success([mockKey]));
-    mq.useKeyUsage.mockImplementation((keyId: string | undefined) => {
-      if (keyId === 'key_abc') {
-        return success({
-          apiKeyId: 'key_abc',
-          totalRequests: 42,
-          inputTokens: 1234,
-          outputTokens: 567,
-        });
-      }
-      return idle();
-    });
-
+describe('settings_page_api_keys_link', () => {
+  it('shows manage api keys link pointing to /api-keys', () => {
     const { getByTestId } = renderPage();
 
-    // formatTokenCount(1234) => "1.2K", formatTokenCount(567) => "567"
-    expect(getByTestId('key-token-usage')).toHaveTextContent('1.2K in / 567 out');
-  });
-
-  it('shows loading state while key usage is fetching', () => {
-    const mockKey = {
-      id: 'key_loading',
-      name: 'Loading key',
-      team: 'team-b',
-      prefix: 'sk-purser-yyyy',
-      role: 'viewer' as const,
-      createdAt: new Date().toISOString(),
-      lastUsedAt: null,
-      monthlyQuota: null,
-      usedThisMonth: 0,
-      revoked: false,
-    };
-    mq.useApiKeys.mockReturnValue(success([mockKey]));
-    mq.useKeyUsage.mockReturnValue(pending());
-
-    const { getByText } = renderPage();
-
-    // Our mock t() returns the key itself.
-    expect(getByText('settings.usage.loading')).toBeDefined();
+    const link = getByTestId('manage-api-keys-link');
+    expect(link).toBeDefined();
+    expect(link.getAttribute('href')).toBe('/api-keys');
   });
 });
 
@@ -259,110 +201,6 @@ describe('shows_expiry_warning_when_expired', () => {
     const { queryByTestId } = renderPage();
 
     expect(queryByTestId('expired-badge')).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SettingsPage — API Keys tab (task spec tests)
-// ---------------------------------------------------------------------------
-
-// Helper: minimal valid API key fixture.
-function mkKey(overrides: Partial<{
-  id: string;
-  name: string;
-  team: string;
-  prefix: string;
-  role: 'admin' | 'viewer' | 'inference';
-  createdAt: string;
-  lastUsedAt: string | null;
-  monthlyQuota: number | null;
-  usedThisMonth: number;
-  revoked: boolean;
-}> = {}) {
-  return {
-    id: 'key_test',
-    name: 'Test key',
-    team: 'team-x',
-    prefix: 'sk-purser-test',
-    role: 'admin' as const,
-    createdAt: new Date().toISOString(),
-    lastUsedAt: null,
-    monthlyQuota: null,
-    usedThisMonth: 0,
-    revoked: false,
-    ...overrides,
-  };
-}
-
-describe('SettingsPage — API Keys tab', () => {
-  it('renders key table with name, tenant, role columns', () => {
-    mq.useApiKeys.mockReturnValue(success([mkKey()]));
-    mq.useKeyUsage.mockReturnValue(idle());
-
-    const { getByText } = renderPage();
-
-    // Column headers (mock t() returns the key string as-is)
-    expect(getByText('settings.col.name')).toBeDefined();
-    expect(getByText('settings.col.team')).toBeDefined();
-    expect(getByText('settings.col.role')).toBeDefined();
-    expect(getByText('settings.col.lastUsed')).toBeDefined();
-    expect(getByText('settings.col.status')).toBeDefined();
-  });
-
-  it('shows quota progress bar with correct percentage', () => {
-    mq.useApiKeys.mockReturnValue(
-      success([mkKey({ id: 'key_quota', monthlyQuota: 1000, usedThisMonth: 800 })]),
-    );
-    mq.useKeyUsage.mockReturnValue(idle());
-
-    const { container } = renderPage();
-
-    const meter = container.querySelector('[role="meter"]');
-    expect(meter).not.toBeNull();
-    // 800 / 1000 = 80 %
-    expect(meter!.getAttribute('aria-valuenow')).toBe('80');
-  });
-
-  it('shows "never" when last_used_at is null', () => {
-    mq.useApiKeys.mockReturnValue(
-      success([mkKey({ id: 'key_never', lastUsedAt: null })]),
-    );
-    mq.useKeyUsage.mockReturnValue(idle());
-
-    const { getByText } = renderPage();
-
-    expect(getByText('settings.usage.never')).toBeDefined();
-  });
-
-  it('shows revoked badge when key is disabled', () => {
-    mq.useApiKeys.mockReturnValue(
-      success([mkKey({ id: 'key_revoked', revoked: true })]),
-    );
-    mq.useKeyUsage.mockReturnValue(idle());
-
-    const { getByText } = renderPage();
-
-    expect(getByText('settings.status.revoked')).toBeDefined();
-  });
-
-  it('shows usage tokens after async load', () => {
-    mq.useApiKeys.mockReturnValue(success([mkKey({ id: 'key_async' })]));
-    mq.useKeyUsage.mockImplementation((keyId: string | undefined) => {
-      if (keyId === 'key_async') {
-        return success({
-          apiKeyId: 'key_async',
-          totalRequests: 5,
-          inputTokens: 5000,
-          outputTokens: 2500,
-        });
-      }
-      return idle();
-    });
-
-    const { getByTestId } = renderPage();
-
-    // formatTokenCount(5000) => "5.0K", formatTokenCount(2500) => "2.5K"
-    expect(getByTestId('key-token-usage')).toHaveTextContent('5.0K in / 2.5K out');
   });
 });
 

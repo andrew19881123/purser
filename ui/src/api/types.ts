@@ -77,6 +77,10 @@ export interface HardwareProfile {
   /** proto google.protobuf.Timestamp -> ISO-8601 string on the wire */
   lastSeen: string;
   state: NodeState;
+  /** gRPC advertised address for agent control traffic (optional — absent on older agents) */
+  advertisedAgentAddr?: string;
+  /** gRPC advertised address for inference routing (optional — absent on older agents) */
+  advertisedInferenceAddr?: string;
 }
 
 /** proto: message LinkMetric */

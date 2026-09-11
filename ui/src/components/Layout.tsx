@@ -44,6 +44,7 @@ const OPERATE: NavItem[] = [
 const USE: NavItem[] = [
   { to: '/playground', labelKey: 'nav.playground', icon: <IconChat /> },
   { to: '/chargeback', labelKey: 'nav.chargeback', icon: <IconGrid /> },
+  { to: '/api-keys', labelKey: 'nav.apiKeys', icon: <IconKey /> },
   { to: '/settings', labelKey: 'nav.settings', icon: <IconSettings /> },
 ];
 

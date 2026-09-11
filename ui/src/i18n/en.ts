@@ -598,6 +598,25 @@ export const en = {
   'chargeback.forecast.col.daysLeft': 'Days to exhaustion',
   'chargeback.forecast.empty': 'No forecast data.',
   'error.billingForecast': 'Could not load billing forecast.',
+
+  // --- API Keys page (v0.6) --------------------------------------------------
+  'nav.apiKeys': 'API Keys',
+  'apikeys.title': 'API Keys',
+  'apikeys.subtitle': 'Manage API keys, roles, and monthly token quotas.',
+  'apikeys.csv': 'Download CSV',
+  'settings.apikeys.manage': 'Manage API Keys →',
+  'settings.apikeys.manage.desc': 'Create, revoke, and set quotas on API keys from the dedicated API Keys page.',
+
+  // --- Fleet: drain confirm modal + row expand (v0.6) -----------------------
+  'fleet.confirm.drainTitle': 'Drain node?',
+  'fleet.confirm.drainBody': 'Node {node} will stop receiving new work. Any in-flight requests will complete first.',
+
+  // --- Audit: enterprise upgrade prompts (v0.6) -----------------------------
+  'audit.enterprise.inference.title': 'Enterprise feature',
+  'audit.enterprise.inference.desc': 'The tamper-evident inference audit log requires an Enterprise license.',
+  'audit.enterprise.chain.title': 'Enterprise feature',
+  'audit.enterprise.chain.desc': 'Cryptographic chain verification requires an Enterprise license.',
+  'audit.enterprise.link': 'Learn about Purser Enterprise →',
 } as const;
 
 export type StringKey = keyof typeof en;

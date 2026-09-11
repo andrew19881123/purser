@@ -570,4 +570,23 @@ export const it: Record<StringKey, string> = {
   'chargeback.forecast.col.daysLeft': 'Giorni al limite',
   'chargeback.forecast.empty': 'Nessuna previsione disponibile.',
   'error.billingForecast': 'Impossibile caricare la previsione di spesa.',
+
+  // --- Chiavi API (v0.6) ---------------------------------------------------
+  'nav.apiKeys': 'Chiavi API',
+  'apikeys.title': 'Chiavi API',
+  'apikeys.subtitle': 'Gestisci chiavi API, ruoli e quote mensili di token.',
+  'apikeys.csv': 'Scarica CSV',
+  'settings.apikeys.manage': 'Gestisci chiavi API →',
+  'settings.apikeys.manage.desc': 'Crea, revoca e imposta le quote delle chiavi API dalla pagina dedicata.',
+
+  // --- Flotta: drain modal + espansione riga (v0.6) ------------------------
+  'fleet.confirm.drainTitle': 'Drenare il nodo?',
+  'fleet.confirm.drainBody': 'Il nodo {node} smetterà di ricevere nuovo lavoro. Le richieste in corso termineranno.',
+
+  // --- Audit: prompt upgrade enterprise (v0.6) -----------------------------
+  'audit.enterprise.inference.title': 'Funzionalità Enterprise',
+  'audit.enterprise.inference.desc': 'Il log di audit inferenza a prova di manomissione richiede una licenza Enterprise.',
+  'audit.enterprise.chain.title': 'Funzionalità Enterprise',
+  'audit.enterprise.chain.desc': 'La verifica crittografica della catena richiede una licenza Enterprise.',
+  'audit.enterprise.link': 'Scopri Purser Enterprise →',
 };
