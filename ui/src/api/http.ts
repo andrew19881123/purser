@@ -303,12 +303,18 @@ function normalizeCapacity(raw: unknown): ClusterCapacity {
 /** GET /api/v1/nodes may return NodeView (composite) or bare HardwareProfile. */
 function normalizeNodeView(raw: unknown): NodeView {
   const n = (raw ?? {}) as Record<string, unknown>;
-  // Already a composite NodeView.
-  if (n.profile && typeof n.profile === 'object') {
-    // Shallow-clone so we can back-fill nodeId without mutating the original.
-    const profile = { ...(n.profile as Record<string, unknown>) };
-    // API may use top-level `id` as the primary key when profile.nodeId is absent.
+  // Resolve the hardware profile — API may use "profile", "hardwareProfile",
+  // or "hardware_profile" (before camelizeKeys) as the field name.
+  const profileSrc =
+    (n.profile as Record<string, unknown> | undefined) ??
+    (n.hardwareProfile as Record<string, unknown> | undefined);
+
+  if (profileSrc && typeof profileSrc === 'object') {
+    // Composite shape — shallow-clone and back-fill nodeId from top-level id.
+    const profile = { ...profileSrc };
     if (!profile.nodeId && n.id) profile.nodeId = n.id;
+    // Ensure gpus is always an array (absent on CPU-only nodes).
+    if (!Array.isArray(profile.gpus)) profile.gpus = [];
     return {
       profile: profile as unknown as NodeView['profile'],
       metrics: (n.metrics as NodeView['metrics']) ?? null,
@@ -321,6 +327,7 @@ function normalizeNodeView(raw: unknown): NodeView {
   const profile = {
     ...n,
     nodeId: n.nodeId ?? n.id,
+    gpus: Array.isArray(n.gpus) ? n.gpus : [],
   } as unknown as NodeView['profile'];
   return {
     profile,

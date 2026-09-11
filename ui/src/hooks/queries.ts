@@ -681,7 +681,12 @@ export function useWhatIfPlan() {
 export function useSloCompliance(windowHours = 24) {
   return useQuery({
     queryKey: qk.sloCompliance(windowHours),
-    queryFn: () => api.getSloCompliance(windowHours),
+    queryFn: () =>
+      api.getSloCompliance(windowHours).catch((e: unknown) => {
+        // 404 = endpoint not available in this CP version (pre-v0.6); hide silently.
+        if (e instanceof Error && e.message.includes('404')) return null;
+        throw e;
+      }),
     refetchInterval: 60_000,
   });
 }
@@ -691,7 +696,12 @@ export function useSloCompliance(windowHours = 24) {
 export function useBillingForecast() {
   return useQuery({
     queryKey: ['billingForecast'],
-    queryFn: () => api.getBillingForecast(),
+    queryFn: () =>
+      api.getBillingForecast().catch((e: unknown) => {
+        // 404/402 = endpoint not available in this CP version; hide silently.
+        if (e instanceof Error && /40[24]/.test(e.message)) return null;
+        throw e;
+      }),
   });
 }
 

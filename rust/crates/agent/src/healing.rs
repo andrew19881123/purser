@@ -540,7 +540,11 @@ impl Default for DiagnosisInput {
             disk_free_gb: f64::INFINITY,
             control_plane: Liveness::Healthy,
             queue_depth_warn: 256,
-            disk_free_warn_gb: 5.0,
+            // PURSER_DISK_FREE_WARN_GB overrides the default 5 GiB threshold.
+            disk_free_warn_gb: std::env::var("PURSER_DISK_FREE_WARN_GB")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5.0),
         }
     }
 }

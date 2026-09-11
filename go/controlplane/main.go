@@ -352,9 +352,15 @@ func run(logger *slog.Logger) error {
 	}
 
 	// Orchestrator commands agents over gRPC.
-	// Use the internal CA pool so agent server certificates are verified.
-	// Falls back to insecure if PKI is absent (dev mode).
-	agentClient := orchestrator.NewGRPCAgentClientWithCA(ca.CertPool(), logger)
+	// PURSER_AGENT_GRPC_INSECURE=true skips TLS — use only in dev/demo mode
+	// where agents serve plain gRPC (no mTLS on their bind port).
+	var agentClient orchestrator.AgentClient
+	if os.Getenv("PURSER_AGENT_GRPC_INSECURE") == "true" {
+		logger.Warn("orchestrator: agent gRPC TLS disabled (PURSER_AGENT_GRPC_INSECURE=true) — dev mode only")
+		agentClient = orchestrator.NewGRPCAgentClient()
+	} else {
+		agentClient = orchestrator.NewGRPCAgentClientWithCA(ca.CertPool(), logger)
+	}
 	orch := orchestrator.New(reg, orchestrator.Deps{
 		Agents:   agentClient,
 		Resolver: orchestrator.NewRegistryResolver(reg, cfg.agentPort, 0),
@@ -622,7 +628,9 @@ func run(logger *slog.Logger) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		grpcSrv.GracefulStop()
-		_ = agentClient.Close()
+		if c, ok := agentClient.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
 		// Flush and close OTEL exporters before exiting so the last spans and
 		// metrics are not lost.
 		_ = otelShutdown(shutdownCtx)

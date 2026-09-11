@@ -299,7 +299,7 @@ function NodeRow({
                 <Badge tone="info">{node.role === 'host' ? t('fleet.role.host') : t('fleet.role.worker')}</Badge>
               </>
             )}
-            {node.profile.gpus.some((g) => g.fp4Native) && <Badge tone="success">FP4</Badge>}
+            {node.profile.gpus?.some((g) => g.fp4Native) && <Badge tone="success">FP4</Badge>}
           </span>
         </th>
         <td>

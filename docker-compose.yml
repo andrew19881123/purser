@@ -33,16 +33,18 @@ services:
       retries: 5
 
   control-plane:
-    image: ghcr.io/andrew19881123/purser-control-plane:latest
+    image: purser-control-plane:v0.6-local
     environment:
-      PURSER_DB_DRIVER: postgres
-      PURSER_DB_URL: "postgres://purser:purser@postgres:5432/purser?sslmode=disable"
+      PURSER_DB_DRIVER: sqlite
+      PURSER_DB: /data/purser-registry.db
       PURSER_ADDR: ":8080"
       PURSER_GRPC_ADDR: ":9443"
       PURSER_PKI_DIR: /data/pki
       PURSER_ENGINE_BACKEND: mock
       PURSER_GATEWAY_ADDR: "http://gateway:8081"
       PURSER_GATEWAY_TOKEN: demo-internal-token
+    ports:
+      - "9443:9443"   # expose gRPC for native agents
     volumes:
       - purser-pki:/data
     depends_on:
@@ -56,7 +58,7 @@ services:
       start_period: 5s
 
   gateway:
-    image: ghcr.io/andrew19881123/purser-gateway:latest
+    image: purser-gateway:v0.6-local
     environment:
       PURSER_GATEWAY_HOST: "0.0.0.0"
       PURSER_GATEWAY_PORT: "8081"
@@ -67,7 +69,7 @@ services:
       - control-plane
 
   ui:
-    image: ghcr.io/andrew19881123/purser-ui:latest
+    image: purser-ui:v0.6-local
     environment:
       # Same-origin paths — proxied by the 'proxy' service below
       PURSER_API_BASE_URL: "/api/v1"
