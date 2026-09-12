@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-12
+
+> **v0.6 — "Observability & Platform Hardening"** — feature release (alpha; GPU
+> validation pending).
+>
+> Highlights: first-class observability (Prometheus `/metrics` on the control
+> plane, GenAI span attributes on the gateway, a Grafana provisioning bundle with
+> 4 dashboards and SLO alerts); platform identity and governance (OAuth2 service
+> accounts, OIDC admin SSO, LDAP group→role mapping, dual-control approval
+> quorum, per-model TTFT/TBT SLO contracts); real CPU inference via llama.cpp
+> without a GPU; a redesigned operator dashboard organised into five role-based
+> sections; multi-arch (arm64) images; and a self-healing gateway route table.
+
+### ⚠️ Breaking changes
+- **Gateway authentication is now fail-closed.** Previously, with
+  `PURSER_GATEWAY_API_KEYS` unset the gateway ran in an implicit open dev mode and
+  accepted **any** non-empty bearer token. It now **refuses to start** unless keys
+  are configured, or `PURSER_GATEWAY_DEV_MODE=1` is set explicitly (with a warning
+  logged on every startup). **Action:** set `PURSER_GATEWAY_API_KEYS` in every
+  non-dev deployment; set `PURSER_GATEWAY_DEV_MODE=1` only for local/CI use. The
+  bundled `docker-compose.yml` already sets keys and is unaffected.
+
+### Added — Observability
+- **Control-plane Prometheus `/metrics`** endpoint and **GenAI span attributes**
+  on the gateway (`gen_ai.*`, OpenTelemetry semantic conventions)
+- **Grafana provisioning bundle** — 4 dashboards (gateway overview, node hardware,
+  token economics, compliance audit) + 5 `PrometheusRule` SLO alerts, wired into
+  the Helm chart via `grafana.provisioning.enabled`
+
+### Added — Platform, Identity & Governance
+- **Service accounts** — OAuth2 `client_credentials` grant issuing JWTs, for
+  machine-to-machine access
+- **OIDC admin authentication** — EntraID / Okta / Keycloak SSO for the dashboard
+- **LDAP group→role mapping** with nested groups and a group cache
+- **Dual-control approval quorum** — multiple approvers required before a
+  deployment activates (AI Act Art.14 human oversight)
+- **Per-model SLO contracts** — TTFT/TBT targets with a compliance API and a
+  dashboard SLO page
+- **What-if Planner API** — hardware ROI simulation without committing a deployment
+- **XLSX + PDF billing export**
+
+### Added — Inference
+- **CPU inference backend** — llama.cpp CPU mode, no GPU required
+  (`PURSER_ENGINE_BACKEND`)
+- **`docker compose --profile full`** — real CPU inference with TinyLlama 1.1B
+  (one-shot model-init + llama.cpp agent)
+
+### Added — UI
+- **Sidebar redesign** into 5 role-based sections (Inference, Platform,
+  Governance, Observability, Administration) with active-section accent
+- New pages: **Data Planes, Service Accounts, Platform Users, Policies, SLO,
+  Webhooks** (Webhooks marked v0.7-planned), and a dedicated **API Keys** page
+- Fleet rows expand to per-node detail with an actions overflow menu
+
+### Added — Distribution & CI
+- **Multi-arch Docker builds** for `linux/arm64` (Apple Silicon + Graviton)
+- `make demo-seed`, hardened quickstart, and `tools/purser-status.sh` (one-command
+  stack health overview)
+- `setup-toolchain.sh` now works on macOS and arm64 with SHA256 checksum verification
+
+### Fixed
+- **Gateway route table self-heals** — the control plane now reconciles routes to
+  the gateway on startup and every 30s (`PURSER_ROUTE_RECONCILE_INTERVAL`), so a
+  gateway restart no longer causes a total inference outage. Adds
+  `GET /api/v1/routes` for observability
+- **Gateway `synthetic_id` is now deterministic** (SHA-256) — the same API key
+  keeps a stable key-id across restarts, fixing per-key usage attribution
+- **Usage-report task spawns are bounded** (256-permit semaphore) — removes an
+  unbounded-spawn memory-exhaustion vector under a slow control plane
+- **Demo stack**: `docker-compose.yml` is parsable again (misplaced env var); the
+  dashboard is served on `:3000` (nginx proxied to the wrong UI port); insecure
+  gRPC / API-unwrap / TLS-dev-mode fixes
+- **Playground** model picker de-duplicates models (one option per model, not per
+  deployment)
+- Comprehensive UI audit — null guards, API-shape unwrap bugs, form fixes across
+  Fleet, Catalog, Settings, and the platform pages
+
+### Docs
+- Full documentation audit: enterprise capability status corrected, onboarding and
+  local-dev guides, troubleshoot-enrollment, PostgreSQL backup/restore, comparison
+  and migration guides; removed inaccurate "compose demo performs inference" claims
+- New post-mortems: gateway route loss + inode-pinned bind mounts, macOS case
+  collision, toolchain bootstrap
+
 ## [0.3.0] - 2026-09-06
 
 > **v0.3 — "Enterprise Architecture"** — major feature release (alpha; GPU validation pending).
