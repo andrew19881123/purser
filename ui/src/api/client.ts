@@ -49,12 +49,16 @@ import type {
   Organization,
   PlatformUser,
   PlanPreviewResult,
+  PoliciesResponse,
+  Policy,
   PoolTeamQuota,
   ReconcilerStatus,
   SloComplianceResponse,
 
   ServiceAccount,
   ServiceAccountWithSecret,
+
+  SloApiResponse,
   Team,
   TeamMember,
   UsageSummary,
@@ -230,6 +234,9 @@ export interface PurserApi {
   /** GET /api/v1/slo/compliance — per-model TTFT SLO compliance for a rolling window. */
   getSloCompliance(windowHours?: number): Promise<SloComplianceResponse>;
 
+  /** GET /api/v1/slo/compliance — full nested compliance response (v0.6). */
+  getSloComplianceFull(windowHours?: number): Promise<SloApiResponse>;
+
   // --- billing forecast ---
   /** GET /api/v1/billing/forecast — projected spend and days to budget exhaustion. 402 without billing feature. */
   getBillingForecast(): Promise<BillingForecastResponse>;
@@ -253,6 +260,14 @@ export interface PurserApi {
   // --- v0.5 platform users ---
   /** GET /api/v1/platform/users — list all platform users (admin only). */
   listPlatformUsers(): Promise<PlatformUser[]>;
+
+  // --- policy-as-code (enterprise: policy_engine) ---
+  /** GET /api/v1/policies — 402 without the policy_engine feature. */
+  listPolicies(): Promise<PoliciesResponse>;
+  /** PUT /api/v1/policies/{name} — create or replace a policy. */
+  upsertPolicy(name: string, rego: string, enabled?: boolean): Promise<Policy>;
+  /** DELETE /api/v1/policies/{name} — 204 on success, 404 if not found. */
+  deletePolicy(name: string): Promise<void>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

@@ -241,3 +241,22 @@ sum(rate(purser_gateway_time_to_first_token_seconds_count[5m]))
 
 For per-model breakdown, use the control-plane compliance API and visualise the
 `ttft_compliance` field from `GET /api/v1/slo/compliance`.
+
+---
+
+## Dashboard UI (v0.6)
+
+The operator dashboard exposes a dedicated **SLO Contracts** page at `/slo` with a
+real-time compliance view:
+
+- **Summary row** — four KPI tiles: Total models, Met, Breached, Insufficient data.
+  Gives an at-a-glance status before reading the full table.
+- **Window selector** — toggle between 1 h, 6 h, 24 h, and 7 d lookback windows.
+  Changing the window re-queries the API immediately.
+- **Compliance table** — per model: TTFT target, actual TTFT compliance percentage,
+  TBT target, target compliance threshold, status badge, and request count in window.
+- **Breached badge** — red with a pulsing animation to draw attention to SLO
+  violations without the operator having to scan the full table.
+
+The page does not require an Enterprise license in v0.6; `GET /api/v1/slo/compliance`
+answers for any authenticated role.

@@ -797,3 +797,73 @@ export function useMetricsStream(): { snapshot: MetricsSnapshot | null; streamEr
   }, []);
   return { snapshot, streamError };
 }
+
+// --- what-if planner --------------------------------------------------------
+
+export function useWhatIfPlan() {
+  return useMutation({
+    mutationFn: (request: WhatIfRequest) => api.whatIfPlan(request),
+  });
+}
+
+// --- SLO compliance (full nested shape, v0.6) --------------------------------
+
+export const sloQk = {
+  complianceFull: (windowHours: number) => ['sloComplianceFull', windowHours] as const,
+};
+
+export function useSloComplianceFull(windowHours = 24) {
+  return useQuery({
+    queryKey: sloQk.complianceFull(windowHours),
+    queryFn: () =>
+      api.getSloComplianceFull(windowHours).catch((e: unknown) => {
+        // 404 = endpoint not available in this CP version; hide silently.
+        if (e instanceof Error && e.message.includes('404')) return null;
+        throw e;
+      }),
+    refetchInterval: 60_000,
+  });
+}
+
+// --- billing forecast -------------------------------------------------------
+
+export function useBillingForecast() {
+  return useQuery({
+    queryKey: ['billingForecast'],
+    queryFn: () =>
+      api.getBillingForecast().catch((e: unknown) => {
+        if (e instanceof Error && /40[24]/.test(e.message)) return null;
+        throw e;
+      }),
+  });
+}
+
+// --- policy-as-code (enterprise: policy_engine) ----------------------------
+
+export const policyQk = {
+  list: ['policies'] as const,
+};
+
+export function usePolicies() {
+  return useQuery({
+    queryKey: policyQk.list,
+    queryFn: () => api.listPolicies(),
+  });
+}
+
+export function useUpsertPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, rego, enabled }: { name: string; rego: string; enabled?: boolean }) =>
+      api.upsertPolicy(name, rego, enabled),
+    onSuccess: () => qc.invalidateQueries({ queryKey: policyQk.list }),
+  });
+}
+
+export function useDeletePolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.deletePolicy(name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: policyQk.list }),
+  });
+}

@@ -27,6 +27,7 @@ import type {
   AuditEntry,
   AuditLog,
   Backend,
+  BillingForecastResponse,
   BillingReport,
   BillingSummary,
   CatalogEntry,
@@ -60,6 +61,8 @@ import type {
   PerfEstimate,
   PlatformUser,
   PlanPreviewResult,
+  PoliciesResponse,
+  Policy,
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
@@ -68,6 +71,8 @@ import type {
 
   ServiceAccount,
   ServiceAccountWithSecret,
+
+  SloApiResponse,
   Team,
   TeamMember,
   UsageSummary,
@@ -1012,6 +1017,15 @@ export function createHttpApi(baseUrl: string): PurserApi {
         return {
           models: Array.isArray(r.models) ? r.models as SloComplianceResponse['models'] : [],
           window_hours: typeof r.windowHours === 'number' ? r.windowHours : windowHours,
+
+    // --- SLO compliance (full nested shape, v0.6) ---
+    getSloComplianceFull: (windowHours = 24): Promise<SloApiResponse> =>
+      request<unknown>(`/slo/compliance?window_hours=${windowHours}`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          models: Array.isArray(r.models) ? (r.models as SloApiResponse['models']) : [],
+          window_hours: typeof r.window_hours === 'number' ? r.window_hours : windowHours,
+          generated_at: typeof r.generated_at === 'string' ? r.generated_at : new Date().toISOString(),
         };
       }),
 
@@ -1097,5 +1111,56 @@ export function createHttpApi(baseUrl: string): PurserApi {
           } satisfies PlatformUser;
         });
       }),
+
+      }),
+
+    // --- policy-as-code (enterprise: policy_engine) ---
+
+    /** Normalise a raw API policy object to the UI Policy shape. */
+    listPolicies: (): Promise<PoliciesResponse> =>
+      request<unknown>('/policies').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        const rows = Array.isArray(r.policies) ? r.policies : [];
+        return {
+          policies: rows.map((p: unknown) => normPolicy(p as Record<string, unknown>)),
+        };
+      }),
+
+    upsertPolicy: (name: string, rego: string, enabled = true): Promise<Policy> =>
+      request<unknown>(`/policies/${enc(name)}`, {
+        method: 'PUT',
+        body: { rego, enabled },
+      }).then((raw) => normPolicy(raw as Record<string, unknown>)),
+
+    deletePolicy: (name: string): Promise<void> =>
+      request<void>(`/policies/${enc(name)}`, { method: 'DELETE' }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Policy normalizer — maps the Go registry.Policy JSON fields to the UI Policy
+// shape (snake_case -> camelCase, rego -> source, description derived).
+// ---------------------------------------------------------------------------
+
+function extractDescription(rego: string): string | undefined {
+  for (const line of rego.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#')) {
+      const text = trimmed.slice(1).trim();
+      if (text.length > 0) return text;
+    }
+  }
+  return undefined;
+}
+
+function normPolicy(raw: Record<string, unknown>): Policy {
+  const rego = typeof raw.rego === 'string' ? raw.rego : '';
+  return {
+    id: typeof raw.id === 'number' ? raw.id : 0,
+    name: typeof raw.name === 'string' ? raw.name : '',
+    source: rego,
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
+    createdAt: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
+    description: extractDescription(rego),
   };
 }

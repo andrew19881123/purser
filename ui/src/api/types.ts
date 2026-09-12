@@ -838,6 +838,12 @@ export interface WhatIfResult {
 // SLO Compliance — GET /api/v1/slo/compliance
 // ---------------------------------------------------------------------------
 
+
+// SloModelCompliance is a legacy flat shape; SloModelEntry mirrors the actual
+// nested shape returned by slo.go (v0.6).
+// ---------------------------------------------------------------------------
+
+/** Legacy flat shape used by the FleetPage SloStatusCard. */
 export interface SloModelCompliance {
   model_id: string;
   ttft_target_ms: number;
@@ -845,9 +851,53 @@ export interface SloModelCompliance {
   status: 'met' | 'breached' | 'insufficient_data';
 }
 
+
+/** Legacy wrapper. */
 export interface SloComplianceResponse {
   models: SloModelCompliance[];
   window_hours: number;
+}
+
+
+/** SLO contract parameters (per model or global default). */
+export interface SloContractConfig {
+  ttft_ms: number;
+  tbt_ms: number;
+  target_compliance: number;
+}
+
+/** Measured compliance data for one model in a query window. */
+export interface SloActualData {
+  ttft_compliance: number | null;
+  tbt_compliance: number | null;
+  request_count: number;
+  period_start: string;
+}
+
+/** One model entry in the full nested compliance response (slo.go). */
+export interface SloModelEntry {
+  model_id: string;
+  slo: SloContractConfig;
+  actual: SloActualData;
+  status: 'met' | 'breached' | 'insufficient_data';
+}
+
+/** Full compliance API response (GET /api/v1/slo/compliance). */
+export interface SloApiResponse {
+  window_hours: number;
+  generated_at: string;
+  models: SloModelEntry[];
+}
+
+/** Camelised view of one model's compliance data (derived from SloModelEntry). */
+export interface SloComplianceModel {
+  modelId: string;
+  status: 'met' | 'breached' | 'insufficient_data';
+  ttftTargetMs: number;
+  ttftCompliance: number | null;
+  tbtTargetMs: number;
+  tbtCompliance: number | null;
+  requestCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -937,4 +987,26 @@ export interface ServiceAccount {
 export interface ServiceAccountWithSecret extends ServiceAccount {
   /** OAuth2 client_secret — shown once; never stored in cleartext. */
   clientSecret: string;
+
+}
+
+// ---------------------------------------------------------------------------
+// Policy-as-Code — GET/PUT/DELETE /api/v1/policies (enterprise, policy_engine).
+// The server stores Rego source as `rego`; the UI surface exposes it as `source`.
+// Description is derived client-side: first `#`-comment line in the Rego source.
+// ---------------------------------------------------------------------------
+
+export interface Policy {
+  id: number;
+  name: string;
+  /** The Rego source text (maps from the `rego` JSON field). */
+  source: string;
+  enabled: boolean;
+  createdAt: string;
+  /** Derived from first `# ...` comment line in source; absent when no comment. */
+  description?: string;
+}
+
+export interface PoliciesResponse {
+  policies: Policy[];
 }

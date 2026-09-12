@@ -592,7 +592,11 @@ export const en = {
   'planner.whatIf.result.reason': 'Cannot be deployed: {reason}',
   'error.whatIfPlan': 'Could not compute the what-if plan.',
 
+<<<<<<< HEAD
   // --- SLO compliance status (v0.6) ---
+=======
+  // --- SLO compliance (v0.6) ---
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'slo.title': 'SLO Status',
   'slo.col.model': 'Model',
   'slo.col.ttftTarget': 'TTFT Target (ms)',
@@ -604,6 +608,31 @@ export const en = {
   'slo.empty': 'No SLO data yet.',
   'error.slo': 'Could not load SLO data.',
 
+<<<<<<< HEAD
+=======
+  // --- SLO Contracts page (v0.6) ---
+  'slo.contracts.title': 'SLO Contracts',
+  'slo.contracts.subtitle': 'Per-model TTFT/TBT compliance tracking',
+  'slo.window.label': 'Window',
+  'slo.window.1h': '1h',
+  'slo.window.6h': '6h',
+  'slo.window.24h': '24h',
+  'slo.window.7d': '7d',
+  'slo.summary.total': 'Total',
+  'slo.summary.met': 'Met',
+  'slo.summary.breached': 'Breached',
+  'slo.summary.noData': 'No data',
+  'slo.col.ttftCompliance': 'TTFT compliance',
+  'slo.col.tbtTarget': 'TBT target (ms)',
+  'slo.col.requests': 'Requests',
+  'slo.col.targetCompliance': 'Target',
+  'slo.configLink': 'Configure SLOs →',
+  'slo.contracts.empty.title': 'No SLO data yet',
+  'slo.contracts.empty.msg': 'SLO data appears once models are deployed and receiving requests.',
+  'slo.enterprise.title': 'Enterprise feature',
+  'slo.enterprise.desc': 'SLO contract configuration requires an Enterprise license.',
+
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   // --- billing forecast (v0.6) ---
   'chargeback.forecast.title': 'Spending Forecast',
   'chargeback.forecast.col.team': 'Org / Team',
@@ -621,16 +650,70 @@ export const en = {
   'settings.apikeys.manage': 'Manage API Keys →',
   'settings.apikeys.manage.desc': 'Create, revoke, and set quotas on API keys from the dedicated API Keys page.',
 
+<<<<<<< HEAD
   // --- Fleet: drain confirm modal + row expand (v0.6) -----------------------
   'fleet.confirm.drainTitle': 'Drain node?',
   'fleet.confirm.drainBody': 'Node {node} will stop receiving new work. Any in-flight requests will complete first.',
 
   // --- Audit: enterprise upgrade prompts (v0.6) -----------------------------
+=======
+  // --- Fleet: drain confirm modal (v0.6) ------------------------------------
+  'fleet.confirm.drainTitle': 'Drain node?',
+  'fleet.confirm.drainBody': 'Node {node} will stop receiving new work. Any in-flight requests will complete first.',
+
+  // --- Audit: enterprise upgrade prompts (v0.6) ----------------------------
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'audit.enterprise.inference.title': 'Enterprise feature',
   'audit.enterprise.inference.desc': 'The tamper-evident inference audit log requires an Enterprise license.',
   'audit.enterprise.chain.title': 'Enterprise feature',
   'audit.enterprise.chain.desc': 'Cryptographic chain verification requires an Enterprise license.',
   'audit.enterprise.link': 'Learn about Purser Enterprise →',
+<<<<<<< HEAD
+=======
+
+  // --- Policy-as-Code page (v0.6) -------------------------------------------
+  'policies.title': 'Policies',
+  'policies.subtitle': 'OPA/Rego enforcement rules',
+  'policies.upload': 'Upload policy',
+  'policies.col.name': 'Name',
+  'policies.col.status': 'Status',
+  'policies.col.created': 'Created',
+  'policies.col.description': 'Description',
+  'policies.status.enabled': 'Enforced',
+  'policies.status.disabled': 'Disabled',
+  'policies.action.viewSource': 'View source',
+  'policies.action.enable': 'Enable',
+  'policies.action.disable': 'Disable',
+  'policies.action.delete': 'Delete',
+  'policies.source.title': 'Rego source — {name}',
+  'policies.modal.title': 'Upload Policy',
+  'policies.modal.name.label': 'Policy name',
+  'policies.modal.name.hint': 'Lowercase letters, numbers, and hyphens. Used as the identifier.',
+  'policies.modal.source.label': 'Rego source',
+  'policies.modal.validate': 'Validate',
+  'policies.modal.submit': 'Upload',
+  'policies.modal.cancel': 'Cancel',
+  'policies.empty.title': 'No policies',
+  'policies.empty.msg': 'Policies evaluate every deploy and inference request against your Rego rules. Open by default when none exist.',
+  'policies.empty.docsLink': 'Read the policy docs →',
+  'policies.enterprise.title': 'Enterprise feature',
+  'policies.enterprise.desc': 'Policy-as-code requires an Enterprise license. Rego rules enforce access control and routing across your fleet.',
+  'policies.enterprise.link': 'Learn about Purser Enterprise →',
+  'error.policies': 'Could not load policies.',
+  'error.policies.upsert': 'Could not save policy.',
+  'error.policies.delete': 'Could not delete policy.',
+
+  // --- Webhooks page (v0.6 placeholder) -------------------------------------
+  'webhooks.title': 'Webhooks',
+  'webhooks.subtitle': 'Event notifications to external endpoints',
+  'webhooks.placeholder.roadmap': 'v0.7',
+  'webhooks.placeholder.heading': 'Coming in v0.7',
+  'webhooks.placeholder.desc': 'Webhook notifications are in active development. When released, the control plane will push events to any HTTPS endpoint you register — Slack, PagerDuty, or your own handler.',
+  'webhooks.placeholder.events.title': 'Planned event types',
+  'webhooks.placeholder.config.title': 'Planned configuration format',
+  'webhooks.placeholder.subscribe': 'Subscribe to releases to be notified when webhooks land.',
+  'webhooks.placeholder.subscribe.link': 'Watch releases on GitHub →',
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
 } as const;
 
 export type StringKey = keyof typeof en;

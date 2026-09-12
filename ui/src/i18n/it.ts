@@ -537,10 +537,17 @@ export const it: Record<StringKey, string> = {
   'approvals.quorum.approvers': 'Approvatori finora',
   'approvals.quorum.alreadyVoted': 'Hai già votato su questa approvazione.',
 
+<<<<<<< HEAD
   // --- pianificatore what-if (v0.6) ---
   'nav.whatIfPlanner': 'Pianificatore What-if',
   'planner.whatIf.title': 'Pianificatore ROI Hardware What-if',
   'planner.whatIf.subtitle': 'Simula come aggiungere nodi virtuali influisce sulla fattibilità e il throughput del deployment.',
+=======
+  // --- What-if planner (v0.6) ---
+  'nav.whatIfPlanner': 'Simulatore What-if',
+  'planner.whatIf.title': 'Simulatore ROI Hardware What-if',
+  'planner.whatIf.subtitle': 'Simula come l\'aggiunta di nodi virtuali influirebbe sulla fattibilità del deployment e sul throughput.',
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'planner.whatIf.model': 'Modello',
   'planner.whatIf.nodes.title': 'Nodi Virtuali',
   'planner.whatIf.addNode': 'Aggiungi Nodo Virtuale',
@@ -556,6 +563,7 @@ export const it: Record<StringKey, string> = {
   'planner.whatIf.result.infeasible': 'Non fattibile',
   'planner.whatIf.result.assignments': 'Assegnazioni',
   'planner.whatIf.result.col.nodeId': 'ID Nodo',
+<<<<<<< HEAD
   'planner.whatIf.result.col.layerStart': 'Layer Inizio',
   'planner.whatIf.result.col.layerEnd': 'Layer Fine',
   'planner.whatIf.result.throughput': 'Throughput stimato: {min}–{max} tok/s',
@@ -565,6 +573,17 @@ export const it: Record<StringKey, string> = {
   'error.whatIfPlan': 'Impossibile calcolare il piano what-if.',
 
   // --- stato SLO (v0.6) ---
+=======
+  'planner.whatIf.result.col.layerStart': 'Strato Inizio',
+  'planner.whatIf.result.col.layerEnd': 'Strato Fine',
+  'planner.whatIf.result.throughput': 'Throughput stimato: {min}–{max} tok/s',
+  'planner.whatIf.result.currentPlan': 'Senza nodi virtuali: {status}',
+  'planner.whatIf.result.delta': 'Miglioramento throughput: +{delta}%',
+  'planner.whatIf.result.reason': 'Non distribuibile: {reason}',
+  'error.whatIfPlan': 'Impossibile calcolare il piano what-if.',
+
+  // --- SLO compliance (v0.6) ---
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'slo.title': 'Stato SLO',
   'slo.col.model': 'Modello',
   'slo.col.ttftTarget': 'Target TTFT (ms)',
@@ -576,7 +595,33 @@ export const it: Record<StringKey, string> = {
   'slo.empty': 'Nessun dato SLO ancora.',
   'error.slo': 'Impossibile caricare i dati SLO.',
 
+<<<<<<< HEAD
   // --- previsione spesa (v0.6) ---
+=======
+  // --- SLO Contracts page (v0.6) ---
+  'slo.contracts.title': 'Contratti SLO',
+  'slo.contracts.subtitle': 'Monitoraggio conformità TTFT/TBT per modello',
+  'slo.window.label': 'Finestra',
+  'slo.window.1h': '1h',
+  'slo.window.6h': '6h',
+  'slo.window.24h': '24h',
+  'slo.window.7d': '7d',
+  'slo.summary.total': 'Totale',
+  'slo.summary.met': 'Rispettati',
+  'slo.summary.breached': 'Violati',
+  'slo.summary.noData': 'Nessun dato',
+  'slo.col.ttftCompliance': 'Conformità TTFT',
+  'slo.col.tbtTarget': 'Target TBT (ms)',
+  'slo.col.requests': 'Richieste',
+  'slo.col.targetCompliance': 'Target',
+  'slo.configLink': 'Configura SLO →',
+  'slo.contracts.empty.title': 'Nessun dato SLO ancora',
+  'slo.contracts.empty.msg': 'I dati SLO appaiono quando i modelli sono distribuiti e ricevono richieste.',
+  'slo.enterprise.title': 'Funzionalità Enterprise',
+  'slo.enterprise.desc': 'La configurazione dei contratti SLO richiede una licenza Enterprise.',
+
+  // --- billing forecast (v0.6) ---
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'chargeback.forecast.title': 'Previsione Spesa',
   'chargeback.forecast.col.team': 'Org / Team',
   'chargeback.forecast.col.burnRate': 'Consumo giornaliero (USD)',
@@ -585,7 +630,11 @@ export const it: Record<StringKey, string> = {
   'chargeback.forecast.empty': 'Nessuna previsione disponibile.',
   'error.billingForecast': 'Impossibile caricare la previsione di spesa.',
 
+<<<<<<< HEAD
   // --- Chiavi API (v0.6) ---------------------------------------------------
+=======
+  // --- API Keys page (v0.6) --------------------------------------------------
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'nav.apiKeys': 'Chiavi API',
   'apikeys.title': 'Chiavi API',
   'apikeys.subtitle': 'Gestisci chiavi API, ruoli e quote mensili di token.',
@@ -593,14 +642,68 @@ export const it: Record<StringKey, string> = {
   'settings.apikeys.manage': 'Gestisci chiavi API →',
   'settings.apikeys.manage.desc': 'Crea, revoca e imposta le quote delle chiavi API dalla pagina dedicata.',
 
+<<<<<<< HEAD
   // --- Flotta: drain modal + espansione riga (v0.6) ------------------------
   'fleet.confirm.drainTitle': 'Drenare il nodo?',
   'fleet.confirm.drainBody': 'Il nodo {node} smetterà di ricevere nuovo lavoro. Le richieste in corso termineranno.',
 
   // --- Audit: prompt upgrade enterprise (v0.6) -----------------------------
+=======
+  // --- Fleet: drain confirm modal (v0.6) ------------------------------------
+  'fleet.confirm.drainTitle': 'Drenare il nodo?',
+  'fleet.confirm.drainBody': 'Il nodo {node} smetterà di ricevere nuovo lavoro. Le richieste in corso termineranno.',
+
+  // --- Audit: enterprise upgrade prompts (v0.6) ----------------------------
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
   'audit.enterprise.inference.title': 'Funzionalità Enterprise',
   'audit.enterprise.inference.desc': 'Il log di audit inferenza a prova di manomissione richiede una licenza Enterprise.',
   'audit.enterprise.chain.title': 'Funzionalità Enterprise',
   'audit.enterprise.chain.desc': 'La verifica crittografica della catena richiede una licenza Enterprise.',
   'audit.enterprise.link': 'Scopri Purser Enterprise →',
+<<<<<<< HEAD
+=======
+
+  // --- Policy-as-Code page (v0.6) -------------------------------------------
+  'policies.title': 'Policy',
+  'policies.subtitle': 'Regole di applicazione OPA/Rego',
+  'policies.upload': 'Carica policy',
+  'policies.col.name': 'Nome',
+  'policies.col.status': 'Stato',
+  'policies.col.created': 'Creata',
+  'policies.col.description': 'Descrizione',
+  'policies.status.enabled': 'Attiva',
+  'policies.status.disabled': 'Disabilitata',
+  'policies.action.viewSource': 'Vedi sorgente',
+  'policies.action.enable': 'Abilita',
+  'policies.action.disable': 'Disabilita',
+  'policies.action.delete': 'Elimina',
+  'policies.source.title': 'Sorgente Rego — {name}',
+  'policies.modal.title': 'Carica Policy',
+  'policies.modal.name.label': 'Nome policy',
+  'policies.modal.name.hint': 'Lettere minuscole, numeri e trattini. Usato come identificatore.',
+  'policies.modal.source.label': 'Sorgente Rego',
+  'policies.modal.validate': 'Valida',
+  'policies.modal.submit': 'Carica',
+  'policies.modal.cancel': 'Annulla',
+  'policies.empty.title': 'Nessuna policy',
+  'policies.empty.msg': 'Le policy valutano ogni richiesta di deploy e inferenza. Aperto per default quando non ne esistono.',
+  'policies.empty.docsLink': 'Leggi la documentazione →',
+  'policies.enterprise.title': 'Funzionalità Enterprise',
+  'policies.enterprise.desc': 'Il policy-as-code richiede una licenza Enterprise. Le regole Rego applicano il controllo degli accessi e il routing sulla tua flotta.',
+  'policies.enterprise.link': 'Scopri Purser Enterprise →',
+  'error.policies': 'Impossibile caricare le policy.',
+  'error.policies.upsert': 'Impossibile salvare la policy.',
+  'error.policies.delete': 'Impossibile eliminare la policy.',
+
+  // --- Webhooks page (v0.6 placeholder) -------------------------------------
+  'webhooks.title': 'Webhook',
+  'webhooks.subtitle': 'Notifiche di eventi a endpoint esterni',
+  'webhooks.placeholder.roadmap': 'v0.7',
+  'webhooks.placeholder.heading': 'In arrivo nella v0.7',
+  'webhooks.placeholder.desc': 'Le notifiche webhook sono in sviluppo attivo. Quando rilasciate, il control plane invierà eventi a qualsiasi endpoint HTTPS registrato — Slack, PagerDuty, o il tuo handler.',
+  'webhooks.placeholder.events.title': 'Tipi di evento previsti',
+  'webhooks.placeholder.config.title': 'Formato di configurazione previsto',
+  'webhooks.placeholder.subscribe': 'Iscriviti alle release per essere notificato quando i webhook saranno disponibili.',
+  'webhooks.placeholder.subscribe.link': 'Segui le release su GitHub →',
+>>>>>>> 9de8b94 (feat(ui): PoliciesPage, SLOPage, WebhooksPage)
 };
