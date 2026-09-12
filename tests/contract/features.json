@@ -9,8 +9,13 @@
       "GET /api/v1/apikeys/{id}/access-log",
       "POST /api/v1/apikeys/{id}/rotate"
     ],
-    "openapi": true,
-    "client": ["listApiKeys", "createApiKey", "revokeApiKey", "getKeyUsage"],
+    "openapi": false,
+    "client": [
+      "listApiKeys",
+      "createApiKey",
+      "revokeApiKey",
+      "getKeyUsage"
+    ],
     "page": "/api-keys",
     "nav": "nav.apiKeys",
     "docs": "configuration/api-keys.md",
@@ -27,8 +32,15 @@
       "PUT /api/v1/platform/orgs/{orgId}/roles/{id}",
       "GET /api/v1/platform/permissions"
     ],
-    "openapi": true,
-    "client": ["listRoles", "createRole", "deleteRole", "getRole", "updateRole", "listPermissions"],
+    "openapi": false,
+    "client": [
+      "listRoles",
+      "createRole",
+      "deleteRole",
+      "getRole",
+      "updateRole",
+      "listPermissions"
+    ],
     "page": "/platform/roles",
     "nav": "nav.roles",
     "docs": "configuration/rbac.md",
@@ -50,7 +62,7 @@
       "PUT /api/v1/platform/dataplanes/{id}",
       "PUT /api/v1/platform/dataplanes/{id}/config"
     ],
-    "openapi": true,
+    "openapi": false,
     "client": [
       "listDataPlanes",
       "createDataPlane",
@@ -75,8 +87,13 @@
       "GET /api/v1/compliance/gdpr/record-of-processing",
       "GET /api/v1/gdpr/erasure-log"
     ],
-    "openapi": true,
-    "client": ["getAiActTechnicalDoc", "eraseSubject", "getGdprRecordOfProcessing", "getGdprErasureLog"],
+    "openapi": false,
+    "client": [
+      "getAiActTechnicalDoc",
+      "eraseSubject",
+      "getGdprRecordOfProcessing",
+      "getGdprErasureLog"
+    ],
     "page": "/compliance",
     "nav": "nav.compliance",
     "docs": "enterprise/ai-act-compliance.md",
@@ -89,8 +106,10 @@
       "POST /api/v1/join-token",
       "GET /api/v1/enrollment-bundle"
     ],
-    "openapi": true,
-    "client": ["createJoinToken"],
+    "openapi": false,
+    "client": [
+      "createJoinToken"
+    ],
     "page": "/join-token",
     "nav": "nav.joinTokens",
     "docs": "install/enrollment-bundle.md",
@@ -107,8 +126,15 @@
       "POST /api/v1/nodes/{id}/restart",
       "DELETE /api/v1/nodes/{id}"
     ],
-    "openapi": true,
-    "client": ["getCapacity", "listNodes", "getNode", "drainNode", "restartNode", "removeNode"],
+    "openapi": false,
+    "client": [
+      "getCapacity",
+      "listNodes",
+      "getNode",
+      "drainNode",
+      "restartNode",
+      "removeNode"
+    ],
     "page": "/fleet",
     "nav": "nav.fleet",
     "docs": null,
@@ -126,8 +152,14 @@
       "GET /api/v1/models/{id}/health",
       "DELETE /api/v1/models/{id}"
     ],
-    "openapi": true,
-    "client": ["getCatalog", "getModel", "importModel", "getModelHealth", "deleteModel"],
+    "openapi": false,
+    "client": [
+      "getCatalog",
+      "getModel",
+      "importModel",
+      "getModelHealth",
+      "deleteModel"
+    ],
     "page": "/catalog",
     "nav": "nav.catalog",
     "docs": "configuration/models.md",
@@ -144,7 +176,13 @@
       "POST /api/v1/models/{id}/plan"
     ],
     "openapi": true,
-    "client": ["listDeployments", "undeployDeployment", "getPlan", "createDeployment", "planDeployment"],
+    "client": [
+      "listDeployments",
+      "undeployDeployment",
+      "getPlan",
+      "createDeployment",
+      "planDeployment"
+    ],
     "page": "/deployments",
     "nav": "nav.deployments",
     "docs": "getting-started/deploy-model.md",
@@ -162,7 +200,7 @@
       "GET /api/v1/platform/teams/{teamId}/billing",
       "GET /api/v1/usage/summary"
     ],
-    "openapi": true,
+    "openapi": false,
     "client": [
       "getBillingReport",
       "getBillingSummary",
@@ -192,8 +230,13 @@
       "DELETE /api/v1/platform/orgs/{orgId}/members/{userId}",
       "GET /api/v1/platform/orgs/{orgId}/teams"
     ],
-    "openapi": true,
-    "client": ["listOrganizations", "createOrganization", "getOrganization", "deleteOrganization"],
+    "openapi": false,
+    "client": [
+      "listOrganizations",
+      "createOrganization",
+      "getOrganization",
+      "deleteOrganization"
+    ],
     "page": "/platform/orgs",
     "nav": "nav.organizations",
     "docs": "configuration/platform-model.md",
@@ -213,7 +256,7 @@
       "DELETE /api/v1/platform/teams/{teamId}/members/{userId}",
       "GET /api/v1/platform/teams/{teamId}/my-permissions"
     ],
-    "openapi": true,
+    "openapi": false,
     "client": [
       "listTeams",
       "createTeam",
@@ -245,7 +288,7 @@
       "PUT /api/v1/platform/pools/{id}/quotas/{teamId}",
       "DELETE /api/v1/platform/pools/{id}/quotas/{teamId}"
     ],
-    "openapi": true,
+    "openapi": false,
     "client": [
       "listNodePools",
       "createNodePool",
@@ -271,8 +314,11 @@
       "GET /api/v1/platform/users/{id}",
       "GET /api/v1/platform/users/me"
     ],
-    "openapi": true,
-    "client": ["listPlatformUsers", "getMe"],
+    "openapi": false,
+    "client": [
+      "listPlatformUsers",
+      "getMe"
+    ],
     "page": "/platform/users",
     "nav": "nav.platformUsers",
     "docs": null,
@@ -286,8 +332,12 @@
       "POST /api/v1/service-accounts",
       "DELETE /api/v1/service-accounts/{id}"
     ],
-    "openapi": true,
-    "client": ["listServiceAccounts", "createServiceAccount", "revokeServiceAccount"],
+    "openapi": false,
+    "client": [
+      "listServiceAccounts",
+      "createServiceAccount",
+      "revokeServiceAccount"
+    ],
     "page": "/platform/service-accounts",
     "nav": "nav.serviceAccounts",
     "docs": "configuration/service-accounts.md",
@@ -301,8 +351,12 @@
       "GET /api/v1/inference-audit/verify",
       "GET /api/v1/logs/access"
     ],
-    "openapi": true,
-    "client": ["listInferenceAudit", "verifyAuditChain", "listAccessLog"],
+    "openapi": false,
+    "client": [
+      "listInferenceAudit",
+      "verifyAuditChain",
+      "listAccessLog"
+    ],
     "page": "/audit",
     "nav": "nav.audit",
     "docs": "enterprise/inference-audit.md",
@@ -316,7 +370,10 @@
       "GET /api/v1/enterprise/status"
     ],
     "openapi": true,
-    "client": ["getAuditLog", "getEnterpriseStatus"],
+    "client": [
+      "getAuditLog",
+      "getEnterpriseStatus"
+    ],
     "page": "/admin-audit",
     "nav": "nav.adminAudit",
     "docs": "enterprise/audit-log.md",
@@ -331,7 +388,7 @@
       "POST /api/v1/approvals/{deploymentId}/approve",
       "POST /api/v1/approvals/{deploymentId}/reject"
     ],
-    "openapi": true,
+    "openapi": false,
     "client": [
       "listDeploymentApprovals",
       "getDeploymentApproval",
@@ -349,8 +406,11 @@
     "routes": [
       "GET /api/v1/slo/compliance"
     ],
-    "openapi": true,
-    "client": ["getSloCompliance", "getSloComplianceFull"],
+    "openapi": false,
+    "client": [
+      "getSloCompliance",
+      "getSloComplianceFull"
+    ],
     "page": "/slo",
     "nav": "nav.slo",
     "docs": "enterprise/slo.md",
@@ -362,8 +422,10 @@
     "routes": [
       "POST /api/v1/planner/what-if"
     ],
-    "openapi": true,
-    "client": ["whatIfPlan"],
+    "openapi": false,
+    "client": [
+      "whatIfPlan"
+    ],
     "page": "/planner/what-if",
     "nav": "nav.whatIfPlanner",
     "docs": "operations/what-if-planner.md",
@@ -377,8 +439,12 @@
       "POST /api/v1/config/diff",
       "POST /api/v1/config/apply"
     ],
-    "openapi": true,
-    "client": ["exportConfig", "diffConfig", "applyConfig"],
+    "openapi": false,
+    "client": [
+      "exportConfig",
+      "diffConfig",
+      "applyConfig"
+    ],
     "page": "/config",
     "nav": "nav.configCode",
     "docs": "configuration/purser-yaml.md",
@@ -393,8 +459,12 @@
       "DELETE /api/v1/policies/{name}",
       "POST /api/v1/policies/eval"
     ],
-    "openapi": true,
-    "client": ["listPolicies", "upsertPolicy", "deletePolicy"],
+    "openapi": false,
+    "client": [
+      "listPolicies",
+      "upsertPolicy",
+      "deletePolicy"
+    ],
     "page": "/platform/policies",
     "nav": "nav.policies",
     "docs": "enterprise/policy-as-code.md",
@@ -406,8 +476,10 @@
     "routes": [
       "GET /api/v1/cluster/status"
     ],
-    "openapi": true,
-    "client": ["getClusterStatus"],
+    "openapi": false,
+    "client": [
+      "getClusterStatus"
+    ],
     "page": null,
     "nav": null,
     "docs": null,
@@ -419,8 +491,10 @@
     "routes": [
       "GET /api/v1/reconciler/status"
     ],
-    "openapi": true,
-    "client": ["getReconcilerStatus"],
+    "openapi": false,
+    "client": [
+      "getReconcilerStatus"
+    ],
     "page": null,
     "nav": null,
     "docs": "operations/reconciler.md",
@@ -433,7 +507,9 @@
       "GET /api/v1/metrics"
     ],
     "openapi": true,
-    "client": ["streamMetrics"],
+    "client": [
+      "streamMetrics"
+    ],
     "page": null,
     "nav": null,
     "docs": null,
