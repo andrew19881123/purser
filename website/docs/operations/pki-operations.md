@@ -36,47 +36,73 @@ Root CA  (MaxPathLen=1, kept offline in production)
 
 ---
 
-## Zero-downtime CA rotation
+## CA rotation
 
-CA rotation replaces the active signing key.  Purser implements a **dual-trust
-bundle** to ensure that leaf certificates issued under the old CA remain valid
-while agents re-enroll — no hard cutover.
+CA rotation replaces the active signing key.  The control plane's CA implements
+a **dual-trust bundle** so that, *within a running process*, leaf certificates
+issued under the old CA keep verifying while agents re-enroll.
 
-### How it works
+Rotation is triggered with the `control-plane pki rotate` CLI subcommand — it is
+intentionally **not** exposed over the management API (see
+[Why CLI, not HTTP](#why-cli-not-http)).
 
-1. `Rotate()` is called (via the admin API or the scheduled rotation job).
-2. The old CA certificate moves into a "grace slot" with a 72-hour expiry
-   (`RotationGracePeriod`).
-3. A new CA keypair is generated and becomes the active signer.
-4. `CertPool()` returns a pool that includes **both** the new active CA and the
-   old CA (while `now < oldExpiry`).
-5. TLS verification for both old-CA-signed and new-CA-signed leaf certs
-   succeeds during the grace window.
-6. After 72 hours the old CA is removed from the pool automatically.  Any agent
-   still holding an old-CA cert at that point will fail mTLS and be forced to
-   re-enroll.
+### How the dual-trust bundle works
+
+1. `Rotate()` moves the old CA certificate into a "grace slot" with a 72-hour
+   expiry (`RotationGracePeriod`).
+2. A new CA keypair is generated, becomes the active signer, and the new
+   `ca.crt` / `ca.key` are written to the PKI directory.
+3. `CertPool()` returns a pool that includes **both** the new active CA and the
+   old CA (while `now < oldExpiry`), so old-CA-signed and new-CA-signed leaf
+   certs both verify during the grace window.
+4. After 72 hours the old CA is removed from the pool automatically.
+
+!!! warning "The grace slot is in-memory only — a root rotation forces re-enrollment"
+    The grace slot lives in the running control-plane process; it is **not**
+    persisted to disk. `control-plane pki rotate` runs as a separate short-lived
+    process, so the live control plane keeps serving the *old* CA until it is
+    **restarted**, and on restart the CA loads only the new `ca.crt` with no
+    grace slot. In practice a root rotation therefore **forces every enrolled
+    agent to re-enroll under the new CA** — plan it as a maintenance event, not a
+    hot swap. (Revocation is different: it takes effect immediately, no restart
+    required — see [Disaster recovery](#disaster-recovery-ca-key-compromise).)
 
 ### Step-by-step rotation procedure
 
+Run this on a control-plane host with access to the PKI directory
+(`$PURSER_PKI_DIR`) and the registry (`$PURSER_DB`).
+
 ```bash
-# 1. Trigger rotation via the admin API
-curl -X POST https://<control-plane>:8443/admin/pki/rotate \
-     -H "Authorization: Bearer $ADMIN_TOKEN"
+# 1. Note the current CA serial (for your change record).
+openssl x509 -in "$PURSER_PKI_DIR/ca.crt" -noout -serial
 
-# 2. Verify the new CA serial is different
-curl https://<control-plane>:8443/admin/pki/ca | jq .serial_number
+# 2. Rotate the CA. --confirm is mandatory: the operation is irreversible.
+control-plane pki rotate --pki-dir "$PURSER_PKI_DIR" --db "$PURSER_DB" --confirm
+#    Logs: old_serial=<...> new_serial=<...>
 
-# 3. Monitor agent re-enrollment during the grace window (72 h).
-#    Watch for any agent that stops responding and force-reconnect it:
+# 3. Confirm the on-disk CA serial changed.
+openssl x509 -in "$PURSER_PKI_DIR/ca.crt" -noout -serial
+
+# 4. Restart the control plane so it adopts the new CA.
+kubectl rollout restart deployment/purser-control-plane -n purser
+
+# 5. Re-enroll agents under the new CA (they fail mTLS against the new root
+#    until they do). A rolling restart re-triggers enrollment.
 kubectl rollout restart deployment/purser-agent -n purser
-
-# 4. After 72 h, confirm no agents are still using the old CA serial:
-curl https://<control-plane>:8443/admin/pki/certs?state=issued \
-     | jq '[.[] | select(.issuer_serial == "<old-serial>")]'
 ```
 
-**Note:** the old CA serial is logged at rotation time.  Keep it in your
-change-management record in case you need to identify stale agents.
+**Note:** the old and new CA serials are logged at rotation time.  Keep them in
+your change-management record so you can spot any agent still presenting an
+old-CA cert.
+
+### Why CLI, not HTTP
+
+Rotation re-issues the cluster trust root and [revoke-all](#disaster-recovery-ca-key-compromise)
+invalidates every live certificate — both are destructive, rare, and
+cluster-wide. Exposing them over the management API would put a full outage one
+stray request away. As CLI subcommands (like `backup` / `restore`) they require
+shell and filesystem access to the control-plane data directory — the same trust
+boundary that already protects `ca.key` — and cannot be triggered remotely.
 
 ---
 
@@ -155,18 +181,18 @@ the env var and triggering a rotation.
 
 If you believe the CA private key has been exfiltrated:
 
-1. **Immediately revoke all outstanding leaf certificates** via the admin API:
+1. **Immediately revoke all outstanding leaf certificates.** This takes effect
+   at once — `VerifyClient` rejects revoked certs regardless of trust-bundle
+   membership, so a running control plane enforces it without a restart:
    ```bash
-   curl -X POST https://<control-plane>:8443/admin/pki/revoke-all \
-        -H "Authorization: Bearer $ADMIN_TOKEN"
+   control-plane pki revoke-all --pki-dir "$PURSER_PKI_DIR" --db "$PURSER_DB" --confirm
    ```
-2. **Rotate the CA** (this generates a new root and clears the grace slot for
-   the compromised CA):
+2. **Rotate the CA** (generates a new root; the compromised CA is no longer the
+   active signer). Restart the control plane afterwards so it adopts the new CA:
    ```bash
-   curl -X POST https://<control-plane>:8443/admin/pki/rotate \
-        -H "Authorization: Bearer $ADMIN_TOKEN"
+   control-plane pki rotate --pki-dir "$PURSER_PKI_DIR" --db "$PURSER_DB" --confirm
    ```
-3. **Force all agents to re-enroll** — the revoked certs will be rejected by
+3. **Force all agents to re-enroll** — the revoked certs are rejected by
    `VerifyClient` even during the grace period because revocation is checked
    independently of trust-bundle membership.
 4. **Rotate the passphrase** (see above) and restart the control plane.

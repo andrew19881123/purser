@@ -497,6 +497,37 @@ func (a *Authority) Revoke(ctx context.Context, serial string) error {
 	return nil
 }
 
+// RevokeAll marks every currently-issued leaf certificate as revoked and
+// returns the number of certificates revoked.
+//
+// CA certificates (Role == RoleCA) are deliberately skipped — replacing the CA
+// itself is Rotate's responsibility, not RevokeAll's. This is the emergency
+// "stop every agent and gateway" control used when the CA key is believed
+// compromised (see docs/operations/pki-operations.md).
+//
+// Because revocation is a registry-state check performed independently of
+// trust-bundle membership (see VerifyClient), revoked certificates are rejected
+// immediately — even while their issuing CA is still inside the rotation grace
+// window. It is idempotent: a second call after everything is revoked returns 0.
+func (a *Authority) RevokeAll(ctx context.Context) (int, error) {
+	certs, err := a.reg.ListCerts(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("pki: revoke-all: list certs: %w", err)
+	}
+	revoked := 0
+	for _, c := range certs {
+		if c.Role == RoleCA || c.State != StateIssued {
+			continue
+		}
+		c.State = StateRevoked
+		if err := a.reg.UpdateCert(ctx, c); err != nil {
+			return revoked, fmt.Errorf("pki: revoke-all: revoke %q: %w", c.Serial, err)
+		}
+		revoked++
+	}
+	return revoked, nil
+}
+
 // IsRevoked reports whether the given serial has been revoked.
 func (a *Authority) IsRevoked(ctx context.Context, serial string) (bool, error) {
 	c, err := a.reg.GetCert(ctx, serial)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -379,5 +380,108 @@ func TestCA_CACertPEMMatches(t *testing.T) {
 	}
 	if parsed.SerialNumber.Cmp(cert.SerialNumber) != 0 {
 		t.Error("CACertPEM serial mismatch")
+	}
+}
+
+// TestCA_RevokeAll verifies the emergency revoke-all control: every issued leaf
+// certificate is marked revoked (and subsequently rejected by VerifyClient),
+// the CA's own certificate is left untouched, and the returned count matches.
+func TestCA_RevokeAll(t *testing.T) {
+	ctx := context.Background()
+	reg := openReg(t)
+	ca, _ := pki.New(ctx, reg, pki.Options{})
+
+	var issued []*pki.IssuedCert
+	for _, cn := range []string{"node-a", "node-b", "gw-1"} {
+		role := pki.RoleAgent
+		if cn == "gw-1" {
+			role = pki.RoleGateway
+		}
+		c, err := ca.Issue(ctx, pki.CertRequest{CommonName: cn, Role: role})
+		if err != nil {
+			t.Fatalf("Issue %s: %v", cn, err)
+		}
+		issued = append(issued, c)
+	}
+	// Sanity: every leaf verifies before revoke-all.
+	for _, c := range issued {
+		if _, err := ca.VerifyClient(ctx, c.CertPEM); err != nil {
+			t.Fatalf("pre-revoke verify: %v", err)
+		}
+	}
+
+	n, err := ca.RevokeAll(ctx)
+	if err != nil {
+		t.Fatalf("RevokeAll: %v", err)
+	}
+	if n != len(issued) {
+		t.Errorf("RevokeAll count = %d, want %d", n, len(issued))
+	}
+
+	// Every issued leaf is now revoked and rejected by VerifyClient (revocation
+	// is checked independently of the trust bundle, so an old cert fails).
+	for _, c := range issued {
+		if revoked, _ := ca.IsRevoked(ctx, c.Serial); !revoked {
+			t.Errorf("cert %s not marked revoked", c.Serial)
+		}
+		if _, err := ca.VerifyClient(ctx, c.CertPEM); err == nil {
+			t.Errorf("VerifyClient accepted revoked cert %s", c.Serial)
+		}
+	}
+
+	// The CA's own certificate must NOT be revoked — RevokeAll targets leaf
+	// certs only; replacing the CA itself is Rotate's job.
+	caCert, _ := ca.CACertificate(ctx)
+	if rec, err := reg.GetCert(ctx, caCert.SerialNumber.String()); err != nil {
+		t.Fatalf("GetCert(CA): %v", err)
+	} else if rec.State == pki.StateRevoked {
+		t.Error("RevokeAll must not revoke the CA certificate itself")
+	}
+
+	// A second RevokeAll is a no-op: nothing remains in the issued state.
+	if n2, err := ca.RevokeAll(ctx); err != nil || n2 != 0 {
+		t.Errorf("second RevokeAll = (%d, %v), want (0, nil)", n2, err)
+	}
+}
+
+// TestCA_RevokeAll_Empty verifies RevokeAll on a CA with no issued leaf certs
+// returns zero without error (only the CA's own cert exists).
+func TestCA_RevokeAll_Empty(t *testing.T) {
+	ctx := context.Background()
+	reg := openReg(t)
+	ca, _ := pki.New(ctx, reg, pki.Options{})
+
+	n, err := ca.RevokeAll(ctx)
+	if err != nil {
+		t.Fatalf("RevokeAll on empty fleet: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("RevokeAll on empty fleet = %d, want 0", n)
+	}
+}
+
+// TestCA_Rotate_StateDirError verifies rotation surfaces an error when the CA
+// state directory cannot be written (the new keypair cannot be persisted).
+func TestCA_Rotate_StateDirError(t *testing.T) {
+	ctx := context.Background()
+	reg := openReg(t)
+	dir := filepath.Join(t.TempDir(), "castate")
+	ca, err := pki.New(ctx, reg, pki.Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("new CA: %v", err)
+	}
+
+	// Replace the state directory with a regular file so the writeDisk performed
+	// by Rotate cannot create or write into it (fails regardless of uid, unlike
+	// a chmod-based approach which root would ignore).
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("rm state dir: %v", err)
+	}
+	if err := os.WriteFile(dir, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+
+	if _, err := ca.Rotate(ctx); err == nil {
+		t.Error("Rotate must fail when the state directory is not writable")
 	}
 }
