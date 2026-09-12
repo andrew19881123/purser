@@ -9,19 +9,53 @@ Purser provides two complementary audit views in the operator dashboard, accessi
 
 Both tabs are always visible. The **Chain Integrity Panel** sits above the tabs and is persistent — it reports the cryptographic health of the inference hash chain at a glance.
 
-!!! note "Scope of this page — two distinct audit surfaces"
-    This page documents the **inference-audit dashboard** (the `AuditPage` in the
-    operator UI): the **Inference Audit** tab (`GET /api/v1/inference-audit`) and the
-    **Access Log** tab (`GET /api/v1/logs/access`). These are the only audit views
-    currently rendered in the dashboard.
+!!! info "Two different audit logs"
+    The **Audit Log** page described here logs **inference** — one row per inference
+    request. The separate **Admin Audit Log** page (below) logs **administrative
+    actions** — logins, key operations, approvals, and GDPR erasures. They are backed
+    by different endpoints and different hash chains; don't confuse the two.
 
-    Purser also ships a **separate** administrative action log —
-    `GET /api/v1/enterprise/audit-log` — a tamper-evident, hash-chained trail of
-    administrative operations, enterprise-gated behind the `audit` feature. That
-    endpoint exists as an API today (a typed client binding is present in the UI code
-    but is not wired into any page), so it has **no dashboard UI yet**. It is a
-    different data set from the per-request inference audit described below; do not
-    confuse the two.
+---
+
+## Admin Audit Log page
+
+The **Admin Audit Log** page (sidebar → **Observability** → **Admin Audit**, route
+`/admin-audit`) surfaces the tamper-evident trail of administrative actions, backed by
+`GET /api/v1/enterprise/audit-log`. This is distinct from the inference audit above: it
+records events such as `login`, `apikey.create`, deployment approvals, and
+`gdpr.erasure.completed`, each with the granular actor identity
+(`oidc:<sub>` / `apikey:<fingerprint>` / `system`).
+
+### Header
+
+A status row shows the chain verification badge (**Chain verified** ✓ or
+**Chain integrity broken**), the entry count, and the **Licensed to** licensee taken
+from the response. A **Show** picker (100 / 250 / 500) sets how many entries are
+fetched, and **Refresh** re-runs the query.
+
+### Columns
+
+| Column | Description |
+|---|---|
+| **#** | Sequential entry number (`seq`). |
+| **Time** | Wall-clock timestamp in the browser's local timezone. |
+| **Actor** | Who performed the action (granular identity). |
+| **Action** | The action key, e.g. `apikey.create`, `gdpr.erasure.completed`. |
+| **Target** | The object the action applied to. |
+| **Details** | Structured `key=value` details from the entry's JSON detail map. |
+
+### Filters & pagination
+
+Free-text **Actor** and **Action** filters narrow the rows client-side (both reset the
+page to the first page). **Prev** / **Next** page through the filtered entries 25 at a
+time, with the current `from–to / total` shown between them.
+
+### Enterprise gate
+
+`GET /api/v1/enterprise/audit-log` requires the **`audit`** enterprise feature and
+returns `402 Payment Required` without it (and `403` for a non-admin caller). In both
+cases the page shows the shared **"Enterprise feature"** locked-panel prompt (linking to
+licensing) instead of rendering an error or crashing.
 
 ---
 

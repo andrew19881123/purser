@@ -141,6 +141,32 @@ Example response:
 
 ---
 
+## Compliance page (operator dashboard)
+
+Both documents can now be generated from the operator dashboard — no `curl` or admin
+key handling required. Open **Compliance** in the sidebar under **Observability**
+(route `/compliance`).
+
+The **Regulatory documentation** card lists the two exports, each with a plain-language
+description of what it is for and who consumes it, and a **Download** button:
+
+| Export | Button downloads |
+|---|---|
+| AI Act technical documentation | `GET /api/v1/compliance/ai-act/technical-doc` → `purser-ai-act-technical-doc-<date>.json` |
+| GDPR record of processing | `GET /api/v1/compliance/gdpr/record-of-processing` → `purser-gdpr-record-of-processing-<date>.json` |
+
+The dashboard fetches the live document (as the operator's authenticated session) and
+saves it verbatim — the file is byte-faithful to the API response, so it carries the
+same field names shown above. Because both endpoints are enterprise-gated, a download
+attempted without the required feature surfaces the shared **"Enterprise feature"**
+locked-panel prompt (linking to licensing) rather than a broken download or a raw error
+body.
+
+The same page also hosts the GDPR right-to-erasure form and the erasure-log view — see
+[GDPR Compliance](gdpr-compliance.md).
+
+---
+
 ## Model version traceability — querying audit records
 
 To find all inference events served by a specific model version, filter the audit

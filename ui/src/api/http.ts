@@ -43,6 +43,9 @@ import type {
   EffectivePermissions,
   EnterpriseStatus,
   FitVerdict,
+  GdprErasureInput,
+  GdprErasureLogEntry,
+  GdprErasureResult,
   ImportSource,
   InferenceAuditParams,
   InferenceAuditResponse,
@@ -186,7 +189,48 @@ function createClient(baseUrl: string) {
     return camelizeKeys(JSON.parse(text)) as T;
   }
 
-  return { request };
+  /**
+   * Like `request`, but returns the RAW response body text without JSON parsing
+   * or key camelization. Used for on-demand document downloads (compliance
+   * exports) where the operator should get exactly the bytes the server emitted
+   * — snake_case field names and all. Error handling (ApiError, 401 redirect)
+   * is identical to `request`, so an enterprise gate still surfaces as a 402.
+   */
+  async function requestText(path: string): Promise<string> {
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin',
+      });
+    } catch (err) {
+      throw new ApiError(0, err instanceof Error ? err.message : 'Network error');
+    }
+    if (!res.ok) {
+      let body: unknown;
+      let message = `HTTP ${res.status}`;
+      try {
+        body = camelizeKeys(await res.json());
+        const m =
+          body && typeof body === 'object'
+            ? ((body as Record<string, unknown>).message ??
+              (body as Record<string, unknown>).error)
+            : undefined;
+        if (typeof m === 'string' && m.length > 0) message = m;
+      } catch {
+        /* non-JSON error body — keep the status message */
+      }
+      if (res.status === 401) {
+        const { handleUnauthorized } = await import('./config');
+        handleUnauthorized();
+      }
+      throw new ApiError(res.status, message, body);
+    }
+    return res.text();
+  }
+
+  return { request, requestText };
 }
 
 // --- normalizers (graceful, backend-shape-tolerant) -------------------------
@@ -638,7 +682,7 @@ function normalizeApproval(raw: unknown): DeploymentApproval {
 }
 
 export function createHttpApi(baseUrl: string): PurserApi {
-  const { request } = createClient(baseUrl);
+  const { request, requestText } = createClient(baseUrl);
 
   return {
     // --- fleet ---
@@ -1109,6 +1153,46 @@ export function createHttpApi(baseUrl: string): PurserApi {
             role: String(e.role ?? 'member'),
             lastActiveAt: typeof e.lastActiveAt === 'string' ? e.lastActiveAt : null,
           } satisfies PlatformUser;
+        });
+      }),
+
+    // --- compliance (AI Act + GDPR; all enterprise-gated) ---
+
+    // Raw text so the downloaded file is byte-faithful to the server response.
+    getAiActTechnicalDoc: (): Promise<string> =>
+      requestText('/compliance/ai-act/technical-doc'),
+
+    getGdprRecordOfProcessing: (): Promise<string> =>
+      requestText('/compliance/gdpr/record-of-processing'),
+
+    // POST /api/v1/gdpr/erasure — body snakeized to subject_type / subject_identifier / reason.
+    eraseSubject: (input: GdprErasureInput): Promise<GdprErasureResult> =>
+      request<unknown>('/gdpr/erasure', { method: 'POST', body: input }).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          erasedEvents: num(r.erasedEvents),
+          erasureType: str(r.erasureType, 'inference_audit'),
+          completedAt: str(r.completedAt, new Date().toISOString()),
+          subjectPrefix: str(r.subjectPrefix),
+        } satisfies GdprErasureResult;
+      }),
+
+    // GET /api/v1/gdpr/erasure-log — { erasures: [...] }; backend stub returns [].
+    getGdprErasureLog: (): Promise<GdprErasureLogEntry[]> =>
+      request<unknown>('/gdpr/erasure-log').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        const rows = Array.isArray(r.erasures) ? r.erasures : [];
+        return rows.map((row): GdprErasureLogEntry => {
+          const e = (row ?? {}) as Record<string, unknown>;
+          return {
+            id: num(e.id),
+            subjectHash: str(e.subjectHash),
+            erasedAt: str(e.erasedAt),
+            erasedBy: str(e.erasedBy),
+            reason: str(e.reason),
+            eventsErased: num(e.eventsErased),
+            erasureType: str(e.erasureType, 'inference_audit'),
+          };
         });
       }),
 

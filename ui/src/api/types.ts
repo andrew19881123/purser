@@ -501,6 +501,43 @@ export interface AuditLog {
   chain: AuditChainVerification;
 }
 
+// ---------------------------------------------------------------------------
+// Compliance — AI Act technical documentation, GDPR record of processing, and
+// GDPR Art.17 right-to-erasure. All enterprise-gated (402 license_required).
+// ---------------------------------------------------------------------------
+
+/** Body for POST /api/v1/gdpr/erasure. */
+export interface GdprErasureInput {
+  /** Subject class. The backend currently supports only "api_key". */
+  subjectType: string;
+  /** SHA-256 hex of the subject's API key. */
+  subjectIdentifier: string;
+  /** Free-text reason, recorded in the immutable erasure log for accountability. */
+  reason: string;
+}
+
+/** Response from POST /api/v1/gdpr/erasure. */
+export interface GdprErasureResult {
+  /** Number of inference-audit rows pseudonymised for the subject. */
+  erasedEvents: number;
+  erasureType: string;
+  /** ISO-8601 completion timestamp. */
+  completedAt: string;
+  /** Truncated subject prefix (never the full hash) — safe to display. */
+  subjectPrefix: string;
+}
+
+/** One row of GET /api/v1/gdpr/erasure-log (the backend stub currently returns []). */
+export interface GdprErasureLogEntry {
+  id: number;
+  subjectHash: string;
+  erasedAt: string;
+  erasedBy: string;
+  reason: string;
+  eventsErased: number;
+  erasureType: string;
+}
+
 // --- reconciler ---
 
 /** Per-event-type summary inside ReconcilerStatus.tracker. */

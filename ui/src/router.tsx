@@ -17,6 +17,8 @@ import { ModelStudioPage } from './pages/ModelStudioPage';
 import { PlaygroundPage } from './pages/PlaygroundPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
+import { AdminAuditLogPage } from './pages/AdminAuditLogPage';
+import { CompliancePage } from './pages/CompliancePage';
 import { ApprovalsPage } from './pages/ApprovalsPage';
 import { ChargebackPage } from './pages/ChargebackPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -50,6 +52,8 @@ export const routes: RouteObject[] = [
       { path: 'playground', element: <PlaygroundPage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'audit', element: <AuditPage /> },
+      { path: 'admin-audit', element: <AdminAuditLogPage /> },
+      { path: 'compliance', element: <CompliancePage /> },
       { path: 'approvals', element: <ApprovalsPage /> },
       { path: 'chargeback', element: <ChargebackPage /> },
       // v0.4 platform model routes

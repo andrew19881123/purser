@@ -75,9 +75,11 @@ const GOVERNANCE: NavItem[] = [
 // Audit, cost, and reliability: what happened, how much it cost, and whether
 // SLOs are being met. Compliance and FinOps teams live here.
 const OBSERVABILITY: NavItem[] = [
-  { to: '/audit',      labelKey: 'nav.audit',      icon: <IconLock /> },
-  { to: '/chargeback', labelKey: 'nav.chargeback', icon: <IconChart /> },
-  { to: '/slo',        labelKey: 'nav.slo',        icon: <IconTarget /> },
+  { to: '/audit',       labelKey: 'nav.audit',      icon: <IconLock /> },
+  { to: '/admin-audit', labelKey: 'nav.adminAudit', icon: <IconShield /> },
+  { to: '/compliance',  labelKey: 'nav.compliance', icon: <IconCheckCircle /> },
+  { to: '/chargeback',  labelKey: 'nav.chargeback', icon: <IconChart /> },
+  { to: '/slo',         labelKey: 'nav.slo',        icon: <IconTarget /> },
 ];
 
 // ── ADMINISTRATION ────────────────────────────────────────────────────────────

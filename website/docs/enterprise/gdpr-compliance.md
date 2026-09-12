@@ -111,6 +111,44 @@ This satisfies **SOC2 CC6.2** (individual accountability) and **GDPR Art.30** (a
 
 ---
 
+## Compliance page (operator dashboard)
+
+Erasure requests no longer require `curl`. Open **Compliance** in the sidebar under
+**Observability** (route `/compliance`); the page hosts both the erasure form and a
+read-only view of the erasure log, alongside the AI Act / GDPR document exports (see
+[AI Act & GDPR Compliance](ai-act-compliance.md)).
+
+### Right to erasure form
+
+The **Right to erasure (GDPR Art.17)** card takes two inputs and calls
+`POST /api/v1/gdpr/erasure`:
+
+| Field | Sent as | Notes |
+|---|---|---|
+| Subject identifier | `subject_identifier` | SHA-256 hex of the subject's API key (required). |
+| Reason | `reason` | Recorded in the immutable `gdpr_erasure_log` for accountability. |
+
+`subject_type` is fixed to `api_key` — the only subject class the backend currently
+supports. The form makes the irreversibility explicit in its description, since the
+operation cannot be undone.
+
+On success the card shows a confirmation stating how many inference-audit records were
+pseudonymised, the truncated subject prefix, and the completion time — mirroring the
+`erased_events` / `subject_prefix` / `completed_at` fields of the API response. The
+form distinguishes the two failure modes: a `402` (missing `gdpr` feature) shows the
+**"Enterprise feature"** locked panel, and a `403` (non-admin caller) shows an
+"admin role required" message.
+
+### Erasure log view
+
+The **Erasure log** card renders `GET /api/v1/gdpr/erasure-log` as a table
+(subject, erased-by, reason, record count, type, time). Because the backend currently
+returns an empty list (full listing is planned — see the note above), the card shows a
+graceful **"No erasure operations recorded yet."** empty state rather than an error;
+it will populate automatically once the backend implements the listing.
+
+---
+
 ## License Requirement
 
 All GDPR endpoints require the **`gdpr`** enterprise feature in the active license:

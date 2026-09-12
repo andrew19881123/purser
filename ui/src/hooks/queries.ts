@@ -19,6 +19,7 @@ import type { ChatClient } from '../api/openai';
 import type {
   AccessLogParams,
   DeployOverrides,
+  GdprErasureInput,
   ImportSource,
   InferenceAuditParams,
   MetricsSnapshot,
@@ -395,6 +396,33 @@ export function useAuditLog(limit = 100) {
   return useQuery({
     queryKey: ['auditLog', limit],
     queryFn: () => api.getAuditLog(limit),
+  });
+}
+
+// --- compliance / GDPR (enterprise-gated) -----------------------------------
+
+/**
+ * GET /api/v1/gdpr/erasure-log — read-only trail of past right-to-erasure
+ * operations. Enterprise-gated ("gdpr" feature, admin); the backend currently
+ * returns an empty list, so callers must handle the empty state gracefully.
+ */
+export function useGdprErasureLog() {
+  return useQuery({
+    queryKey: ['gdprErasureLog'],
+    queryFn: () => api.getGdprErasureLog(),
+  });
+}
+
+/**
+ * POST /api/v1/gdpr/erasure — pseudonymise inference-audit records for a data
+ * subject. On success the erasure-log query is invalidated so a future listing
+ * (once the backend implements it) reflects the new entry.
+ */
+export function useGdprErasure() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: GdprErasureInput) => api.eraseSubject(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['gdprErasureLog'] }),
   });
 }
 

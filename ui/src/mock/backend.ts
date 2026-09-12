@@ -791,4 +791,46 @@ export const mockBackend: PurserApi = {
 
   // --- platform users ---
   listPlatformUsers() { return delay([]); },
+
+  // --- compliance (AI Act + GDPR) ---
+  getAiActTechnicalDoc() {
+    return delay(
+      JSON.stringify(
+        {
+          generated_at: new Date().toISOString(),
+          system_name: 'Purser AI Inference Gateway',
+          provider: 'community',
+          version: 'v0.6.0',
+          deployed_models: [],
+          conformity_basis: 'AI Act Art.11, Annex IV',
+        },
+        null,
+        2,
+      ),
+    );
+  },
+  getGdprRecordOfProcessing() {
+    return delay(
+      JSON.stringify(
+        {
+          generated_at: new Date().toISOString(),
+          controller: 'community',
+          processing_activities: [],
+        },
+        null,
+        2,
+      ),
+    );
+  },
+  eraseSubject(input) {
+    return delay({
+      erasedEvents: 0,
+      erasureType: 'inference_audit',
+      completedAt: new Date().toISOString(),
+      subjectPrefix: input.subjectIdentifier.slice(0, 8) + '...',
+    });
+  },
+  getGdprErasureLog() {
+    return delay([]);
+  },
 };

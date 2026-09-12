@@ -35,6 +35,9 @@ import type {
   DeploymentPlan,
   EffectivePermissions,
   EnterpriseStatus,
+  GdprErasureInput,
+  GdprErasureLogEntry,
+  GdprErasureResult,
   ImportSource,
   InferenceAuditParams,
   InferenceAuditResponse,
@@ -260,6 +263,27 @@ export interface PurserApi {
   // --- v0.5 platform users ---
   /** GET /api/v1/platform/users — list all platform users (admin only). */
   listPlatformUsers(): Promise<PlatformUser[]>;
+
+  // --- compliance (AI Act + GDPR; all enterprise-gated, 402 license_required) ---
+  /**
+   * GET /api/v1/compliance/ai-act/technical-doc — machine-readable AI Act
+   * Art.11 / Annex-IV technical documentation. Returns the RAW response text
+   * (uncamelized) so the downloaded file matches what the server emitted.
+   * 402 without the "ai_act_compliance" or "inference_audit" feature.
+   */
+  getAiActTechnicalDoc(): Promise<string>;
+  /**
+   * GET /api/v1/compliance/gdpr/record-of-processing — GDPR Art.30 record of
+   * processing activities, as RAW response text. 402 without "inference_audit".
+   */
+  getGdprRecordOfProcessing(): Promise<string>;
+  /**
+   * POST /api/v1/gdpr/erasure — pseudonymise inference-audit records for a
+   * subject. Admin-only + "gdpr" feature (402/403 otherwise).
+   */
+  eraseSubject(input: GdprErasureInput): Promise<GdprErasureResult>;
+  /** GET /api/v1/gdpr/erasure-log — past erasure operations (backend stub returns []). */
+  getGdprErasureLog(): Promise<GdprErasureLogEntry[]>;
 
   // --- policy-as-code (enterprise: policy_engine) ---
   /** GET /api/v1/policies — 402 without the policy_engine feature. */
