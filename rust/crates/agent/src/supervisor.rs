@@ -679,9 +679,20 @@ impl Supervisor {
             }
             // Host (and Unspecified, defaulting to host) coordinate the pipeline.
             _ => {
+                // Use the resolved on-disk GGUF path from the model cache when
+                // available. This lets the control plane send logical model IDs
+                // (e.g. "tinyllama-1b") while the agent resolves them to real
+                // file paths before invoking llama-server. When model_path is
+                // None (cache miss), fall back to model_ref — the adapter's
+                // PURSER_LLAMACPP_MODEL_DIR or an absolute ref handles it.
+                let model_arg: std::borrow::Cow<str> = spec
+                    .model_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned().into())
+                    .unwrap_or_else(|| spec.model_ref.as_str().into());
                 let h = self
                     .backend
-                    .start_host(&spec.model_ref, &spec.peers, spec.params.clone())
+                    .start_host(&model_arg, &spec.peers, spec.params.clone())
                     .await?;
 
                 // For the GPU-free `mock` backend, `start_host` returns a

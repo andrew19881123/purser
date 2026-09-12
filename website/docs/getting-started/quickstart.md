@@ -22,7 +22,7 @@ You should see **five** services, all `running`:
 
 ```
 NAME                     SERVICE         STATUS              PORTS
-purser-control-plane-1   control-plane   running             8080/tcp, 0.0.0.0:9443->9443/tcp
+purser-control-plane-1   control-plane   running             8080/tcp, 9443/tcp
 purser-gateway-1         gateway         running             8081/tcp
 purser-postgres-1        postgres        running (healthy)   5432/tcp
 purser-proxy-1           proxy           running             0.0.0.0:3000->80/tcp
@@ -30,9 +30,6 @@ purser-ui-1              ui              running             80/tcp
 ```
 
 The `NAME` column is prefixed with the Compose project name, which defaults to the directory you cloned into — so yours may read `myclone-gateway-1`. What matters is that five services are listed and none is `exited` or `restarting`. If one is unhealthy, read its logs with `docker compose logs <service>`.
-
-!!! note "postgres shows `(unhealthy)` on distroless images"
-    If you see `control-plane` as `(unhealthy)` but the service is responding to curl, this is a known issue: the healthcheck uses `wget`, which is not present in the distroless image. The service is functional; ignore the health status for local development.
 
 !!! note "Only one port is published"
     `proxy` is the only service with a host port (`3000->80`). The Control Plane (`:8080`) and Gateway (`:8081`) are container-internal; nginx path-routes `/api/` to the Control Plane and `/v1/` to the Gateway. From your machine the addresses are therefore `http://localhost:3000` (dashboard), `http://localhost:3000/api` (Control Plane REST) and `http://localhost:3000/v1` (OpenAI-compatible Gateway) — **not** `:8080` or `:8081`, which will refuse the connection.
@@ -53,37 +50,66 @@ make demo-seed
 
 ### What this path gives you — and what it does not
 
-**What you get:** the whole control path. The Control Plane and its full REST API, the dashboard, the Gateway's OpenAI-compatible surface, a Postgres-backed registry, and a model in the catalog. That is enough to explore the API, the Catalog and Playground pages, node pools, API keys and RBAC — everything except a generated token.
+**What you get (default `docker compose up`):** the whole control path. The Control Plane and its full REST API, the dashboard, the Gateway's OpenAI-compatible surface, a Postgres-backed registry, and a model in the catalog. That is enough to explore the API, the Catalog and Playground pages, node pools, API keys and RBAC — everything except a generated token.
 
-**What you do not get: an inference response.** The compose stack ships no Agent service. Inference runs in the Agent (the Gateway is a reverse proxy with no weights), so the Gateway starts with an empty routing table.
+**What you also get with `--profile full`: real CPU inference.** The full profile adds a CPU-backed Agent running TinyLlama 1.1B via llama.cpp — no GPU required. Downloads happen automatically on first run (637 MB model + llama-server binary).
 
-Concretely:
+#### Default profile: catalog exploration only
 
 ```bash
-curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
-# -> {"object":"list","data":[]}
+docker compose up -d
+make demo-seed
 ```
 
-That is expected, not a fault: the Gateway lists and serves a model only once the Control Plane publishes a route for it, which happens after an inference engine reports ready on an enrolled node. Until then a chat call returns `503 "model not available"`.
+No inference is available. `GET /v1/models` returns an empty list; `POST /v1/chat/completions` returns `503`. This is expected — inference requires an enrolled Agent.
 
-**Can you enrol a native agent against the compose stack?** Port `9443` is now published, so the enrollment gRPC call can reach the Control Plane. However, once enrolled the Control Plane connects **back** to the agent over TLS (using the PKI-issued cert), while a native agent built without explicit TLS configuration serves plain gRPC. Set `PURSER_AGENT_GRPC_INSECURE=true` on the Control Plane (add it to `control-plane.environment` in `docker-compose.yml`) to tell it to dial agents over plain gRPC in this mixed setup.
+#### Full profile: real CPU inference via TinyLlama 1.1B
 
-The cleaner path for local inference development is the native `make dev` stack described below — no Docker required, and no TLS mismatch to worry about.
+Build the agent image first (one-time, uses the local Rust source):
+
+```bash
+sudo docker build -f deploy/docker/Dockerfile.agent \
+  -t purser-agent:v0.6-llamacpp .
+```
+
+Then start and seed:
+
+```bash
+docker compose --profile full up -d
+PURSER_FULL_INFERENCE=1 make demo-seed
+```
+
+On first run, `model-init` downloads TinyLlama 1.1B Q4_K_M (637 MB) and llama-server (~50 MB) into named Docker volumes. Subsequent runs skip the download if the files are already present. Set `PURSER_SKIP_MODEL_DOWNLOAD=1` if you have pre-seeded the volumes manually.
+
+Once the agent is `READY` and the deployment is `ACTIVE`, run a real inference:
+
+```bash
+curl -sS http://localhost:3000/v1/chat/completions \
+  -H 'Authorization: Bearer demo-key-12345' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"tinyllama-1b","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+```
+
+!!! note "CPU inference is slow"
+    TinyLlama 1.1B on CPU generates roughly 2–5 tokens/s on a modern laptop.
+    The first request after startup may take 10–30 s while llama-server loads
+    the model weights. This is a demo — for production use a GPU node and the
+    Helm chart.
 
 !!! note "About `demo-key-12345`"
-    `demo-key-12345` is a **Gateway** API key — it is the value of `PURSER_GATEWAY_API_KEYS` in `docker-compose.yml`. It is not an API key you create via the Control Plane's `/api/v1/apikeys` endpoint, and it does not appear in the API Keys list in the dashboard. Think of it as the password hard-wired into the gateway container for demo use; in production you replace it with keys you generate yourself.
+    `demo-key-12345` is a **Gateway** API key — the value of `PURSER_GATEWAY_API_KEYS` in `docker-compose.yml`. It is not a Control Plane API key and does not appear in the API Keys list in the dashboard.
 
-**The two paths that do reach inference:**
-
-| Path | What it needs | Use it when |
+| Profile | Command | Inference |
 |---|---|---|
-| Native `make dev` + mock Agent | The Rust toolchain, to build `./bin/purser-agent` | You want a canned response locally, no GPU — see [Development setup](#development-setup) |
-| Agent package on a Linux host | A host outside the cluster, and a Control Plane that publishes `:9443` | You want real inference — see the [Helm quickstart](#quickstart-helm-production) and [Linux Agent install](../install/linux-agent.md) |
+| Default | `docker compose up -d && make demo-seed` | No — catalog exploration only |
+| Full | `docker compose --profile full up -d && PURSER_FULL_INFERENCE=1 make demo-seed` | Yes — TinyLlama 1.1B via llama.cpp (CPU) |
 
 Stop the demo at any time:
 
 ```bash
 make demo-stop
+# or stop just the full-profile services:
+docker compose --profile full down
 ```
 
 ---

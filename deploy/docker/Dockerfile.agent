@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1
+#
+# Purser fleet agent (Rust / tonic gRPC) — with llama.cpp inference backend.
+#
+# Build context = repo root:
+#   docker build -f deploy/docker/Dockerfile.agent \
+#     -t purser-agent:v0.6-llamacpp .
+#
+# Build arguments:
+#   CARGO_FEATURES  — comma-separated Cargo features (default: llamacpp,mdns,http-fetch).
+#                     Pass empty string to build the default feature set only.
+#
+# The purser-proto crate's build.rs compiles the v1 protos with a *vendored*
+# protoc (crate `protoc-bin-vendored`) — no system protoc is required.
+# build.rs reads the proto tree at ../../../proto relative to rust/crates/purser-proto,
+# i.e. the repo-root proto/, so both trees are copied preserving that layout.
+
+# ── Builder ──────────────────────────────────────────────────────────────────
+FROM rust:1.98 AS builder
+
+WORKDIR /src
+
+COPY rust/ ./rust/
+COPY proto/ ./proto/
+
+WORKDIR /src/rust
+
+# musl-tools provides the x86_64 musl linker for fully-static binaries.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends musl-tools gcc-aarch64-linux-gnu \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG CARGO_FEATURES="llamacpp,mdns,http-fetch"
+ARG TARGETARCH=amd64
+
+# Build the agent binary. The llamacpp feature compiles in the LlamaCppBackend
+# so PURSER_ENGINE_BACKEND=llamacpp works at runtime without any extra binaries
+# in the image (llama-server is supplied via a mounted volume at /llama-bin).
+RUN case "$TARGETARCH" in \
+    amd64) \
+        rustup target add x86_64-unknown-linux-musl && \
+        CARGO_INCREMENTAL=0 cargo build --release \
+          --target x86_64-unknown-linux-musl \
+          -p purser-agent \
+          --no-default-features \
+          --features "${CARGO_FEATURES}" && \
+        cp target/x86_64-unknown-linux-musl/release/purser-agent /purser-agent ;; \
+    arm64) \
+        rustup target add aarch64-unknown-linux-musl && \
+        CARGO_INCREMENTAL=0 \
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+        cargo build --release \
+          --target aarch64-unknown-linux-musl \
+          -p purser-agent \
+          --no-default-features \
+          --features "${CARGO_FEATURES}" && \
+        cp target/aarch64-unknown-linux-musl/release/purser-agent /purser-agent ;; \
+esac
+
+# ── Final ────────────────────────────────────────────────────────────────────
+# Debian bookworm-slim: glibc is required at runtime because llama-server (an
+# external binary downloaded onto the purser-llama-bin volume by model-init)
+# is a dynamically-linked Ubuntu build. The agent binary itself is musl-static
+# so it has no glibc dependency.
+FROM debian:bookworm-slim AS final
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      wget \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 65532 --user-group --no-create-home nonroot
+
+# Entrypoint script: auto-mints a join token when PURSER_JOIN_TOKEN is unset,
+# sets LD_LIBRARY_PATH so llama-server shared libs are found, then exec's the
+# agent binary.
+COPY deploy/docker/agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
+RUN chmod +x /usr/local/bin/agent-entrypoint.sh
+
+COPY --from=builder /purser-agent /usr/local/bin/purser-agent
+
+# Default environment. Override all of these in docker-compose or the Helm chart.
+# PURSER_LLAMACPP_BIN: directory mounted by model-init containing llama-server.
+# PURSER_LLAMACPP_MODEL_DIR: where GGUF files are stored (purser-models volume).
+# PURSER_ENGINE_BACKEND: "llamacpp" or "mock".
+ENV PURSER_ENGINE_BACKEND=llamacpp \
+    PURSER_LLAMACPP_BIN=/llama-bin \
+    PURSER_LLAMACPP_MODEL_DIR=/models \
+    PURSER_LLAMACPP_NGL=0 \
+    PURSER_AGENT_GRPC_INSECURE=true
+
+EXPOSE 50151 9091
+
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]
