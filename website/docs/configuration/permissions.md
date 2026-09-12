@@ -3,7 +3,7 @@
 Purser v0.4 introduces a fine-grained permission system for organizations and teams.
 This page documents all permission strings, the six built-in roles, how wildcard
 matching works, backward compatibility with the legacy three-role model, and how
-to define custom roles (see [Custom roles](#custom-roles-preview) below).
+to define custom roles (see [Custom roles](#custom-roles) below).
 
 ---
 
@@ -29,6 +29,13 @@ The top-level namespaces are:
 ---
 
 ## Complete permission reference
+
+This is the **single, authoritative** permission vocabulary. The `GET
+/api/v1/platform/permissions` discovery endpoint returns exactly these strings
+(with the same descriptions and scopes), the route→permission map enforces them,
+and the built-in roles grant only them. There is no second, separate catalog —
+a permission you can pick when building a custom role is a permission the
+enforcement layer actually checks.
 
 ### Platform permissions
 
@@ -170,7 +177,7 @@ The resolver maps them to v0.4 permission sets as follows:
 
 | Legacy role | Maps to built-in role | Effective permissions |
 |-------------|----------------------|-----------------------|
-| `admin` | `platform_admin` | All 21 permissions, `IsPlatformAdmin = true` |
+| `admin` | `platform_admin` | All 22 permissions, `IsPlatformAdmin = true` |
 | `viewer` | `viewer` | `team:members:view`, `team:metrics:view`, `team:approvals:view` |
 | `inference` | `inference_only` | `inference:call` only |
 
@@ -179,23 +186,31 @@ An API key that carries the old `admin` role has the same effective access as a
 exactly `inference:call` — no control-plane access.
 
 New keys issued after upgrading to v0.4 should use the fine-grained roles. The
-legacy three-role model will be removed in v0.6.
+legacy three-role model remains supported in v0.6 for backward compatibility —
+existing `admin` / `viewer` / `inference` keys continue to work via
+`FromLegacyRole()` — and there is no removal date. Prefer custom roles for any
+new access grants.
 
 ---
 
-## Custom roles (preview)
+## Custom roles
 
-!!! warning "Not yet available"
-    Custom role creation via the API is in preview and subject to change.
-    The schema and endpoints documented here may be updated before general availability.
+Custom roles are **generally available**. The CRUD API
+(`/api/v1/platform/orgs/{orgId}/roles`) is shipped and functional: a role you
+build from the [permission reference](#complete-permission-reference) above —
+the same list `GET /api/v1/platform/permissions` serves — grants exactly the
+access those strings gate at enforcement time.
 
 Custom roles are scoped to an organization. A member with `org:roles:create` can
 define a new role with any subset of the permissions they themselves hold.
 
 ### Create a custom role
 
+The response includes the generated role `id` (e.g. `role-1a2b3c4d`); use it when
+assigning the role.
+
 ```http
-POST /api/v1/orgs/{org_id}/roles
+POST /api/v1/platform/orgs/{orgId}/roles
 Content-Type: application/json
 
 {
@@ -210,16 +225,23 @@ Content-Type: application/json
 }
 ```
 
+Only strings from the permission reference above are meaningful — a permission
+the enforcement layer does not recognize grants nothing.
+
 ### Assign a custom role to a team member
 
 ```http
-PUT /api/v1/orgs/{org_id}/teams/{team_id}/members/{user_id}
+POST /api/v1/platform/teams/{teamId}/members
 Content-Type: application/json
 
 {
-  "role_id": "ml-engineer"
+  "user_id": "<user-or-key-id>",
+  "role_id": "role-1a2b3c4d"
 }
 ```
+
+The member's `role_id` can later be changed with
+`PUT /api/v1/platform/teams/{teamId}/members/{userId}`.
 
 A user may hold multiple roles; the effective permission set is the union of all
 assigned role permissions, deduplicated and sorted. Use `permissions.Merge()` in

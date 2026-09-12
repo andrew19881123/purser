@@ -176,6 +176,13 @@ The table below lists every endpoint covered by the v0.4 permission engine.
 Endpoints **not** in this table fall through to the legacy role switch (safe
 degradation for any clients or keys not yet migrated).
 
+Every permission string in the "Required permission" column is one that `GET
+/api/v1/platform/permissions` serves — the enforced vocabulary and the served
+catalog are a single source of truth (see the
+[permission reference](permissions.md#complete-permission-reference)). A custom
+role built from the catalog therefore grants exactly the access these routes
+require.
+
 | HTTP Method | Path | Required permission |
 |---|---|---|
 | `GET`    | `/api/v1/nodes`                                  | `team:metrics:view`     |
@@ -222,17 +229,20 @@ keys can still access all read endpoints that require `team:metrics:view`, and
 
 ### Migrating keys to custom roles
 
+Custom roles are generally available and functional: the permissions you grant
+are the same strings the route→permission map enforces above.
+
 To grant fine-grained access (e.g. a developer who can deploy but not manage
 billing), create a custom role and a team membership:
 
 ```bash
-# Create a custom role for developers
+# Create a custom role for developers (response returns the generated role id)
 curl -X POST /api/v1/platform/orgs/{orgId}/roles \
   -d '{"name":"developer","permissions":["team:models:deploy","team:models:undeploy","team:metrics:view","team:keys:create","inference:call"]}'
 
 # Add the API key's ID as a team member with the role
 curl -X POST /api/v1/platform/teams/{teamId}/members \
-  -d '{"user_sub":"<key-id>","role_id":"<role-id>"}'
+  -d '{"user_id":"<key-id>","role_id":"<role-id>"}'
 ```
 
 Once the team membership is in place the key's `tenant` field is used to

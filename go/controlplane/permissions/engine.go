@@ -70,72 +70,75 @@ func HasAny(effective []string, required ...string) bool {
 // SystemRoles returns the built-in role definitions.
 // These are seeded into the DB by SeedSystemRoles() but also available
 // in-memory for permission checks before the DB is available.
+//
+// Permissions reference the canonical Perm* constants (permissions.go) rather
+// than raw strings so the roles can never drift from the served catalog.
 func SystemRoles() []BuiltinRole {
 	return []BuiltinRole{
 		{
 			ID:   "platform_admin",
 			Name: "Platform Administrator",
 			Permissions: []string{
-				"platform:orgs:create", "platform:orgs:delete",
-				"platform:pools:manage", "platform:users:invite",
-				"org:teams:create", "org:teams:delete",
-				"org:members:invite", "org:members:remove",
-				"org:roles:create", "org:roles:delete", "org:pools:request",
-				"team:models:deploy", "team:models:undeploy",
-				"team:keys:create", "team:keys:revoke",
-				"team:members:view", "team:members:invite", "team:members:remove",
-				"team:metrics:view", "team:approvals:view", "team:approvals:review",
-				"inference:call",
+				PermPlatformOrgsCreate, PermPlatformOrgsDelete,
+				PermPlatformPoolsManage, PermPlatformUsersInvite,
+				PermOrgTeamsCreate, PermOrgTeamsDelete,
+				PermOrgMembersInvite, PermOrgMembersRemove,
+				PermOrgRolesCreate, PermOrgRolesDelete, PermOrgPoolsRequest,
+				PermTeamModelsDeploy, PermTeamModelsUndeploy,
+				PermTeamKeysCreate, PermTeamKeysRevoke,
+				PermTeamMembersView, PermTeamMembersInvite, PermTeamMembersRemove,
+				PermTeamMetricsView, PermTeamApprovalsView, PermTeamApprovalsReview,
+				PermInferenceCall,
 			},
 		},
 		{
 			ID:   "org_admin",
 			Name: "Organization Administrator",
 			Permissions: []string{
-				"org:teams:create", "org:teams:delete",
-				"org:members:invite", "org:members:remove",
-				"org:roles:create", "org:roles:delete", "org:pools:request",
-				"team:models:deploy", "team:models:undeploy",
-				"team:keys:create", "team:keys:revoke",
-				"team:members:view", "team:members:invite", "team:members:remove",
-				"team:metrics:view", "team:approvals:view", "team:approvals:review",
-				"inference:call",
+				PermOrgTeamsCreate, PermOrgTeamsDelete,
+				PermOrgMembersInvite, PermOrgMembersRemove,
+				PermOrgRolesCreate, PermOrgRolesDelete, PermOrgPoolsRequest,
+				PermTeamModelsDeploy, PermTeamModelsUndeploy,
+				PermTeamKeysCreate, PermTeamKeysRevoke,
+				PermTeamMembersView, PermTeamMembersInvite, PermTeamMembersRemove,
+				PermTeamMetricsView, PermTeamApprovalsView, PermTeamApprovalsReview,
+				PermInferenceCall,
 			},
 		},
 		{
 			ID:   "team_admin",
 			Name: "Team Administrator",
 			Permissions: []string{
-				"team:models:deploy", "team:models:undeploy",
-				"team:keys:create", "team:keys:revoke",
-				"team:members:view", "team:members:invite", "team:members:remove",
-				"team:metrics:view", "team:approvals:view", "team:approvals:review",
-				"inference:call",
+				PermTeamModelsDeploy, PermTeamModelsUndeploy,
+				PermTeamKeysCreate, PermTeamKeysRevoke,
+				PermTeamMembersView, PermTeamMembersInvite, PermTeamMembersRemove,
+				PermTeamMetricsView, PermTeamApprovalsView, PermTeamApprovalsReview,
+				PermInferenceCall,
 			},
 		},
 		{
 			ID:   "developer",
 			Name: "Developer",
 			Permissions: []string{
-				"team:models:deploy", "team:models:undeploy",
-				"team:keys:create",
-				"team:metrics:view",
-				"inference:call",
+				PermTeamModelsDeploy, PermTeamModelsUndeploy,
+				PermTeamKeysCreate,
+				PermTeamMetricsView,
+				PermInferenceCall,
 			},
 		},
 		{
 			ID:   "viewer",
 			Name: "Viewer",
 			Permissions: []string{
-				"team:members:view",
-				"team:metrics:view",
-				"team:approvals:view",
+				PermTeamMembersView,
+				PermTeamMetricsView,
+				PermTeamApprovalsView,
 			},
 		},
 		{
 			ID:          "inference_only",
 			Name:        "Inference Only",
-			Permissions: []string{"inference:call"},
+			Permissions: []string{PermInferenceCall},
 		},
 	}
 }
@@ -188,7 +191,7 @@ func legacyRolePerms(role string) []string {
 			}
 		}
 	case "inference":
-		return []string{"inference:call"}
+		return []string{PermInferenceCall}
 	}
 	return nil
 }

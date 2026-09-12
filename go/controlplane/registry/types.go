@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/purser/purser/go/controlplane/permissions"
 )
 
 // ErrNotFound is returned by Get/Update/Delete operations when the requested
@@ -797,34 +799,40 @@ type ModelSLOStat struct {
 
 // Platform-level permission strings (all capabilities).
 // Fine-grained RBAC: callers check Has(perm) against EffectivePermissions.
+//
+// These are ALIASES of the canonical constants in the permissions package —
+// the single source of truth for the permission vocabulary. Keeping them as
+// aliases (rather than re-declaring literals) guarantees the route→permission
+// map keyed on registry.Perm* can never drift from the catalog served by
+// GET /api/v1/platform/permissions. See permissions/permissions.go.
 const (
 	// Platform-scope
-	PermPlatformOrgsCreate  = "platform:orgs:create"
-	PermPlatformOrgsDelete  = "platform:orgs:delete"
-	PermPlatformPoolsManage = "platform:pools:manage"
-	PermPlatformUsersInvite = "platform:users:invite"
+	PermPlatformOrgsCreate  = permissions.PermPlatformOrgsCreate
+	PermPlatformOrgsDelete  = permissions.PermPlatformOrgsDelete
+	PermPlatformPoolsManage = permissions.PermPlatformPoolsManage
+	PermPlatformUsersInvite = permissions.PermPlatformUsersInvite
 
 	// Org-scope
-	PermOrgTeamsCreate   = "org:teams:create"
-	PermOrgTeamsDelete   = "org:teams:delete"
-	PermOrgMembersInvite = "org:members:invite"
-	PermOrgMembersRemove = "org:members:remove"
-	PermOrgRolesCreate   = "org:roles:create"
-	PermOrgRolesDelete   = "org:roles:delete"
-	PermOrgPoolsRequest  = "org:pools:request"
+	PermOrgTeamsCreate   = permissions.PermOrgTeamsCreate
+	PermOrgTeamsDelete   = permissions.PermOrgTeamsDelete
+	PermOrgMembersInvite = permissions.PermOrgMembersInvite
+	PermOrgMembersRemove = permissions.PermOrgMembersRemove
+	PermOrgRolesCreate   = permissions.PermOrgRolesCreate
+	PermOrgRolesDelete   = permissions.PermOrgRolesDelete
+	PermOrgPoolsRequest  = permissions.PermOrgPoolsRequest
 
 	// Team-scope
-	PermTeamModelsDeploy    = "team:models:deploy"
-	PermTeamModelsUndeploy  = "team:models:undeploy"
-	PermTeamKeysCreate      = "team:keys:create"
-	PermTeamKeysRevoke      = "team:keys:revoke"
-	PermTeamMembersView     = "team:members:view"
-	PermTeamMembersInvite   = "team:members:invite"
-	PermTeamMembersRemove   = "team:members:remove"
-	PermTeamMetricsView     = "team:metrics:view"
-	PermTeamApprovalsView   = "team:approvals:view"
-	PermTeamApprovalsReview = "team:approvals:review"
+	PermTeamModelsDeploy    = permissions.PermTeamModelsDeploy
+	PermTeamModelsUndeploy  = permissions.PermTeamModelsUndeploy
+	PermTeamKeysCreate      = permissions.PermTeamKeysCreate
+	PermTeamKeysRevoke      = permissions.PermTeamKeysRevoke
+	PermTeamMembersView     = permissions.PermTeamMembersView
+	PermTeamMembersInvite   = permissions.PermTeamMembersInvite
+	PermTeamMembersRemove   = permissions.PermTeamMembersRemove
+	PermTeamMetricsView     = permissions.PermTeamMetricsView
+	PermTeamApprovalsView   = permissions.PermTeamApprovalsView
+	PermTeamApprovalsReview = permissions.PermTeamApprovalsReview
 
 	// Inference-scope
-	PermInferenceCall = "inference:call"
+	PermInferenceCall = permissions.PermInferenceCall
 )
