@@ -61,7 +61,7 @@ Every feature you add must have a row in `tests/contract/features.json`. This fi
 | `openapi` | Whether these routes appear in the served OpenAPI spec | `true` or `false` |
 | `client` | Every client method in the TS SDK that wraps these routes | `"listApiKeys"` |
 | `page` | The UI page path for this feature (or `null` if not UI-exposed) | `"/api-keys"` |
-| `nav` | The nav label key in `ui/src/constants/nav.ts` (or `null`) | `"nav.apiKeys"` |
+| `nav` | The nav label key in `ui/src/i18n/en.ts` and `it.ts` (or `null`) | `"nav.apiKeys"` |
 | `docs` | Path to the public docs page under `website/docs/` | `"configuration/api-keys.md"` |
 | `perm` | The coarse permission that gates the feature (or `null` if unauthenticated) | `"team:keys:create"` |
 | `gated` | Whether the feature requires a Purser license/enterprise flag | `false` |
@@ -78,14 +78,23 @@ Every feature you add must have a row in `tests/contract/features.json`. This fi
 
 ### The Completeness Meta-Test
 
-The contract test `TestManifestCoversEveryRegisteredRoute` runs every push (see [The Pre-Push Hook](#the-pre-push-hook)) and enforces:
+The contract tests run every push (see [The Pre-Push Hook](#the-pre-push-hook)) and together enforce every axis of the manifest. Each axis is enforced by the test that owns it:
+
+**`TestManifestCoversEveryRegisteredRoute`** (Go — `tests/contract/completeness_test.go`) enforces route coverage only:
 
 - **Every registered route is in the manifest** — or in the `exemptRoutes` list with a reason.
 - **Every route in the manifest is actually registered** in `server.go`.
-- **Routes marked `openapi: true` exist in the served OpenAPI spec** at `/api/v1/openapi.json`.
+
+**`ui/src/contract/features.contract.test.tsx`** (TypeScript) enforces the client/page/nav axes:
+
 - **Every `client` method exists** in the TS SDK.
 - **Every `page` path has a React page** in `ui/src/pages/`.
-- **Every `nav` label exists** in `ui/src/constants/nav.ts`.
+- **Every `nav` label exists** in both `ui/src/i18n/en.ts` and `ui/src/i18n/it.ts`.
+
+**`tests/contract/backend_test.go`** (Go) enforces the openapi/perm/docs axes:
+
+- **Routes marked `openapi: true` exist in the served OpenAPI spec** at `/api/v1/openapi.json`.
+- **Every `perm` value maps to a real permission** in the CP auth layer.
 - **Every `docs` path is a real file** in `website/docs/`.
 
 If you add a new route without a manifest row, your push will fail:
@@ -149,7 +158,7 @@ To avoid committing broken contract tests, you can install a local pre-push gate
 make install-hooks
 ```
 
-This installs a git hook at `.git/hooks/pre-push` that runs the fast contract tests before every push. If they fail, the push is blocked:
+This activates the hook by setting `core.hooksPath` to the versioned `tools/hooks/` directory — the hook runs from there on every push, not from a file copied into `.git/hooks/`. If the contract tests fail, the push is blocked:
 
 ```
 pre-push: contract (Go)…

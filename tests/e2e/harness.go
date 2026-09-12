@@ -69,7 +69,7 @@ type Stack struct {
 	gwPort int
 	gwEnv  []string
 
-	stopOnce sync.Once // makes Stop idempotent (t.Cleanup + defer s.Stop both call it)
+	stopOnce sync.Once  // makes Stop idempotent (t.Cleanup + defer s.Stop both call it)
 	t        *testing.T // registered for fatal-error reporting from Stop/JoinToken
 }
 
