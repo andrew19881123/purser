@@ -32,7 +32,7 @@ NFPM  := $(GOBIN)/nfpm
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-seed demo-agent dev-agent dev
+.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-seed demo-agent dev-agent dev status
 
 all: gen build
 
@@ -49,6 +49,7 @@ help:
 	@echo "  make demo-seed  Register a demo model in the running demo stack"
 	@echo "  make demo-stop  Stop the demo stack"
 	@echo "  make release Build stripped release binaries + stage dist/ (scripts/build-release.sh)"
+	@echo "  make status  Show stack health (CP, fleet, catalog, deployments)"
 	@echo "  make package-agent  Build the agent .deb + .rpm into dist/ (nfpm)"
 
 setup:
@@ -171,3 +172,7 @@ dev: build
 	PURSER_PKI_DIR=/tmp/purser-dev/pki \
 	PURSER_ENGINE_BACKEND=mock \
 	./bin/control-plane
+
+## status: Show stack health (CP, fleet, catalog, deployments)
+status:
+	@./tools/purser-status.sh

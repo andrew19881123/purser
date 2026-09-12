@@ -327,6 +327,39 @@ yourself via `POST /api/v1/apikeys`.
 
 ---
 
+## Checking stack health
+
+Run a one-glance overview of the full stack at any point:
+
+```bash
+make status
+```
+
+Or directly:
+
+```bash
+./tools/purser-status.sh
+```
+
+Output covers: Control Plane reachability, Gateway, Dashboard, fleet nodes (state
+and hardware), model catalog (fit check), active deployments, and CP-registered API
+keys.
+
+**Custom endpoints and scripting:**
+
+```bash
+# Point at a remote control plane
+PURSER_CP_URL=http://myserver:8080 PURSER_API_KEY=sk-... ./tools/purser-status.sh
+
+# Machine-readable JSON (no colour codes)
+./tools/purser-status.sh --json
+```
+
+If the Control Plane is unreachable the script exits cleanly with a hint — no
+Python traceback, no hanging curl.
+
+---
+
 ## See also
 
 - [Troubleshooting Agent Enrollment](troubleshoot-enrollment.md) — all enrollment failure modes
