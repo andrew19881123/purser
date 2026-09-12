@@ -1,226 +1,20 @@
-import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Badge,
-  Button,
   Card,
-  CopyButton,
   EmptyState,
   ErrorState,
-  Field,
   LoadingBlock,
-  Meter,
-  Modal,
   PageHeader,
-  useFieldId,
-  type Tone,
 } from '../components/ui';
 import {
   useApiKeys,
-  useCreateApiKey,
   useEnterpriseStatus,
-  useKeyUsage,
-  useRevokeApiKey,
   useUsageSummary,
 } from '../hooks/queries';
 import { useT, type TFunc } from '../i18n';
-import { formatTokenCount, relativeTime } from '../lib/format';
+import { formatTokenCount } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ApiKey, ApiKeyRole, ApiKeyWithSecret } from '../api/types';
-
-const ROLE_TONES: Record<ApiKeyRole, Tone> = {
-  admin: 'warning',
-  viewer: 'info',
-  inference: 'success',
-};
-
-function RoleBadge({ role, t }: { role: ApiKeyRole; t: TFunc }) {
-  const key = `settings.role.${role}` as const;
-  return <Badge tone={ROLE_TONES[role] ?? 'neutral'}>{t(key)}</Badge>;
-}
-
-function CreateKeyModal({
-  onClose,
-  onCreated,
-  t,
-}: {
-  onClose: () => void;
-  onCreated: (k: ApiKeyWithSecret) => void;
-  t: TFunc;
-}) {
-  const create = useCreateApiKey();
-  const [name, setName] = useState('');
-  const [team, setTeam] = useState('');
-  const [quota, setQuota] = useState('');
-  const [role, setRole] = useState<ApiKeyRole>('admin');
-  const nameId = useFieldId('kname');
-  const teamId = useFieldId('kteam');
-  const quotaId = useFieldId('kquota');
-  const roleId = useFieldId('krole');
-
-  const submit = () => {
-    if (!name.trim() || !team.trim()) return;
-    create.mutate(
-      { name: name.trim(), team: team.trim(), monthlyQuota: quota ? Number(quota) : null, role },
-      { onSuccess: (k) => onCreated(k) },
-    );
-  };
-
-  return (
-    <Modal
-      title={t('settings.create.title')}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            {t('action.cancel')}
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={create.isPending || !name.trim() || !team.trim()}>
-            {t('settings.create.submit')}
-          </Button>
-        </>
-      }
-    >
-      <Field label={t('settings.create.name')} htmlFor={nameId}>
-        <input id={nameId} className="input" value={name} onChange={(e) => setName(e.target.value)} />
-      </Field>
-      <Field label={t('settings.create.team')} htmlFor={teamId}>
-        <input id={teamId} className="input" value={team} onChange={(e) => setTeam(e.target.value)} />
-      </Field>
-      <Field
-        label={t('settings.create.role')}
-        htmlFor={roleId}
-        hint={t(`settings.role.${role}.hint`)}
-      >
-        <select
-          id={roleId}
-          className="input"
-          value={role}
-          onChange={(e) => setRole(e.target.value as ApiKeyRole)}
-        >
-          <option value="admin">{t('settings.role.admin')}</option>
-          <option value="viewer">{t('settings.role.viewer')}</option>
-          <option value="inference">{t('settings.role.inference')}</option>
-        </select>
-      </Field>
-      <Field label={t('settings.create.quota')} htmlFor={quotaId} hint={t('settings.create.quotaHint')}>
-        <input
-          id={quotaId}
-          className="input"
-          type="number"
-          min={0}
-          value={quota}
-          onChange={(e) => setQuota(e.target.value)}
-        />
-      </Field>
-    </Modal>
-  );
-}
-
-function CreatedKeyModal({ keyData, onClose, t }: { keyData: ApiKeyWithSecret; onClose: () => void; t: TFunc }) {
-  return (
-    <Modal
-      title={t('settings.created.title')}
-      onClose={onClose}
-      footer={
-        <Button variant="primary" onClick={onClose}>
-          {t('action.close')}
-        </Button>
-      }
-    >
-      <div className="notice notice--warning" role="alert">
-        {t('settings.created.warning')}
-      </div>
-      <div className="token-row">
-        <code className="token">{keyData.secret}</code>
-        <CopyButton value={keyData.secret} />
-      </div>
-    </Modal>
-  );
-}
-
-/** Sub-component so useKeyUsage is called once per row, avoiding hook-in-loop. */
-function KeyTokenUsageCell({ keyId, t }: { keyId: string; t: TFunc }) {
-  const { data, isLoading, isError } = useKeyUsage(keyId);
-  if (isLoading) return <span className="muted">{t('settings.usage.loading')}</span>;
-  if (isError || !data) return <span className="muted">{t('settings.usage.error')}</span>;
-  return (
-    <span className="token-usage" data-testid="key-token-usage">
-      {formatTokenCount(data.inputTokens)} in / {formatTokenCount(data.outputTokens)} out
-    </span>
-  );
-}
-
-function KeyRow({ apiKey, t }: { apiKey: ApiKey; t: TFunc }) {
-  const revoke = useRevokeApiKey();
-  const role: ApiKeyRole = apiKey.role ?? 'admin';
-  const [showRevokeModal, setShowRevokeModal] = useState(false);
-  return (
-    <>
-      <tr className={apiKey.revoked ? 'row--muted' : undefined}>
-        <th scope="row">{apiKey.name}</th>
-        <td>{apiKey.team}</td>
-        <td>
-          <code className="inline-code">{apiKey.prefix}…</code>
-        </td>
-        <td>
-          <RoleBadge role={role} t={t} />
-        </td>
-        <td className="usage-cell">
-          {apiKey.monthlyQuota === null ? (
-            <span className="muted">{t('settings.usage.unlimited')}</span>
-          ) : (
-            <Meter used={apiKey.usedThisMonth} total={apiKey.monthlyQuota} label={apiKey.name} unit="req" />
-          )}
-        </td>
-        <td>
-          <KeyTokenUsageCell keyId={apiKey.id} t={t} />
-        </td>
-        <td>{apiKey.lastUsedAt ? relativeTime(apiKey.lastUsedAt) : <span className="muted">{t('settings.usage.never')}</span>}</td>
-        <td>
-          <Badge tone={apiKey.revoked ? 'neutral' : 'success'}>
-            {apiKey.revoked ? t('settings.status.revoked') : t('settings.status.active')}
-          </Badge>
-        </td>
-        <td>
-          {!apiKey.revoked && (
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={revoke.isPending}
-              onClick={() => setShowRevokeModal(true)}
-            >
-              {t('settings.action.revoke')}
-            </Button>
-          )}
-        </td>
-      </tr>
-      {showRevokeModal && (
-        <Modal
-          title={t('settings.confirm.revokeTitle')}
-          onClose={() => setShowRevokeModal(false)}
-          footer={
-            <>
-              <Button variant="ghost" onClick={() => setShowRevokeModal(false)}>
-                {t('action.cancel')}
-              </Button>
-              <Button
-                variant="danger"
-                onClick={() => {
-                  revoke.mutate(apiKey.id);
-                  setShowRevokeModal(false);
-                }}
-              >
-                {t('settings.action.revoke')}
-              </Button>
-            </>
-          }
-        >
-          {t('settings.confirm.revokeBody', { name: apiKey.name })}
-        </Modal>
-      )}
-    </>
-  );
-}
 
 /** Above-the-fold quick stats: edition, active key count, total requests this month. */
 function QuickStatsBar() {
@@ -256,7 +50,6 @@ function QuickStatsBar() {
     </div>
   );
 }
-
 
 function UsageSummaryCard({ t }: { t: TFunc }) {
   const { data, isLoading, isError, error, refetch } = useUsageSummary();
@@ -382,9 +175,6 @@ function LicenseCard({ t }: { t: TFunc }) {
 
 export function SettingsPage() {
   const t = useT();
-  const { data, isLoading, isError, error, refetch } = useApiKeys();
-  const [showCreate, setShowCreate] = useState(false);
-  const [created, setCreated] = useState<ApiKeyWithSecret | null>(null);
 
   return (
     <div className="page">
@@ -392,62 +182,21 @@ export function SettingsPage() {
 
       <QuickStatsBar />
 
-      <Card
-        title={t('settings.keys.title')}
-        action={
-          <Button variant="primary" size="sm" onClick={() => setShowCreate(true)}>
-            {t('settings.keys.new')}
-          </Button>
-        }
-      >
-        {isLoading && <LoadingBlock />}
-        {isError && (
-          <ErrorState message={errorMessage(error, t, 'error.apikeys')} onRetry={() => refetch()} />
-        )}
-        {data && data.length === 0 && <EmptyState message={t('settings.keys.empty')} />}
-        {data && data.length > 0 && (
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th scope="col">{t('settings.col.name')}</th>
-                  <th scope="col">{t('settings.col.team')}</th>
-                  <th scope="col">{t('settings.col.key')}</th>
-                  <th scope="col">{t('settings.col.role')}</th>
-                  <th scope="col">{t('settings.col.usage')}</th>
-                  <th scope="col">{t('settings.col.tokens')}</th>
-                  <th scope="col">{t('settings.col.lastUsed')}</th>
-                  <th scope="col">{t('settings.col.status')}</th>
-                  <th scope="col">
-                    <span className="visually-hidden">{t('fleet.col.actions')}</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((k) => (
-                  <KeyRow key={k.id} apiKey={k} t={t} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {/* API Keys card — links to the dedicated /api-keys page */}
+      <Card title={t('settings.keys.title')}>
+        <p style={{ marginBottom: '0.75rem' }}>{t('settings.apikeys.manage.desc')}</p>
+        <Link
+          to="/api-keys"
+          className="btn btn--primary btn--sm link-btn"
+          data-testid="manage-api-keys-link"
+        >
+          {t('settings.apikeys.manage')}
+        </Link>
       </Card>
 
       <UsageSummaryCard t={t} />
 
       <LicenseCard t={t} />
-
-      {showCreate && (
-        <CreateKeyModal
-          t={t}
-          onClose={() => setShowCreate(false)}
-          onCreated={(k) => {
-            setShowCreate(false);
-            setCreated(k);
-          }}
-        />
-      )}
-      {created && <CreatedKeyModal keyData={created} onClose={() => setCreated(null)} t={t} />}
     </div>
   );
 }

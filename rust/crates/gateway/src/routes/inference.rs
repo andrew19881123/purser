@@ -64,7 +64,10 @@ impl Drop for StreamGauge {
 // Caps the number of concurrent reporting tasks so a slow Control Plane cannot
 // grow an unbounded task list; exceeding the limit silently drops the report
 // (usage accounting is best-effort, not transactional).
-static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(256)));
+// pub(crate) so the Anthropic path (anthropic.rs) shares the same semaphore
+// rather than having a separate, uncoordinated limit.
+pub(crate) static USAGE_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(256)));
 
 // Global bounded semaphore for inference audit emits — same rationale as the
 // usage semaphore: a slow Control Plane must not grow an unbounded task list.

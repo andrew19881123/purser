@@ -1,12 +1,16 @@
 /**
- * FleetPage — confirm-dialog hardening tests (H11, M3).
+ * FleetPage — overflow menu + confirm-dialog hardening tests (v0.6).
  *
  * Verifies:
- * 1. Drain button shows window.confirm before calling the mutation.
- * 2. Drain mutation is NOT called when the user cancels.
- * 3. Drain mutation IS called when the user confirms.
- * 4. Remove button opens the custom Modal instead of mutating immediately.
- * 5. Modal confirm calls remove.mutate with the correct node id.
+ * 1. Row click expands the node detail panel (accordion).
+ * 2. Row click again collapses it.
+ * 3. The ⋮ overflow menu button opens the action dropdown.
+ * 4. Drain → opens a Modal (NOT window.confirm).
+ * 5. Drain modal Cancel → no mutation.
+ * 6. Drain modal Confirm → drain.mutate called with node id.
+ * 7. Remove → opens the custom Modal.
+ * 8. Remove modal Cancel → no mutation.
+ * 9. Remove modal Confirm → remove.mutate called with node id.
  */
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { FleetPage } from '../FleetPage';
@@ -38,6 +42,7 @@ vi.mock('../../hooks/queries', () => ({
     remove: { mutate: removeMutate, isPending: false },
   }),
   useReconcilerStatus: () => ({ isLoading: false, isError: false, data: undefined }),
+  useSloCompliance: () => ({ isLoading: false, isError: false, data: null }),
 }));
 
 // ---- helpers ----------------------------------------------------------------
@@ -70,6 +75,13 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <I18nProvider>{children}</I18nProvider>;
 }
 
+// Helper: open the ⋮ overflow menu for the one node in the test.
+function openOverflowMenu() {
+  // The aria-label is "Actions node-1" — matches the button we added.
+  const btn = screen.getByRole('button', { name: /actions/i });
+  fireEvent.click(btn);
+}
+
 // ---- setup ------------------------------------------------------------------
 
 beforeEach(() => {
@@ -78,51 +90,117 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-// ---- tests ------------------------------------------------------------------
+// ---- row expand / collapse --------------------------------------------------
 
-describe('FleetPage — drain confirm', () => {
-  it('drain_node_shows_confirm_before_mutating', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+describe('FleetPage — row expand / collapse', () => {
+  it('clicking_a_row_expands_the_node_detail_panel', () => {
     render(<FleetPage />, { wrapper: Wrapper });
 
-    fireEvent.click(screen.getByText('Drain'));
+    // Detail panel not visible initially.
+    expect(screen.queryByText('Node ID')).not.toBeInTheDocument();
 
-    expect(window.confirm).toHaveBeenCalledOnce();
-    expect(drainMutate).not.toHaveBeenCalled();
+    // Click the node-cell <th> (has aria-expanded).
+    const rowHeader = screen.getByRole('rowheader', { name: /test-node/i });
+    fireEvent.click(rowHeader);
+
+    // Detail panel should now be visible.
+    expect(screen.getByText('Node ID')).toBeInTheDocument();
   });
 
-  it('drain_node_calls_mutate_when_user_confirms', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('clicking_expanded_row_again_collapses_the_detail_panel', () => {
     render(<FleetPage />, { wrapper: Wrapper });
 
-    fireEvent.click(screen.getByText('Drain'));
+    const rowHeader = screen.getByRole('rowheader', { name: /test-node/i });
+    fireEvent.click(rowHeader);
+    expect(screen.getByText('Node ID')).toBeInTheDocument();
 
-    expect(window.confirm).toHaveBeenCalledOnce();
-    expect(drainMutate).toHaveBeenCalledWith('node-1');
+    // Second click collapses it.
+    fireEvent.click(rowHeader);
+    expect(screen.queryByText('Node ID')).not.toBeInTheDocument();
   });
 });
 
-describe('FleetPage — remove node modal', () => {
-  it('remove_node_opens_modal_without_mutating', () => {
+// ---- overflow menu ----------------------------------------------------------
+
+describe('FleetPage — overflow menu', () => {
+  it('overflow_menu_opens_on_click', () => {
     render(<FleetPage />, { wrapper: Wrapper });
 
-    // Click the remove button in the table row
-    const allRemoveButtons = screen.getAllByText('Remove');
-    fireEvent.click(allRemoveButtons[0]);
+    // Before click: dropdown items should not be visible.
+    expect(screen.queryByRole('menuitem', { name: /drain/i })).not.toBeInTheDocument();
 
-    // Modal should be visible
+    openOverflowMenu();
+
+    expect(screen.getByRole('menuitem', { name: /drain/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /restart/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /remove/i })).toBeInTheDocument();
+  });
+});
+
+// ---- drain ------------------------------------------------------------------
+
+describe('FleetPage — drain confirm modal', () => {
+  it('drain_opens_modal_via_overflow_menu_without_mutating', () => {
+    render(<FleetPage />, { wrapper: Wrapper });
+
+    openOverflowMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /drain/i }));
+
+    // Modal must appear.
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Drain node?')).toBeInTheDocument();
+
+    // Mutation must NOT have fired yet.
+    expect(drainMutate).not.toHaveBeenCalled();
+  });
+
+  it('drain_modal_cancel_closes_without_mutating', () => {
+    render(<FleetPage />, { wrapper: Wrapper });
+
+    openOverflowMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /drain/i }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Cancel'));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(drainMutate).not.toHaveBeenCalled();
+  });
+
+  it('drain_modal_confirm_calls_mutate_with_node_id', () => {
+    render(<FleetPage />, { wrapper: Wrapper });
+
+    openOverflowMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /drain/i }));
+
+    const modal = screen.getByRole('dialog');
+    // Click the "Drain" button inside the modal footer.
+    fireEvent.click(within(modal).getByRole('button', { name: /drain/i }));
+
+    expect(drainMutate).toHaveBeenCalledWith('node-1');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+// ---- remove -----------------------------------------------------------------
+
+describe('FleetPage — remove node modal', () => {
+  it('remove_opens_modal_via_overflow_menu_without_mutating', () => {
+    render(<FleetPage />, { wrapper: Wrapper });
+
+    openOverflowMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /remove/i }));
+
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText('Remove node from fleet?')).toBeInTheDocument();
-
-    // Mutation must NOT have fired yet
     expect(removeMutate).not.toHaveBeenCalled();
   });
 
-  it('remove_node_cancel_closes_modal_without_mutating', () => {
+  it('remove_modal_cancel_closes_without_mutating', () => {
     render(<FleetPage />, { wrapper: Wrapper });
 
-    const allRemoveButtons = screen.getAllByText('Remove');
-    fireEvent.click(allRemoveButtons[0]);
+    openOverflowMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /remove/i }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Cancel'));
@@ -131,14 +209,14 @@ describe('FleetPage — remove node modal', () => {
     expect(removeMutate).not.toHaveBeenCalled();
   });
 
-  it('remove_node_confirm_calls_mutate_with_node_id', () => {
+  it('remove_modal_confirm_calls_mutate_with_node_id', () => {
     render(<FleetPage />, { wrapper: Wrapper });
 
-    const allRemoveButtons = screen.getAllByText('Remove');
-    fireEvent.click(allRemoveButtons[0]);
+    openOverflowMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /remove/i }));
 
     const modal = screen.getByRole('dialog');
-    fireEvent.click(within(modal).getByText('Remove'));
+    fireEvent.click(within(modal).getByRole('button', { name: /remove/i }));
 
     expect(removeMutate).toHaveBeenCalledWith('node-1');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

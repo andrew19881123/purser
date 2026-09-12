@@ -4,7 +4,9 @@
 //! [`purser_gateway::config`]), loads the auth policy, quota thresholds and
 //! upstream timeouts, installs the Prometheus recorder, and serves the
 //! OpenAI-compatible API. The routing table starts **empty**: the Control Plane
-//! populates it at runtime via `PUT /api/v1/routes`. The gateway serves
+//! populates it at runtime via `PUT /api/v1/routes` and re-pushes the desired
+//! set on a reconcile interval, so a gateway restart refills the table on its
+//! own rather than needing an operator to re-deploy a model. The gateway serves
 //! plaintext HTTP; TLS is terminated upstream at the ingress / load balancer,
 //! consistent with Purser's trusted-LAN model.
 
@@ -36,16 +38,16 @@ async fn main() -> ExitCode {
         }
     };
 
-    let auth = AuthConfig::from_env();
+    let auth = match AuthConfig::from_env() {
+        Ok(auth) => auth,
+        Err(err) => {
+            eprintln!("purser-gateway: authentication configuration error: {err}");
+            return ExitCode::from(2);
+        }
+    };
     let quota = QuotaConfig::from_env();
     let http = HttpClient::from_env();
 
-    if auth.configured_keys() == 0 {
-        tracing::warn!(
-            "no API keys configured (PURSER_GATEWAY_API_KEYS unset): running in OPEN DEV MODE, \
-             accepting any non-empty bearer token"
-        );
-    }
     if auth.internal_token.is_none() {
         tracing::warn!(
             "no management token configured (PURSER_GATEWAY_INTERNAL_TOKEN unset): route-sync \

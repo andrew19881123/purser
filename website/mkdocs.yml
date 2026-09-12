@@ -56,6 +56,7 @@ nav:
   - Getting Started:
     - Quickstart (Helm): getting-started/quickstart.md
     - Multi-Node Inference (LAN): getting-started/multi-node-inference.md
+    - CPU-only Inference (No GPU): getting-started/cpu-inference.md
     - Architecture: getting-started/architecture.md
     - Deploy Your First Model: getting-started/deploy-model.md
   - Guides:
@@ -67,12 +68,14 @@ nav:
   - FAQ: faq.md
   - Benchmarks: benchmarks/index.md
   - Install:
+    - Local Dev Setup (No Docker): install/local-dev.md
     - Kubernetes (Helm): install/kubernetes.md
     - Kubernetes Enterprise (CP + DP): install/kubernetes-enterprise.md
     - ARM64 Support (Apple Silicon, Graviton): install/arm64.md
     - Linux Agent (.deb/.rpm): install/linux-agent.md
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md
+    - Troubleshooting Enrollment: install/troubleshoot-enrollment.md
   - Configuration:
     - purser.yaml (Declarative Config): configuration/purser-yaml.md
     - API Key Lifecycle: configuration/api-keys.md

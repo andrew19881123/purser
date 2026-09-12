@@ -208,6 +208,28 @@ requests — the same behaviour as when the feature is not licensed. This means:
 
 ---
 
+## Dashboard UI (v0.6)
+
+The operator dashboard exposes a **Policies** page at `/platform/policies` with a
+developer-focused interface for managing Rego policies without leaving the browser:
+
+- **Policy list** — name, status badge ("Enforced" / "Disabled"), description
+  (derived from the first `#` comment line), and creation date.
+- **Source view** — click "View source" on any policy to open an inline code panel
+  with line numbers and a dark editor background. The panel closes on the same button
+  click.
+- **Enable / Disable toggle** — changes take effect immediately; the OPA engine
+  reloads atomically.
+- **Upload modal** — paste or type Rego directly into a code-styled textarea. The
+  server validates the Rego at compile time before storing it (returns 400 for invalid
+  syntax).
+
+The Policies page shows an enterprise upgrade prompt when the control plane returns
+`license_required`. No partial UI is rendered — the page shows only the prompt until
+a valid Enterprise key is configured.
+
+---
+
 ## Operational notes
 
 - Policies are compiled at `PUT` time; a bad compile never overwrites the

@@ -252,6 +252,14 @@ async fn strict_auth_rejects_unknown_key_but_accepts_known() {
 // route-sync contract  (PUT/DELETE /api/v1/routes)
 // ---------------------------------------------------------------------------
 
+fn get_routes(internal_token: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri("/api/v1/routes");
+    if let Some(token) = internal_token {
+        builder = builder.header("X-Purser-Internal-Token", token);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
 fn put_route(bearer_token: Option<&str>, payload: &Value) -> Request<Body> {
     let mut builder = Request::builder()
         .method("PUT")
@@ -283,6 +291,115 @@ async fn route_sync_put_requires_internal_token() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+// `GET /api/v1/routes` — the read side of route-sync. The Control Plane's route
+// reconciler uses it to converge the table, and it is how an operator confirms
+// that a restarted Gateway has recovered.
+#[tokio::test]
+async fn route_sync_get_lists_the_held_table() {
+    let state = AppState::new().with_auth(AuthConfig::allow_any_dev(Some("secret".to_string())));
+    let token = "secret";
+
+    // A Gateway that just restarted holds nothing: this is the state that used
+    // to be invisible (and unrecoverable) from the control plane.
+    let response = app(state.clone())
+        .oneshot(get_routes(Some(token)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["object"], "list");
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+
+    // After route sync the table is visible with the full contract payload.
+    let active = json!({
+        "model_id":"llama-3-8b","endpoint":"http://10.0.0.4:8080",
+        "deployment_id":"dep-9","quantization":"Q4_K_M","state":"active"
+    });
+    let draining = json!({
+        "model_id":"llama-1b","endpoint":"http://10.0.0.5:8080",
+        "deployment_id":"dep-10","quantization":"Q4_0","state":"draining"
+    });
+    for payload in [&active, &draining] {
+        let response = app(state.clone())
+            .oneshot(put_route(Some(token), payload))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let body = body_json(
+        app(state.clone())
+            .oneshot(get_routes(Some(token)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    // BTreeMap ordering keeps the listing deterministic.
+    assert_eq!(data[0]["model_id"], "llama-1b");
+    assert_eq!(data[0]["state"], "draining");
+    assert_eq!(data[1]["model_id"], "llama-3-8b");
+    assert_eq!(data[1]["endpoint"], "http://10.0.0.4:8080");
+    assert_eq!(data[1]["deployment_id"], "dep-9");
+    assert_eq!(data[1]["quantization"], "Q4_K_M");
+    assert_eq!(data[1]["state"], "active");
+
+    // A deleted route disappears from the listing.
+    let del = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/routes/llama-1b")
+        .header("X-Purser-Internal-Token", token)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app(state.clone()).oneshot(del).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let body = body_json(app(state).oneshot(get_routes(Some(token))).await.unwrap()).await;
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0]["model_id"], "llama-3-8b");
+}
+
+#[tokio::test]
+async fn route_sync_get_requires_internal_token() {
+    // Missing header -> 401.
+    let response = app(AppState::with_mock())
+        .oneshot(get_routes(None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Wrong header -> 403.
+    let response = app(AppState::with_mock())
+        .oneshot(get_routes(Some("wrong-secret")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn management_index_advertises_the_route_listing() {
+    let body = body_json(
+        app(AppState::with_mock())
+            .oneshot(get("/api/v1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let endpoints: Vec<String> = body["endpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        endpoints.iter().any(|e| e == "GET /api/v1/routes"),
+        "index endpoints = {endpoints:?}"
+    );
 }
 
 #[tokio::test]

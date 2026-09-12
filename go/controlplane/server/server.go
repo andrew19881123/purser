@@ -1426,6 +1426,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
 	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
+	s.mux.HandleFunc("POST /api/v1/models/import/cpu", s.handleImportCPUModel)
 	s.mux.HandleFunc("GET /api/v1/models/{id}", s.handleGetModel)
 	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)

@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 // Mock hooks/queries before importing ChargebackPage.
 vi.mock('../hooks/queries', () => ({
   useBillingReport: vi.fn(),
+  useBillingForecast: vi.fn(),
 }));
 
 // Mock i18n so we can match raw key strings in assertions.
@@ -53,8 +54,11 @@ const MOCK_REPORT = {
   ],
 };
 
-// Typed access to the mocked hook.
-const mq = queries as unknown as { useBillingReport: ReturnType<typeof vi.fn> };
+// Typed access to the mocked hooks.
+const mq = queries as unknown as {
+  useBillingReport: ReturnType<typeof vi.fn>;
+  useBillingForecast: ReturnType<typeof vi.fn>;
+};
 
 function mkQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -74,6 +78,12 @@ beforeEach(() => {
     data: MOCK_REPORT,
     isLoading: false,
     error: null,
+  });
+  // Billing forecast is enterprise-gated; return 402 in tests to hide the section.
+  mq.useBillingForecast.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    error: Object.assign(new Error('Enterprise license required'), { status: 402 }),
   });
 });
 

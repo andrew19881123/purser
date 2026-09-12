@@ -18,18 +18,25 @@ import type { ChatMessage } from '../api/types';
 const DEFAULT_MODEL = 'qwen3-moe-235b';
 const SYSTEM_PROMPT = 'You are a helpful assistant running on a private Purser cluster.';
 const KEY_STORAGE = 'purser.gatewayKey';
+const DEMO_KEY = 'demo-key-12345';
 
 export function PlaygroundPage() {
   const t = useT();
   const deployments = useDeployments();
 
-  // Gateway Bearer key (persisted locally); rebuilds the chat client on change.
-  const [apiKey, setApiKey] = useState<string>(() => sessionStorage.getItem(KEY_STORAGE) ?? '');
+  // Gateway Bearer key (persisted locally); pre-fill with demo key when nothing is stored.
+  const [apiKey, setApiKey] = useState<string>(() => sessionStorage.getItem(KEY_STORAGE) ?? DEMO_KEY);
   const chat = useMemo(() => makeChat(apiKey.trim() || undefined), [apiKey]);
   const gatewayModels = useGatewayModels(chat);
 
   // Model options: prefer the Gateway's served list (GET /v1/models); fall back
   // to the models of the active deployments if the Gateway list is unavailable.
+  //
+  // The picker lists MODELS, not deployments. The Gateway's route table is keyed
+  // by model id — N deployments of one model are ONE route it load-balances
+  // across — so a model deployed three times must render one option, not three.
+  // Both sources are de-duplicated with a Set, which preserves insertion order,
+  // so the list cannot reorder between renders (same idiom as mock/wiring.ts).
   const deploymentModels = useMemo(
     () =>
       (deployments.data ?? [])
@@ -39,7 +46,8 @@ export function PlaygroundPage() {
   );
   const activeModels = useMemo(() => {
     const served = (gatewayModels.data ?? []).map((m) => m.id);
-    return served.length > 0 ? served : deploymentModels;
+    const source = served.length > 0 ? served : deploymentModels;
+    return [...new Set(source)];
   }, [gatewayModels.data, deploymentModels]);
 
   const [model, setModel] = useState(DEFAULT_MODEL);
@@ -167,14 +175,14 @@ export function PlaygroundPage() {
           <Field
             label={t('playground.apikey')}
             htmlFor={keyFieldId}
-            hint={`Sent as Authorization: Bearer to the Gateway.${import.meta.env.DEV ? ' Ignored in mock mode.' : ''}`}
+            hint={t('playground.apikeyHelp')}
           >
             <input
               id={keyFieldId}
               className="input"
               type="password"
               autoComplete="off"
-              placeholder="sk-purser-…"
+              placeholder={DEMO_KEY}
               value={apiKey}
               onChange={(e) => onApiKeyChange(e.target.value)}
             />

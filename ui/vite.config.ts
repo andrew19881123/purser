@@ -12,6 +12,12 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   base: './',
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8080',   // native CP
+      '/v1': 'http://localhost:3000',    // gateway via nginx proxy
+    },
+  },
   build: {
     outDir: 'dist',
     // es2022 so the top-level `await import(...)` in src/api/client.ts (which

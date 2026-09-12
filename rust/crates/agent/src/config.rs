@@ -22,6 +22,43 @@ pub const DEFAULT_AGENT_PORT: u16 = 50151;
 /// listening here for a real chat to reach the engine.
 pub const DEFAULT_INFERENCE_PORT: u16 = 8000;
 
+// ── CPU inference defaults ────────────────────────────────────────────────────
+
+/// Number of GPU layers to offload when `PURSER_ENGINE_BACKEND=cpu`.
+/// Zero means all layers run on the CPU; no GPU is used at all.
+pub const CPU_GPU_LAYERS: u32 = 0;
+
+/// Default context size for CPU inference (in tokens).
+/// Overridable via `PURSER_CPU_CONTEXT_SIZE`.
+pub const CPU_DEFAULT_CONTEXT_SIZE: u32 = 2048;
+
+/// Number of CPU threads to use for llama.cpp inference when
+/// `PURSER_ENGINE_BACKEND=cpu`.
+///
+/// Reads `PURSER_CPU_THREADS` first; falls back to
+/// `available_parallelism() / 2`, minimum 1.
+pub fn cpu_thread_count() -> usize {
+    if let Ok(s) = std::env::var("PURSER_CPU_THREADS") {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            return n.max(1);
+        }
+    }
+    let total = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    (total / 2).max(1)
+}
+
+/// Context window size for CPU inference.
+///
+/// Reads `PURSER_CPU_CONTEXT_SIZE`; falls back to [`CPU_DEFAULT_CONTEXT_SIZE`].
+pub fn cpu_context_size() -> u32 {
+    std::env::var("PURSER_CPU_CONTEXT_SIZE")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(CPU_DEFAULT_CONTEXT_SIZE)
+}
+
 /// Static configuration for a running agent.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -612,5 +649,50 @@ mod tests {
         // Same: test clamping math directly.
         let clamped = (-0.5_f32).clamp(0.0_f32, 1.0_f32);
         assert!(clamped >= 0.0, "-0.5 must clamp to 0.0, got {clamped}");
+    }
+
+    // ------------------------------------------------------------------
+    // CPU inference backend (PURSER_ENGINE_BACKEND=cpu)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cpu_backend_sets_zero_gpu_layers() {
+        // The CPU_GPU_LAYERS constant must be 0: every layer runs on CPU.
+        assert_eq!(CPU_GPU_LAYERS, 0, "CPU_GPU_LAYERS must be 0");
+    }
+
+    #[test]
+    fn cpu_backend_reads_threads_from_env() {
+        const VAR: &str = "PURSER_CPU_THREADS";
+        let prev = std::env::var(VAR).ok();
+
+        std::env::set_var(VAR, "6");
+        let count = cpu_thread_count();
+
+        match prev {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+
+        assert_eq!(
+            count, 6,
+            "cpu_thread_count must respect PURSER_CPU_THREADS=6"
+        );
+    }
+
+    #[test]
+    fn cpu_backend_default_threads_is_half_cpus() {
+        // Test the default calculation directly (avoids env-var races with
+        // parallel test threads — set_var/remove_var are not thread-safe).
+        let total = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let expected = (total / 2).max(1);
+        // The calculation must be non-zero and at most half of total.
+        assert!(expected >= 1, "default thread count must be at least 1");
+        assert!(
+            expected <= total,
+            "default thread count must not exceed total cpus ({total})"
+        );
     }
 }

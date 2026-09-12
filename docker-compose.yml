@@ -1,5 +1,11 @@
-# Purser demo stack — mock engine (DEMO ONLY, no GPU required)
-# Usage: docker compose up
+# Purser demo stack
+# Usage:
+#   docker compose up                    # default profile — mock / no inference
+#   docker compose --profile full up     # full profile — real CPU inference via TinyLlama 1.1B
+#
+# Default profile: postgres, control-plane, gateway, ui, proxy (five services).
+# Full profile adds:  model-init (one-shot download), agent (purser-agent + llamacpp).
+#
 # Everything served from ONE port via nginx reverse proxy:
 #   http://localhost:3000          → UI Dashboard
 #   http://localhost:3000/api/v1   → Control Plane API
@@ -11,9 +17,14 @@
 # For SQLite-only local development, set PURSER_DB_DRIVER=sqlite and
 # PURSER_DB=/data/registry.db, then remove the postgres depends_on / env vars.
 #
-# Engine backend: PURSER_ENGINE_BACKEND=mock is set here for the demo stack
-# (no GPU needed). Production agents use llamacpp (the Helm chart default).
-# Mock returns canned responses only — do NOT use in production.
+# Full-profile inference:
+#   model-init downloads TinyLlama 1.1B Q4_K_M (637 MB) and llama-server on first
+#   run; subsequent runs skip the download if the files are already in the volumes.
+#   Set PURSER_SKIP_MODEL_DOWNLOAD=1 to skip all downloads (pre-seeded volumes).
+#   The agent service requires purser-agent:v0.6-llamacpp — build it first:
+#     sudo docker build -f deploy/docker/Dockerfile.agent \
+#       -t purser-agent:v0.6-llamacpp .
+#   Then seed and deploy: make demo-seed
 
 services:
   # PostgreSQL — production database for the control plane.
@@ -33,16 +44,21 @@ services:
       retries: 5
 
   control-plane:
-    image: ghcr.io/andrew19881123/purser-control-plane:latest
+    image: purser-control-plane:v0.6-local
     environment:
-      PURSER_DB_DRIVER: postgres
-      PURSER_DB_URL: "postgres://purser:purser@postgres:5432/purser?sslmode=disable"
+      PURSER_DB_DRIVER: sqlite
+      PURSER_DB: /data/purser-registry.db
       PURSER_ADDR: ":8080"
       PURSER_GRPC_ADDR: ":9443"
       PURSER_PKI_DIR: /data/pki
       PURSER_ENGINE_BACKEND: mock
       PURSER_GATEWAY_ADDR: "http://gateway:8081"
       PURSER_GATEWAY_TOKEN: demo-internal-token
+      # Allow the orchestrator to dial agents over plain gRPC (no mTLS inside
+      # the compose network). Required for the --profile full agent service.
+      PURSER_AGENT_GRPC_INSECURE: "true"
+    ports:
+      - "9443:9443"   # expose gRPC for native agents
     volumes:
       - purser-pki:/data
     depends_on:
@@ -56,7 +72,7 @@ services:
       start_period: 5s
 
   gateway:
-    image: ghcr.io/andrew19881123/purser-gateway:latest
+    image: purser-gateway:v0.6-local
     environment:
       PURSER_GATEWAY_HOST: "0.0.0.0"
       PURSER_GATEWAY_PORT: "8081"
@@ -67,7 +83,7 @@ services:
       - control-plane
 
   ui:
-    image: ghcr.io/andrew19881123/purser-ui:latest
+    image: purser-ui:v0.6-local
     environment:
       # Same-origin paths — proxied by the 'proxy' service below
       PURSER_API_BASE_URL: "/api/v1"
@@ -88,8 +104,60 @@ services:
       - control-plane
       - gateway
 
+  # ── Full-profile services (real CPU inference) ──────────────────────────────
+  # Start with: docker compose --profile full up
+  # Build the agent image first: sudo docker build -f deploy/docker/Dockerfile.agent \
+  #   -t purser-agent:v0.6-llamacpp .
+
+  # One-shot init container: downloads TinyLlama 1.1B Q4_K_M and llama-server
+  # into named volumes on first run; skips if files already exist.
+  # Set PURSER_SKIP_MODEL_DOWNLOAD=1 to skip the 637 MB download entirely.
+  model-init:
+    profiles: [full]
+    image: alpine:3.20
+    command: >
+      sh -c "apk add --no-cache wget >/dev/null 2>&1 && sh /scripts/model-init.sh"
+    environment:
+      PURSER_SKIP_MODEL_DOWNLOAD: ${PURSER_SKIP_MODEL_DOWNLOAD:-0}
+    volumes:
+      - purser-models:/models
+      - purser-llama-bin:/llama-bin
+      - ./deploy/docker/model-init.sh:/scripts/model-init.sh:ro
+    restart: "no"
+
+  # Purser agent with real llama.cpp inference backend (CPU-only, no GPU needed).
+  # Enrolls automatically via the control plane's RegistrationService on :9443.
+  # agent-entrypoint.sh auto-mints a join token on startup (no OIDC configured
+  # in the demo stack, so POST /api/v1/join-token is unauthenticated).
+  agent:
+    profiles: [full]
+    image: purser-agent:v0.6-llamacpp
+    environment:
+      PURSER_CONTROL_PLANE_ADDR: "http://control-plane:9443"
+      PURSER_CP_HTTP_ADDR: "http://control-plane:8080"
+      PURSER_ENGINE_BACKEND: llamacpp
+      PURSER_LLAMACPP_BIN: /llama-bin
+      PURSER_LLAMACPP_MODEL_DIR: /models
+      # CPU-only: ngl=0 offloads nothing to GPU (no GPU in the demo container).
+      PURSER_LLAMACPP_NGL: "0"
+      PURSER_CPU_THREADS: "2"
+      # Plain gRPC — no mTLS inside the compose network.
+      PURSER_AGENT_GRPC_INSECURE: "true"
+      PURSER_DISK_FREE_WARN_GB: "0.5"
+    volumes:
+      - purser-models:/models
+      - purser-llama-bin:/llama-bin
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+      control-plane:
+        condition: service_healthy
+
 volumes:
   # PKI CA key/cert persist on a dedicated volume (no DB data here when using postgres).
   purser-pki:
   # PostgreSQL data volume.
   postgres_data:
+  # Full-profile volumes: model weights and llama-server binary + .so files.
+  purser-models:
+  purser-llama-bin:

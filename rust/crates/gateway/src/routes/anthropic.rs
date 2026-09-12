@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::inference::USAGE_SEMAPHORE;
+
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, FromRef, FromRequestParts, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -1097,6 +1099,12 @@ fn to_axum_status(status: reqwest::StatusCode) -> axum::http::StatusCode {
 }
 
 /// Fire-and-forget usage report to the Control Plane (mirrors inference.rs).
+///
+/// Bounded by [`USAGE_SEMAPHORE`] (shared with the OpenAI path): at most 256
+/// reporting tasks can be in-flight simultaneously. When the semaphore is
+/// exhausted the report is dropped with a debug log — usage accounting is
+/// best-effort, not transactional, and an unbounded task list under a slow
+/// Control Plane is a memory-exhaustion vector.
 fn spawn_usage_report(
     client: reqwest::Client,
     cp_url: Arc<String>,
@@ -1106,22 +1114,35 @@ fn spawn_usage_report(
     input_tokens: u64,
     output_tokens: u64,
 ) {
-    tokio::spawn(async move {
-        let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
-        let body = json!({
-            "api_key_id": api_key_id,
-            "model_id":   model_id,
-            "input_tokens":  input_tokens,
-            "output_tokens": output_tokens,
-        });
-        let mut builder = client.post(&url).json(&body);
-        if let Some(tok) = internal_token.as_deref() {
-            builder = builder.header("X-Purser-Internal-Token", tok);
+    match USAGE_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit; // released when the task completes
+                let url = format!("{}/api/v1/usage", cp_url.trim_end_matches('/'));
+                let body = json!({
+                    "api_key_id": api_key_id,
+                    "model_id":   model_id,
+                    "input_tokens":  input_tokens,
+                    "output_tokens": output_tokens,
+                });
+                let mut builder = client.post(&url).json(&body);
+                if let Some(tok) = internal_token.as_deref() {
+                    builder = builder.header("X-Purser-Internal-Token", tok);
+                }
+                if let Err(e) = builder.send().await {
+                    tracing::debug!(
+                        error = %e,
+                        "Anthropic path: usage report failed (fire-and-forget)"
+                    );
+                }
+            });
         }
-        if let Err(e) = builder.send().await {
-            tracing::debug!(error = %e, "Anthropic path: usage report failed (fire-and-forget)");
+        Err(_) => {
+            tracing::debug!(
+                "usage semaphore full; dropping usage report for model {model_id} (Anthropic path)"
+            );
         }
-    });
+    }
 }
 
 // ---------------------------------------------------------------------------

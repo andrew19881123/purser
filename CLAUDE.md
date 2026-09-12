@@ -151,6 +151,12 @@ These capture the WHY behind non-obvious decisions, not derivable from the code.
   (old path); the CI workflow works around this with a symlink.
 - `docs/postmortems/ghcr_visibility.md` — new GHCR packages start private;
   the PATCH API returns 404 for user-owned packages — set public via the UI.
+- `docs/postmortems/demo_stack_fragility.md` — the **Gateway's route table is
+  in-memory and push-only from the control plane**: a Gateway restart drops every
+  route and inference 503s until someone re-deploys. Also: a **single-file Docker
+  bind mount pins the inode**, so editing a mounted config silently does not apply
+  (`nginx -s reload` won't help; `docker restart` will) — and `docker compose
+  config` is a one-second syntax check worth running after any compose edit.
 - `docs/postmortems/macos_case_collision.md` — on macOS/APFS `enterprise/LICENSE`
   and `enterprise/license/` collide, so `git status` permanently shows a phantom
   ` D enterprise/LICENSE`. **Never `git add -A` / `git add .` / `git commit -a` /

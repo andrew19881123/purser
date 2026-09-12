@@ -11,7 +11,9 @@
 //! client with minimal buffering. It authenticates API keys, enforces per-tenant
 //! quota/rate-limits with backpressure, and exposes Prometheus metrics. The
 //! Control Plane keeps the routing table fresh out-of-band via the management
-//! plane (`PUT/DELETE /api/v1/routes`).
+//! plane (`PUT/GET/DELETE /api/v1/routes`): because the table lives in memory
+//! only, the Control Plane re-pushes the desired route set periodically, so a
+//! Gateway restart recovers without operator action.
 //!
 //! ## Layout
 //! - [`config`] — explicit bind config (plaintext; TLS terminated upstream).

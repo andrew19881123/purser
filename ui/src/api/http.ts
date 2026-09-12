@@ -27,11 +27,14 @@ import type {
   AuditEntry,
   AuditLog,
   Backend,
+  BillingForecastResponse,
   BillingReport,
   BillingSummary,
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  DataPlane,
+  DataPlaneWithToken,
   DeployOverrides,
   Deployment,
   DeploymentApproval,
@@ -56,15 +59,24 @@ import type {
   NodeView,
   Organization,
   PerfEstimate,
+  PlatformUser,
   PlanPreviewResult,
+  PoliciesResponse,
+  Policy,
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
+  ServiceAccount,
+  ServiceAccountWithSecret,
+  SloApiResponse,
+  SloComplianceResponse,
   Team,
   TeamMember,
   UsageSummary,
+  WhatIfRequest,
+  WhatIfResult,
 } from './types';
-import type { CreateApiKeyInput, PurserApi } from './client';
+import type { CreateApiKeyInput, CreateDataPlaneInput, CreateServiceAccountInput, PurserApi } from './client';
 
 // --- error type -------------------------------------------------------------
 
@@ -183,13 +195,35 @@ const num = (v: unknown, d = 0): number => (typeof v === 'number' && isFinite(v)
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
 const bool = (v: unknown, d = false): boolean => (typeof v === 'boolean' ? v : d);
 
+/** Normalize a proto-style UPPER_CASE enum string to its short lowercase form.
+ *  e.g. "NODE_STATE_READY" → "ready", "BACKEND_CPU" → "cpu", "OS_LINUX" → "linux".
+ *  If the value already matches a known lowercase form it is returned unchanged.
+ *  Falls back to returning the whole lowercased string (never throws). */
+function normalizeEnumStr(value: unknown, known: readonly string[]): string {
+  if (typeof value !== 'string') return '';
+  if (known.includes(value)) return value;
+  // Already lowercase but with prefix stripped — try direct lower match first.
+  const lower = value.toLowerCase();
+  if (known.includes(lower)) return lower;
+  // Proto enum format: PREFIX_VALUE or PREFIX_TYPE_VALUE
+  // Strip leading "word_" segments until we find a known value.
+  const parts = lower.split('_');
+  for (let i = 1; i < parts.length; i++) {
+    const candidate = parts.slice(i).join('_');
+    if (known.includes(candidate)) return candidate;
+  }
+  return lower;
+}
+
 function normalizePerf(raw: unknown): PerfEstimate {
   const p = (raw ?? {}) as Record<string, unknown>;
   return {
-    decodeTokSMin: num(p.decodeTokSMin),
-    decodeTokSMax: num(p.decodeTokSMax),
-    prefillTokSMin: num(p.prefillTokSMin),
-    prefillTokSMax: num(p.prefillTokSMax),
+    // The Go API emits decodeMinTokS/decodeMaxTokS; the proto canonical form is
+    // decodeTokSMin/decodeTokSMax. Accept both so the normalizer is shape-tolerant.
+    decodeTokSMin: num(p.decodeTokSMin ?? p.decodeMinTokS),
+    decodeTokSMax: num(p.decodeTokSMax ?? p.decodeMaxTokS),
+    prefillTokSMin: num(p.prefillTokSMin ?? p.prefillMinTokS),
+    prefillTokSMax: num(p.prefillTokSMax ?? p.prefillMaxTokS),
     headroomGb: num(p.headroomGb),
   };
 }
@@ -226,9 +260,14 @@ function normalizePlan(raw: unknown): DeploymentPlan {
   };
 }
 
+const NODE_LOAD_STATES = ['loading', 'ready', 'running', 'degraded'] as const;
+
 function normalizeNodeStatus(raw: unknown): NodeLoadStatus {
   const s = (raw ?? {}) as Record<string, unknown>;
-  const state = str(s.state, 'loading') as NodeLoadStatus['state'];
+  const rawState = normalizeEnumStr(s.state, NODE_LOAD_STATES);
+  const state = (NODE_LOAD_STATES as readonly string[]).includes(rawState)
+    ? (rawState as NodeLoadStatus['state'])
+    : 'loading';
   return {
     nodeId: str(s.nodeId),
     state,
@@ -237,10 +276,62 @@ function normalizeNodeStatus(raw: unknown): NodeLoadStatus {
   };
 }
 
+const DEPLOYMENT_STATES = [
+  'planned', 'provisioning', 'active', 'rebalancing', 'stopping', 'stopped', 'failed',
+] as const;
+
+function normalizeDeploymentState(raw: unknown): DeploymentState {
+  const s = normalizeEnumStr(raw, DEPLOYMENT_STATES);
+  return (DEPLOYMENT_STATES as readonly string[]).includes(s)
+    ? (s as DeploymentState)
+    : 'provisioning';
+}
+
 /** Accepts a full Deployment, or a bare DeploymentPlan (builds a provisioning
  *  deployment around it — used when POST /deploy returns just the plan). */
 function normalizeDeployment(raw: unknown): Deployment {
   const d = (raw ?? {}) as Record<string, unknown>;
+
+  // Go API shape: { id, modelId, planId, state, detail: { modelId, quantization, engines: [...] } }
+  // The "detail" key signals this newer shape where per-assignment info lives in engines[].
+  if (d.detail && typeof d.detail === 'object') {
+    const detail = d.detail as Record<string, unknown>;
+    const engines: Array<Record<string, unknown>> = Array.isArray(detail.engines)
+      ? (detail.engines as Array<Record<string, unknown>>)
+      : [];
+    const assignments: Assignment[] = engines.map((eng) => ({
+      nodeId: str(eng.nodeId ?? eng.node_id),
+      role: (normalizeEnumStr(eng.role, ['host', 'worker']) || 'worker') as Role,
+      layerStart: num(eng.layerStart),
+      layerEnd: num(eng.layerEnd),
+      draft: bool(eng.draft),
+    }));
+    const plan: DeploymentPlan = {
+      planId: str(d.planId),
+      modelId: str(d.modelId ?? detail.modelId),
+      quantization: str(detail.quantization),
+      assignments,
+      pipelineOrder: assignments.map((a) => a.nodeId),
+      estimated: { decodeTokSMin: 0, decodeTokSMax: 0, prefillTokSMin: 0, prefillTokSMax: 0, headroomGb: 0 },
+      cost: 0,
+      explanation: [],
+    };
+    const state = normalizeDeploymentState(d.state);
+    const nodeStatus: NodeLoadStatus[] = assignments.map((a) => ({
+      nodeId: a.nodeId,
+      state: state === 'active' ? ('running' as const) : ('loading' as const),
+      progress: state === 'active' ? 1 : 0,
+      detail: '',
+    }));
+    return {
+      id: str(d.id, plan.planId),
+      plan,
+      state,
+      nodeStatus,
+      createdAt: str(d.createdAt, new Date().toISOString()),
+    };
+  }
+
   // Bare plan? (no lifecycle fields, but has assignments/plan-ish shape)
   if (d.plan === undefined && d.state === undefined && d.assignments !== undefined) {
     return deploymentFromPlan(normalizePlan(d));
@@ -259,7 +350,7 @@ function normalizeDeployment(raw: unknown): Deployment {
   return {
     id: str(d.id, plan.planId),
     plan,
-    state: (str(d.state, 'provisioning') as DeploymentState) || 'provisioning',
+    state: normalizeDeploymentState(d.state),
     nodeStatus,
     createdAt: str(d.createdAt, new Date().toISOString()),
   };
@@ -283,8 +374,10 @@ function deploymentFromPlan(plan: DeploymentPlan): Deployment {
 function normalizeCapacity(raw: unknown): ClusterCapacity {
   const c = (raw ?? {}) as Record<string, unknown>;
   return {
-    nodeCount: num(c.nodeCount),
-    readyNodeCount: num(c.readyNodeCount),
+    // GET /cluster/health returns totalNodes/readyNodes; the proto shape uses
+    // nodeCount/readyNodeCount. Accept both.
+    nodeCount: num(c.nodeCount !== undefined ? c.nodeCount : c.totalNodes),
+    readyNodeCount: num(c.readyNodeCount !== undefined ? c.readyNodeCount : c.readyNodes),
     ramTotalGb: num(c.ramTotalGb),
     ramAvailableGb: num(c.ramAvailableGb),
     vramTotalGb: num(c.vramTotalGb),
@@ -296,22 +389,68 @@ function normalizeCapacity(raw: unknown): ClusterCapacity {
   };
 }
 
-/** GET /api/v1/nodes may return NodeView (composite) or bare HardwareProfile. */
+// Proto enum value sets — used to normalize raw API strings.
+const NODE_STATES = [
+  'provisioning', 'enrolled', 'ready', 'loading', 'running',
+  'degraded', 'draining', 'unreachable', 'decommissioned',
+] as const;
+const OS_VALUES      = ['linux', 'darwin', 'windows'] as const;
+const ARCH_VALUES    = ['x86_64', 'arm64'] as const;
+const BACKEND_VALUES = ['cuda', 'metal', 'rocm', 'cpu'] as const;
+
+/** Normalize proto-enum-valued fields in a mutable HardwareProfile record. */
+function normalizeProfileEnums(profile: Record<string, unknown>): void {
+  profile.state = normalizeEnumStr(profile.state, NODE_STATES) || 'ready';
+  profile.os    = normalizeEnumStr(profile.os, OS_VALUES)      || 'linux';
+  profile.arch  = normalizeEnumStr(profile.arch, ARCH_VALUES)  || 'x86_64';
+  if (Array.isArray(profile.backends)) {
+    profile.backends = (profile.backends as unknown[]).map(
+      (b) => normalizeEnumStr(b, BACKEND_VALUES) || 'cpu',
+    );
+  }
+}
+
+/**
+ * GET /api/v1/nodes returns objects with shape:
+ *   { id, hostname, os, state, hardware_profile: {...}, ... }
+ * (hardware_profile → hardwareProfile after camelizeKeys).
+ * Also accepts the legacy composite NodeView { profile, metrics, ... } shape.
+ */
 function normalizeNodeView(raw: unknown): NodeView {
   const n = (raw ?? {}) as Record<string, unknown>;
-  // Already a composite NodeView.
-  if (n.profile && typeof n.profile === 'object') {
+
+  // Resolve the hardware profile — API may use "profile", "hardwareProfile",
+  // or "hardware_profile" (before camelizeKeys) as the field name.
+  const profileSrc =
+    (n.profile as Record<string, unknown> | undefined) ??
+    (n.hardwareProfile as Record<string, unknown> | undefined);
+
+  if (profileSrc && typeof profileSrc === 'object') {
+    // Composite shape — shallow-clone and back-fill nodeId from top-level id.
+    const profile: Record<string, unknown> = { ...profileSrc };
+    if (!profile.nodeId && n.id) profile.nodeId = n.id;
+    // Ensure gpus is always an array (absent on CPU-only nodes).
+    if (!Array.isArray(profile.gpus)) profile.gpus = [];
+    // Normalize proto enum string values to their canonical lowercase forms.
+    normalizeProfileEnums(profile);
     return {
-      profile: n.profile as NodeView['profile'],
+      profile: profile as unknown as NodeView['profile'],
       metrics: (n.metrics as NodeView['metrics']) ?? null,
       role: (n.role as Role | null) ?? null,
       linkQuality: (str(n.linkQuality, 'unknown') as LinkQuality) || 'unknown',
       deploymentId: (n.deploymentId as string | null) ?? null,
     };
   }
-  // Bare HardwareProfile — wrap it.
+
+  // Bare HardwareProfile — wrap it. Back-fill nodeId from top-level id field.
+  const profile: Record<string, unknown> = {
+    ...n,
+    nodeId: n.nodeId ?? n.id,
+    gpus: Array.isArray(n.gpus) ? n.gpus : [],
+  };
+  normalizeProfileEnums(profile);
   return {
-    profile: n as unknown as NodeView['profile'],
+    profile: profile as unknown as NodeView['profile'],
     metrics: null,
     role: null,
     linkQuality: 'unknown',
@@ -322,25 +461,54 @@ function normalizeNodeView(raw: unknown): NodeView {
 /** GET /api/v1/models: [ModelSpec] (+ optional fit/deployable) -> CatalogEntry. */
 function normalizeCatalogEntry(raw: unknown): CatalogEntry {
   const e = (raw ?? {}) as Record<string, unknown>;
-  // Shape A: { model, fit }
+
+  // Shape A: { model, fit } (explicit proto-envelope shape).
   if (e.model && typeof e.model === 'object') {
     return {
       model: e.model as ModelSpec,
       fit: normalizeFit(e.fit, e.model as ModelSpec, e.deployable),
     };
   }
-  // Shape B: a ModelSpec, possibly carrying `fit` / `deployable` alongside.
-  const model = e as unknown as ModelSpec;
+
+  // Shape C: { id, family, spec: {...ModelSpec...}, fit: {...} }
+  // This is the actual Go API shape where the ModelSpec is nested under "spec".
+  if (e.spec && typeof e.spec === 'object') {
+    const specRaw = e.spec as Record<string, unknown>;
+    const model: ModelSpec = {
+      ...specRaw,
+      // Back-fill modelId from the top-level id if the spec omits it.
+      modelId: specRaw.modelId ?? e.id,
+      // Guarantee quantizations is always an array so callers never crash on .map().
+      quantizations: Array.isArray(specRaw.quantizations) ? specRaw.quantizations : [],
+    } as unknown as ModelSpec;
+    // In this shape, the deployable flag lives inside the fit object.
+    const fitRaw = e.fit as Record<string, unknown> | undefined;
+    const deployableFlag = fitRaw?.deployable;
+    return { model, fit: normalizeFit(e.fit, model, deployableFlag) };
+  }
+
+  // Shape B: a ModelSpec at the top level, possibly carrying fit / deployable alongside.
+  // Guard quantizations so downstream callers never hit undefined.map().
+  const model = {
+    ...(e as Record<string, unknown>),
+    quantizations: Array.isArray(e.quantizations) ? e.quantizations : [],
+  } as unknown as ModelSpec;
   return { model, fit: normalizeFit(e.fit, model, e.deployable) };
 }
 
 function normalizeFit(raw: unknown, model: ModelSpec, deployable: unknown): FitVerdict {
   if (raw && typeof raw === 'object') {
     const f = raw as Record<string, unknown>;
+    // The Go API uses "deployable" (bool) rather than "fits"; accept both.
+    const fits = bool(
+      f.fits !== undefined ? f.fits : f.deployable,
+      deployable === undefined ? false : Boolean(deployable),
+    );
     return {
-      fits: bool(f.fits, deployable === undefined ? false : Boolean(deployable)),
+      fits,
       quantization: typeof f.quantization === 'string' ? f.quantization : null,
-      nodesNeeded: num(f.nodesNeeded),
+      // Go API uses "nodeCount"; proto shape uses "nodesNeeded"; accept both.
+      nodesNeeded: num(f.nodesNeeded !== undefined ? f.nodesNeeded : f.nodeCount),
       estimated: f.estimated ? normalizePerf(f.estimated) : null,
       deficitGb: num(f.deficitGb),
       reasonKey: (str(f.reasonKey, 'fits') as FitVerdict['reasonKey']) || 'fits',
@@ -362,9 +530,11 @@ function normalizeFit(raw: unknown, model: ModelSpec, deployable: unknown): FitV
 function normalizeJoinInfo(raw: unknown): JoinInfo {
   const j = (raw ?? {}) as Record<string, unknown>;
   return {
-    joinToken: str(j.joinToken),
+    // API returns "token" in the wire format (camelizeKeys keeps it as "token").
+    // Support both "joinToken" (legacy) and "token" (current) for back-compat.
+    joinToken: str(j.joinToken ?? j.token),
     controlPlaneUrl: str(j.controlPlaneUrl),
-    expiresAt: str(j.expiresAt),
+    expiresAt: str(j.expiresAt ?? j.expiresAt),
   };
 }
 
@@ -478,9 +648,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // GET /api/v1/nodes
     listNodes: () =>
-      request<unknown>('/nodes').then((raw) =>
-        Array.isArray(raw) ? raw.map(normalizeNodeView) : [],
-      ),
+      request<unknown>('/nodes').then((raw) => {
+        // API returns { nodes: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.nodes ?? raw;
+        return Array.isArray(arr) ? arr.map(normalizeNodeView) : [];
+      }),
 
     // GET /api/v1/nodes/{id}
     getNode: (nodeId) =>
@@ -500,9 +672,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // --- catalog ---
     // GET /api/v1/models -> [ModelSpec] (+ fit/deployable) -> CatalogEntry[]
     getCatalog: () =>
-      request<unknown>('/models').then((raw) =>
-        Array.isArray(raw) ? raw.map(normalizeCatalogEntry) : [],
-      ),
+      request<unknown>('/models').then((raw) => {
+        // API returns { models: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.models ?? raw;
+        return Array.isArray(arr) ? arr.map(normalizeCatalogEntry) : [];
+      }),
 
     // DELETE /api/v1/models/{id} — guarded delete; 409 when active deployments reference it.
     deleteModel: (modelId) => request<void>(`/models/${enc(modelId)}`, { method: 'DELETE' }),
@@ -510,7 +684,8 @@ export function createHttpApi(baseUrl: string): PurserApi {
     // Model detail is derived from the public catalog list (no private route).
     getModel: (modelId) =>
       request<unknown>('/models').then((raw) => {
-        const entries = Array.isArray(raw) ? raw.map(normalizeCatalogEntry) : [];
+        const arr = (raw as any)?.models ?? raw;
+        const entries = Array.isArray(arr) ? arr.map(normalizeCatalogEntry) : [];
         const found = entries.find((e) => e.model.modelId === modelId);
         if (!found) throw new ApiError(404, `Model ${modelId} is not in the catalog.`);
         return found.model;
@@ -518,10 +693,12 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // POST /api/v1/models/import — register a model from an external registry.
     // The backend fetches metadata from the source and persists a ModelSpec.
-    importModel: (source: ImportSource) =>
-      request<unknown>('/models/import', {
+    // NOTE: the server field is "source" (not "type") — destructure to rename.
+    importModel: (src: ImportSource) => {
+      const { type, ...rest } = src;
+      return request<unknown>('/models/import', {
         method: 'POST',
-        body: source,
+        body: { source: type, ...rest },
       }).then((raw) => {
         const r = (raw ?? {}) as Record<string, unknown>;
         // Backend may return the full ModelSpec or just { model_id: "..." }.
@@ -529,7 +706,8 @@ export function createHttpApi(baseUrl: string): PurserApi {
           return (r.model ?? raw) as ModelSpec;
         }
         throw new ApiError(500, 'Import returned no model spec');
-      }),
+      });
+    },
 
     // POST /api/v1/models/{id}/plan — dry-run plan, never persisted.
     // A 200 body is always returned: { feasible, reason? } or { feasible, ...planFields }.
@@ -574,9 +752,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // GET /api/v1/deployments
     listDeployments: () =>
-      request<unknown>('/deployments').then((raw) =>
-        Array.isArray(raw) ? raw.map(normalizeDeployment) : [],
-      ),
+      request<unknown>('/deployments').then((raw) => {
+        // API returns { deployments: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.deployments ?? raw;
+        return Array.isArray(arr) ? arr.map(normalizeDeployment) : [];
+      }),
 
     // GET /api/v1/deployments/{id}
     getDeployment: (id) =>
@@ -606,7 +786,11 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     // --- settings / api keys ---
     listApiKeys: () =>
-      request<unknown>('/apikeys').then((raw) => (Array.isArray(raw) ? (raw as ApiKey[]) : [])),
+      request<unknown>('/apikeys').then((raw) => {
+        // API returns { apikeys: [...] }; fall back to raw array for backward compat.
+        const arr = (raw as any)?.apikeys ?? raw;
+        return Array.isArray(arr) ? (arr as ApiKey[]) : [];
+      }),
 
     // POST /api/v1/apikeys -> ApiKeyWithSecret (full secret shown once)
     createApiKey: (input: CreateApiKeyInput) =>
@@ -818,5 +1002,163 @@ export function createHttpApi(baseUrl: string): PurserApi {
       const qs = p.toString() ? `?${p.toString()}` : '';
       return request<AccessLogResponse>(`/logs/access${qs}`);
     },
+
+    // --- what-if planner ---
+    whatIfPlan: (body: WhatIfRequest): Promise<WhatIfResult> =>
+      request<WhatIfResult>('/planner/what-if', { method: 'POST', body }),
+
+    // --- SLO compliance ---
+    getSloCompliance: (windowHours = 24): Promise<SloComplianceResponse> =>
+      request<unknown>(`/slo/compliance?window_hours=${windowHours}`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          models: Array.isArray(r.models) ? r.models as SloComplianceResponse['models'] : [],
+          window_hours: typeof r.windowHours === 'number' ? r.windowHours : windowHours,
+        };
+      }),
+
+    // --- SLO compliance (full nested shape, v0.6) ---
+    getSloComplianceFull: (windowHours = 24): Promise<SloApiResponse> =>
+      request<unknown>(`/slo/compliance?window_hours=${windowHours}`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          models: Array.isArray(r.models) ? (r.models as SloApiResponse['models']) : [],
+          window_hours: typeof r.window_hours === 'number' ? r.window_hours : windowHours,
+          generated_at: typeof r.generated_at === 'string' ? r.generated_at : new Date().toISOString(),
+        };
+      }),
+
+    // --- billing forecast ---
+    getBillingForecast: (): Promise<BillingForecastResponse> =>
+      request<unknown>('/billing/forecast').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          entries: Array.isArray(r.entries) ? r.entries as BillingForecastResponse['entries'] : [],
+        };
+      }),
+
+    // --- data planes ---
+    listDataPlanes: (): Promise<DataPlane[]> =>
+      request<unknown>('/platform/dataplanes').then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.dataplanes ?? raw;
+        return Array.isArray(arr) ? (arr as DataPlane[]) : [];
+      }),
+
+    createDataPlane: (input: CreateDataPlaneInput): Promise<DataPlaneWithToken> =>
+      request<unknown>('/platform/dataplanes', {
+        method: 'POST',
+        body: { name: input.name, tier: input.tier, gateway_url: input.gatewayUrl, description: input.description },
+      }).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          dataplane: (r.dataplane ?? r) as DataPlane,
+          joinToken: String(r.joinToken ?? r.join_token ?? ''),
+        };
+      }),
+
+    refreshDataPlaneConfig: (id: string): Promise<void> =>
+      request<void>(`/platform/dataplanes/${enc(id)}/config/refresh`, { method: 'POST' }),
+
+    // --- service accounts ---
+    listServiceAccounts: (): Promise<ServiceAccount[]> =>
+      request<unknown>('/service-accounts').then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.serviceAccounts ?? raw;
+        return Array.isArray(arr) ? (arr as ServiceAccount[]) : [];
+      }),
+
+    createServiceAccount: (input: CreateServiceAccountInput): Promise<ServiceAccountWithSecret> =>
+      request<unknown>('/service-accounts', {
+        method: 'POST',
+        body: { name: input.name, team_id: input.teamId, description: input.description, role: input.role },
+      }).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          id: String(r.id ?? ''),
+          name: String(r.name ?? input.name),
+          tenant: String(r.teamId ?? r.team_id ?? r.tenant ?? input.teamId),
+          description: input.description ?? '',
+          role: String(r.role ?? input.role),
+          scopes: Array.isArray(r.scopes) ? (r.scopes as string[]) : [],
+          clientId: String(r.clientId ?? r.client_id ?? ''),
+          enabled: true,
+          lastUsedAt: null,
+          createdAt: new Date().toISOString(),
+          clientSecret: String(r.clientSecret ?? r.client_secret ?? ''),
+        } satisfies ServiceAccountWithSecret;
+      }),
+
+    revokeServiceAccount: (id: string): Promise<void> =>
+      request<void>(`/service-accounts/${enc(id)}`, { method: 'DELETE' }),
+
+    // --- platform users ---
+    listPlatformUsers: (): Promise<PlatformUser[]> =>
+      request<unknown>('/platform/users').then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.users ?? raw;
+        if (!Array.isArray(arr)) return [];
+        return arr.map((u: unknown) => {
+          const e = (u ?? {}) as Record<string, unknown>;
+          // Go returns { user_sub, org_id, role } (camelizeKeys gives userSub, orgId).
+          const sub = String(e.userSub ?? e.user_sub ?? e.id ?? '');
+          return {
+            id: sub,
+            email: sub,
+            displayName: String(e.displayName ?? e.display_name ?? sub),
+            orgId: String(e.orgId ?? e.org_id ?? ''),
+            orgName: String(e.orgName ?? e.org_name ?? e.orgId ?? e.org_id ?? ''),
+            teams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
+            role: String(e.role ?? 'member'),
+            lastActiveAt: typeof e.lastActiveAt === 'string' ? e.lastActiveAt : null,
+          } satisfies PlatformUser;
+        });
+      }),
+
+    // --- policy-as-code (enterprise: policy_engine) ---
+
+    /** Normalise a raw API policy object to the UI Policy shape. */
+    listPolicies: (): Promise<PoliciesResponse> =>
+      request<unknown>('/policies').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        const rows = Array.isArray(r.policies) ? r.policies : [];
+        return {
+          policies: rows.map((p: unknown) => normPolicy(p as Record<string, unknown>)),
+        };
+      }),
+
+    upsertPolicy: (name: string, rego: string, enabled = true): Promise<Policy> =>
+      request<unknown>(`/policies/${enc(name)}`, {
+        method: 'PUT',
+        body: { rego, enabled },
+      }).then((raw) => normPolicy(raw as Record<string, unknown>)),
+
+    deletePolicy: (name: string): Promise<void> =>
+      request<void>(`/policies/${enc(name)}`, { method: 'DELETE' }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Policy normalizer — maps the Go registry.Policy JSON fields to the UI Policy
+// shape (snake_case -> camelCase, rego -> source, description derived).
+// ---------------------------------------------------------------------------
+
+function extractDescription(rego: string): string | undefined {
+  for (const line of rego.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#')) {
+      const text = trimmed.slice(1).trim();
+      if (text.length > 0) return text;
+    }
+  }
+  return undefined;
+}
+
+function normPolicy(raw: Record<string, unknown>): Policy {
+  const rego = typeof raw.rego === 'string' ? raw.rego : '';
+  return {
+    id: typeof raw.id === 'number' ? raw.id : 0,
+    name: typeof raw.name === 'string' ? raw.name : '',
+    source: rego,
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
+    createdAt: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
+    description: extractDescription(rego),
   };
 }

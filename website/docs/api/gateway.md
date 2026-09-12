@@ -205,7 +205,7 @@ The mock engine emits a 128-dimension vector normalised to unit length, with val
 
 ### `GET /v1/models`
 
-Lists all models with active deployments and active routes (populated by the Control Plane via route sync).
+Lists all models with active deployments and active routes. The route table is populated — and continuously re-pushed — by the Control Plane's route reconciler (see [Internal route sync](#the-routing-table-is-in-memory-only--and-self-healing)).
 
 **Response `200`:**
 
@@ -231,15 +231,55 @@ Entries carry no capability or modality field, so this list does not tell you wh
 
 ## Internal route sync (Control Plane only)
 
-These endpoints are for the Control Plane's orchestrator to push routing updates. They are protected by `X-Purser-Internal-Token` and should not be called by clients.
+These endpoints are for the Control Plane to push and read routing updates. They are protected by `X-Purser-Internal-Token` and should not be called by clients.
 
 ### `PUT /api/v1/routes`
 
-Adds or updates a route (maps a model ID to a deployment host endpoint).
+Adds or updates a route (maps a model ID to a deployment host endpoint). Idempotent — re-pushing the same route is a no-op.
 
-### `DELETE /api/v1/routes`
+### `GET /api/v1/routes`
 
-Removes a route.
+Returns the routes the Gateway holds right now:
+
+```json
+{
+  "object": "list",
+  "count": 1,
+  "data": [
+    {
+      "model_id": "llama-8b",
+      "endpoint": "http://10.0.0.4:8080",
+      "deployment_id": "dep-9",
+      "quantization": "Q4_K_M",
+      "state": "active"
+    }
+  ]
+}
+```
+
+### `DELETE /api/v1/routes/{model_id}`
+
+Removes a route (idempotent).
+
+### The routing table is in memory only — and self-healing
+
+The Gateway does **not** persist its routing table. A restarted Gateway starts with
+an empty table, which by itself would make every inference request fail with
+`503 model not available` until an operator re-deployed a model.
+
+The Control Plane's **route reconciler** closes that gap. It pushes the desired route
+set — one route per `ACTIVE` deployment — once at startup and then every 30 seconds
+(`PURSER_ROUTE_RECONCILE_INTERVAL`, in seconds), and deletes any route whose model is
+no longer `ACTIVE`. A Gateway that is down when the control plane starts is not an
+error: the pass fails, logs a warning, and retries a few seconds later.
+
+The practical consequence: restarting a Gateway pod is safe. Routes are restored
+within one reconcile interval, with no operator action. To confirm recovery:
+
+```bash
+curl -s -H "X-Purser-Internal-Token: $PURSER_GATEWAY_TOKEN" \
+  http://<gateway>:8080/api/v1/routes
+```
 
 ---
 
@@ -343,4 +383,4 @@ curl -s http://<control-plane>:8080/api/v1/deployments
 curl -s http://<control-plane>:8080/api/v1/cluster/health
 ```
 
-A model appears in `GET /v1/models` only when it has an active deployment and the Control Plane has pushed a route to the Gateway. If a model is not listed, check the deployment state via the Control Plane API.
+A model appears in `GET /v1/models` only when it has an active deployment and the Control Plane has pushed a route to the Gateway. If a model is not listed, check the deployment state via the Control Plane API — and note that a Gateway restart empties its in-memory table, which the route reconciler refills within 30 seconds. If a model is still missing after that, the deployment itself is not `ACTIVE`.

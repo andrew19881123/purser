@@ -77,3 +77,30 @@ An event has been tracked for more than 5 minutes without resolving. Check the e
 
 **Pending count spikes but recovers quickly:**
 This is normal during transient network events. The hysteresis filter (`hysteresis_s`) prevents unnecessary actions for brief blips. If spikes are frequent, consider increasing `hysteresis_s`.
+
+## Checking overall stack health
+
+The `purser-status` tool gives a quick view of every layer of the stack from a
+single command and is useful when diagnosing reconciler issues:
+
+```bash
+make status
+# or
+./tools/purser-status.sh
+```
+
+The output shows fleet node states (READY / RUNNING / other), active deployments and
+which nodes they span, and Control Plane reachability — the same signals the
+reconciler acts on, surfaced without digging through logs.
+
+For scripted health checks or CI integration:
+
+```bash
+./tools/purser-status.sh --json | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+nodes = d.get('nodes', [])
+ready = sum(1 for n in nodes if 'READY' in n.get('state','') or 'RUNNING' in n.get('state',''))
+print('ready: {}/{}'.format(ready, len(nodes)))
+"
+```

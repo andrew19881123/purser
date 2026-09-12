@@ -29,25 +29,25 @@ Download the package for your distribution from the [latest release](https://git
 === "Debian / Ubuntu (amd64)"
 
     ```bash
-    sudo apt install ./purser-agent_0.3.0_amd64.deb
+    sudo apt install ./purser-agent_0.5.0_amd64.deb
     ```
 
 === "Debian / Ubuntu (arm64 — Graviton / Ampere)"
 
     ```bash
-    sudo apt install ./purser-agent_0.3.0_arm64.deb
+    sudo apt install ./purser-agent_0.5.0_arm64.deb
     ```
 
 === "RHEL / Fedora / openSUSE (amd64)"
 
     ```bash
-    sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm
+    sudo yum install ./purser-agent-0.5.0-1.x86_64.rpm
     ```
 
 === "RHEL / Fedora / openSUSE (arm64)"
 
     ```bash
-    sudo yum install ./purser-agent-0.3.0-1.aarch64.rpm
+    sudo yum install ./purser-agent-0.5.0-1.aarch64.rpm
     ```
 
 The package installs:
@@ -135,6 +135,8 @@ See the complete reference at [Environment Variables Reference](../configuration
 | `PURSER_HEALTH_INTERVAL_SECS` | `5` | Heartbeat cadence in seconds |
 | `PURSER_ENGINE_BACKEND` | `mock` | Engine backend to use (`mock` or `llamacpp`) |
 | `PURSER_SEEDS` | (none) | Comma-separated extra discovery seed peers |
+| `PURSER_SWIM_BIND_ADDR` | `0.0.0.0:7946` | UDP bind address for the SWIM gossip layer (used when `PURSER_SWIM_ENABLED=true`). Change this when running two agents on the same machine to avoid "address already in use" at startup. |
+| `PURSER_DISK_FREE_WARN_GB` | `5.0` | Minimum free disk space (GiB) before the agent emits a warning and blocks deployment. Override to `0.5` on developer machines with limited disk to prevent spurious enrollment failures. |
 | `PURSER_SECRET_STORE_DIR` | `$HOME/.purser/secrets` | Directory for encrypted-at-rest secret files |
 | `PURSER_SECRET_KEY` | (auto-generated) | 32-byte AES-256 key (hex or base64). See [Secret persistence](#secret-persistence). |
 | `RUST_LOG` | `info` | Log level |
@@ -167,7 +169,7 @@ The hosted Cloudsmith repository is the recommended distribution channel. Config
 
 ```bash
 # Example: reprepro for an internal apt mirror
-reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.3.0_amd64.deb
+reprepro -b /var/www/apt/purser includedeb bookworm purser-agent_0.5.0_amd64.deb
 ```
 
 ### Fleet enrollment with Ansible
@@ -219,7 +221,7 @@ If you prefer not to use the native packages, grab the prebuilt binary tarball f
 === "linux/amd64"
 
     ```bash
-    TAG=v0.3.0
+    TAG=v0.5.0
     curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/purser-agent-linux-amd64-${TAG}.tar.gz
     curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
     sha256sum -c SHA256SUMS --ignore-missing
@@ -231,7 +233,7 @@ If you prefer not to use the native packages, grab the prebuilt binary tarball f
 === "linux/arm64 (Graviton / Ampere)"
 
     ```bash
-    TAG=v0.3.0
+    TAG=v0.5.0
     curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/purser-agent-linux-arm64-${TAG}.tar.gz
     curl -LO https://github.com/andrew19881123/purser/releases/download/${TAG}/SHA256SUMS
     sha256sum -c SHA256SUMS --ignore-missing

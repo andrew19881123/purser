@@ -248,7 +248,7 @@ function ModelCard({
         </div>
         <div className="model-card__tags">
           {model.isMoe && <Badge tone="info">{t('catalog.moe')}</Badge>}
-          {model.draft.available && <Badge tone="info">{t('catalog.draft')}</Badge>}
+          {model.draft?.available && <Badge tone="info">{t('catalog.draft')}</Badge>}
         </div>
       </div>
 

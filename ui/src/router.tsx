@@ -23,6 +23,11 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { OrganizationsPage } from './pages/OrganizationsPage';
 import { TeamPage } from './pages/TeamPage';
 import { NodePoolsPage } from './pages/NodePoolsPage';
+import { ComingSoonPage } from './pages/ComingSoonPage';
+import { DataPlanesPage } from './pages/DataPlanesPage';
+import { ServiceAccountsPage } from './pages/ServiceAccountsPage';
+import { PoliciesPage } from './pages/PoliciesPage';
+import { SLOPage } from './pages/SLOPage';
 
 export const router = createBrowserRouter([
   {
@@ -45,6 +50,13 @@ export const router = createBrowserRouter([
       { path: 'platform/orgs', element: <OrganizationsPage /> },
       { path: 'platform/orgs/:orgId/teams/:teamId', element: <TeamPage /> },
       { path: 'platform/pools', element: <NodePoolsPage /> },
+      // v0.6 new platform routes (stubs until features land)
+      { path: 'platform/dataplanes', element: <DataPlanesPage /> },
+      { path: 'platform/service-accounts', element: <ServiceAccountsPage /> },
+      { path: 'platform/policies', element: <PoliciesPage /> },
+      { path: 'planner/what-if', element: <ComingSoonPage /> },
+      { path: 'api-keys', element: <ComingSoonPage /> },
+      { path: 'slo', element: <SLOPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

@@ -156,3 +156,66 @@ export const IconUsers = (p: IconProps) => (
     <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
   </Svg>
 );
+
+export const IconCalculator = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="4" y="2" width="16" height="20" rx="2" />
+    <path d="M8 7h8M8 12h2M14 12h2M8 17h2M14 17h2" />
+  </Svg>
+);
+
+export const IconRobot = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="10" width="18" height="12" rx="2" />
+    <path d="M12 2v4M9 6h6" />
+    <circle cx="9" cy="16" r="1.5" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="16" r="1.5" fill="currentColor" stroke="none" />
+    <path d="M9 20h6" />
+  </Svg>
+);
+
+export const IconCheckCircle = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="m9 12 2 2 4-4" />
+  </Svg>
+);
+
+export const IconChart = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 3v18h18" />
+    <path d="M7 14l3-4 4 3 4-5" />
+  </Svg>
+);
+
+export const IconTarget = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="10" />
+    <circle cx="12" cy="12" r="6" />
+    <circle cx="12" cy="12" r="2" />
+  </Svg>
+);
+
+export const IconLock = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </Svg>
+);
+
+export const IconPlus = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 5v14M5 12h14" />
+  </Svg>
+);
+
+export const IconDataPlanes = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="6" height="5" rx="1" />
+    <rect x="9" y="3" width="6" height="5" rx="1" />
+    <rect x="16" y="3" width="6" height="5" rx="1" />
+    <path d="M5 8v4M12 8v4M19 8v4M5 12h14" />
+    <rect x="9" y="16" width="6" height="5" rx="1" />
+    <path d="M12 12v4" />
+  </Svg>
+);

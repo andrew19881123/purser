@@ -19,7 +19,7 @@ The Anthropic SDK sends credentials in the `x-api-key` header by default. Purser
 | `x-api-key` | `x-api-key: sk-mykey` |
 | `Authorization: Bearer` | `Authorization: Bearer sk-mykey` |
 
-The same API keys configured via `PURSER_GATEWAY_API_KEYS` are accepted through both headers. When no keys are configured, the gateway runs in **open dev mode** and accepts any non-empty value.
+The same API keys configured via `PURSER_GATEWAY_API_KEYS` are accepted through both headers. When no keys are configured, the gateway refuses to start unless `PURSER_GATEWAY_DEV_MODE=1` is set explicitly — see [`PURSER_GATEWAY_DEV_MODE`](../configuration/env-vars.md). In that dev mode any non-empty value is accepted; never enable it in production.
 
 ## Request format
 

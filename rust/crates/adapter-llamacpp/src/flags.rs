@@ -40,7 +40,11 @@ pub struct HostLaunch {
 /// Build the `llama-server` command for a pipeline host.
 ///
 /// Maps the abstract inputs onto concrete flags:
-/// - `model_ref`            → `-m <model_ref>` (path to the `.gguf`),
+/// - `model_ref`            → `-m <resolved_model_path>` (path to the `.gguf`).
+///   When `config.model_dir` is set and `model_ref` is not an absolute path,
+///   the path is prefixed: e.g. `model_dir="/models"` + `model_ref="tinyllama-1b"`
+///   → `-m /models/tinyllama-1b`. Absolute paths and paths starting with `.` are
+///   used as-is.
 /// - `worker_addrs`         → `--rpc a,b,c` (omitted when empty: single-node),
 /// - `params.context`       → `-c <ctx>` (omitted when `0`: engine default),
 /// - `params.draft_block_len` → `--draft-max <n>` (speculative draft length),
@@ -59,6 +63,25 @@ pub fn build_host_launch(
     if model_ref.is_empty() {
         return Err(EngineError::InvalidArgument("empty model_ref".to_string()));
     }
+
+    // Resolve model path: if model_dir is set and model_ref is not absolute (and
+    // does not start with '.'), prefix it.  This lets a logical model ID like
+    // "tinyllama-1b" resolve to "/models/tinyllama-1b" when
+    // PURSER_LLAMACPP_MODEL_DIR=/models, without touching callers that already
+    // hand in absolute paths.
+    let resolved_model: std::borrow::Cow<str> = {
+        use std::path::Path;
+        let p = Path::new(model_ref);
+        if let Some(dir) = &config.model_dir {
+            if p.is_absolute() || model_ref.starts_with('.') {
+                model_ref.into()
+            } else {
+                dir.join(model_ref).to_string_lossy().into_owned().into()
+            }
+        } else {
+            model_ref.into()
+        }
+    };
 
     let extra = &params.extra;
 
@@ -82,7 +105,7 @@ pub fn build_host_launch(
 
     let mut args: Vec<String> = vec![
         "-m".to_string(),
-        model_ref.to_string(),
+        resolved_model.into_owned(),
         "--host".to_string(),
         host_bind.clone(),
         "--port".to_string(),
@@ -380,5 +403,35 @@ mod tests {
         c.advertise_host = "10.0.0.1".to_string();
         let launch = build_host_launch(&c, "/m.gguf", &[], &EngineParams::default()).unwrap();
         assert_eq!(launch.endpoint, "http://10.0.0.1:8080");
+    }
+
+    // ── model_dir resolution ────────────────────────────────────────────────
+
+    /// When `model_dir` is set and `model_ref` is a bare name, the path is
+    /// prefixed with the directory.
+    #[test]
+    fn model_dir_prefixes_bare_model_ref() {
+        let mut c = cfg();
+        c.model_dir = Some(std::path::PathBuf::from("/models"));
+        let launch = build_host_launch(&c, "tinyllama-1b", &[], &EngineParams::default()).unwrap();
+        assert_eq!(launch.args[1], "/models/tinyllama-1b");
+    }
+
+    /// When `model_dir` is set but `model_ref` is already absolute, it is used
+    /// as-is (no double-prefix).
+    #[test]
+    fn model_dir_does_not_prefix_absolute_path() {
+        let mut c = cfg();
+        c.model_dir = Some(std::path::PathBuf::from("/models"));
+        let launch = build_host_launch(&c, "/data/m.gguf", &[], &EngineParams::default()).unwrap();
+        assert_eq!(launch.args[1], "/data/m.gguf");
+    }
+
+    /// When `model_dir` is not set, bare model refs pass through unchanged.
+    #[test]
+    fn no_model_dir_bare_ref_passes_through() {
+        let c = cfg(); // model_dir is None
+        let launch = build_host_launch(&c, "tinyllama-1b", &[], &EngineParams::default()).unwrap();
+        assert_eq!(launch.args[1], "tinyllama-1b");
     }
 }

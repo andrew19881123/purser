@@ -57,6 +57,10 @@ Open the dashboard at **http://localhost:3000** — username/password not requir
 in demo mode. You can browse the fleet, models, and deployment views, and
 exercise the REST API.
 
+> **Note:** `docker compose up` starts the control plane, gateway, and dashboard —
+> but includes no agent, so inference requests return `503 "model not available"`.
+> To run real inference, see [Local dev setup](https://andrew19881123.github.io/purser/install/local-dev/).
+
 What the stack does **not** include is an agent, and inference needs one, so the
 gateway starts with an empty routing table:
 
@@ -67,9 +71,7 @@ curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 ```
 
 That empty list is the expected result, not a failure: a model appears here only
-once a node has enrolled and a deployment is active. Enrolling a node against
-this stack is not currently possible — the agent joins over gRPC, and compose
-does not expose the control plane's gRPC port. See the
+once a node has enrolled and a deployment is active. See the
 [Quickstart](https://andrew19881123.github.io/purser/getting-started/quickstart/)
 for what this path gives you and what it does not.
 
@@ -129,7 +131,7 @@ already points at the published GHCR images
 secret**:
 
 ```bash
-helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.3.0 \
+helm install purser oci://ghcr.io/andrew19881123/charts/purser --version 0.5.0 \
   --set controlPlane.service.type=LoadBalancer   # so out-of-cluster LAN Agents can reach it
 ```
 
@@ -173,8 +175,8 @@ Download the package for your distro from the
 and install it with your package manager — **no build required**:
 
 ```bash
-sudo apt install ./purser-agent_0.3.0_amd64.deb        # Debian / Ubuntu
-sudo yum install ./purser-agent-0.3.0-1.x86_64.rpm     # RHEL / Fedora / openSUSE
+sudo apt install ./purser-agent_0.5.0_amd64.deb        # Debian / Ubuntu
+sudo yum install ./purser-agent-0.5.0-1.x86_64.rpm     # RHEL / Fedora / openSUSE
 ```
 
 The package installs the `purser-agent` **systemd** service and a config file at
@@ -191,11 +193,11 @@ same release — one tarball per component — and verify them against the publi
 
 ```bash
 # Release assets (linux-amd64):
-#   purser-agent-0.3.0-linux-amd64.tar.gz
-#   purser-control-plane-0.3.0-linux-amd64.tar.gz
-#   purser-gateway-0.3.0-linux-amd64.tar.gz
+#   purser-agent-0.5.0-linux-amd64.tar.gz
+#   purser-control-plane-0.5.0-linux-amd64.tar.gz
+#   purser-gateway-0.5.0-linux-amd64.tar.gz
 sha256sum -c SHA256SUMS                                 # verify against the release checksums
-tar -xzf purser-agent-0.3.0-linux-amd64.tar.gz
+tar -xzf purser-agent-0.5.0-linux-amd64.tar.gz
 ```
 
 ### macOS / Windows — the Agent

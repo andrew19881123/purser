@@ -1,8 +1,10 @@
-// AuditPage tests — chain integrity panel, inference audit tab, access log tab.
+// AuditPage tests — chain integrity panel, inference audit tab, access log tab,
+// and enterprise license gate (v0.6).
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { I18nProvider } from '../i18n';
 import { AuditPage } from './AuditPage';
+import { ApiError } from '../api/http';
 import type { ChainVerifyResponse, InferenceAuditResponse, AccessLogResponse } from '../api/types';
 
 // ---------------------------------------------------------------------------
@@ -228,5 +230,79 @@ describe('AuditPage — Access Log tab', () => {
     fireEvent.click(screen.getByRole('tab', { name: /access log/i }));
     const filterInput = screen.getByRole('textbox', { name: /filter by api key/i });
     expect(filterInput).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enterprise license gate (v0.6)
+// ---------------------------------------------------------------------------
+
+/** Build an ApiError that mimics the license_required body shape. */
+function licenseError(): ApiError {
+  return new ApiError(
+    402,
+    'enterprise license required',
+    { error: { feature: 'inferenceAudit', message: 'enterprise license required', type: 'license_required' } },
+  );
+}
+
+describe('AuditPage — enterprise license gate', () => {
+  it('shows enterprise upgrade card for inference audit when license_required', () => {
+    vi.clearAllMocks();
+    mockChain();
+    vi.mocked(useInferenceAudit).mockReturnValue(
+      qr({ isError: true, error: licenseError() }),
+    );
+    vi.mocked(useAccessLog).mockReturnValue(qr({ data: { count: 0, entries: [] } }));
+
+    renderPage();
+
+    // Should show the enterprise gate, not a generic error.
+    expect(screen.getByText('Enterprise feature')).toBeInTheDocument();
+    expect(screen.queryByText('Could not load inference audit log')).not.toBeInTheDocument();
+  });
+
+  it('shows enterprise upgrade card for chain verify when license_required', () => {
+    vi.clearAllMocks();
+    vi.mocked(useAuditChainVerify).mockReturnValue(
+      qr({ isError: true, error: licenseError() }),
+    );
+    mockInference();
+    mockAccess();
+
+    renderPage();
+
+    // The chain panel should show the enterprise gate.
+    expect(screen.getByText('Enterprise feature')).toBeInTheDocument();
+    expect(screen.queryByText('Could not verify audit chain')).not.toBeInTheDocument();
+  });
+
+  it('shows generic error for non-license errors in inference audit', () => {
+    vi.clearAllMocks();
+    mockChain();
+    vi.mocked(useInferenceAudit).mockReturnValue(
+      qr({ isError: true, error: new Error('Internal Server Error') }),
+    );
+    vi.mocked(useAccessLog).mockReturnValue(qr({ data: { count: 0, entries: [] } }));
+
+    renderPage();
+
+    // Should show the generic error, not the enterprise gate.
+    expect(screen.queryByText('Enterprise feature')).not.toBeInTheDocument();
+  });
+
+  it('enterprise gate contains a link to the enterprise docs', () => {
+    vi.clearAllMocks();
+    mockChain();
+    vi.mocked(useInferenceAudit).mockReturnValue(
+      qr({ isError: true, error: licenseError() }),
+    );
+    vi.mocked(useAccessLog).mockReturnValue(qr({ data: { count: 0, entries: [] } }));
+
+    renderPage();
+
+    const link = screen.getByRole('link', { name: /enterprise/i });
+    expect(link).toBeInTheDocument();
+    expect(link.getAttribute('href')).toContain('enterprise');
   });
 });

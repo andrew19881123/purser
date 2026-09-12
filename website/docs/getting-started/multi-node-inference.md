@@ -72,13 +72,16 @@ nodes can enrol. If your cluster has no load-balancer provisioner, use
 `NodePort` or a port-forward — see the
 [Quickstart Helm section](quickstart.md#step-1-install-the-control-plane-helm).
 
-!!! danger "Do not use `docker compose up -d` for this guide"
-    The demo compose stack publishes a single port (`3000`), and its nginx
-    proxies HTTP paths only. The gRPC RegistrationService an Agent enrols
-    through is not reachable from another machine, so no GPU node can ever
-    join a compose-based Control Plane. Use Helm, or run the Control Plane
-    natively with `PURSER_ADDR=:8080 PURSER_GRPC_ADDR=:9443` bound to a LAN
-    interface.
+!!! warning "Docker Compose is not suitable for multi-machine GPU inference"
+    The demo compose stack is a single-machine demo. Even though port `9443`
+    is now published on `localhost`, it is not reachable from **other machines**
+    on your LAN unless you bind Docker to a non-loopback interface — which
+    requires additional configuration. More importantly, the compose stack runs
+    the Control Plane with `PURSER_PKI_DIR` enabled, which requires
+    `PURSER_AGENT_GRPC_INSECURE=true` on the CP to talk to native agents over
+    plain gRPC. For a real multi-node GPU setup, use Helm (which handles this
+    correctly) or run the Control Plane natively with
+    `PURSER_ADDR=:8080 PURSER_GRPC_ADDR=:9443` bound to a LAN interface.
 
 Note the Control Plane address (e.g. `192.168.1.10`) — the REST API is on
 `:8080` and Agents enrol against `:9443`.
@@ -236,8 +239,71 @@ curl -X POST http://192.168.1.10:8080/api/v1/planner/what-if \
 
 ---
 
+## CPU-only multi-node inference
+
+No GPUs? You can still run pipeline-parallel inference by distributing layers
+across multiple **CPU machines**. Throughput is lower but the setup is identical
+from Purser's perspective — the control plane treats CPU nodes as thin-VRAM
+nodes and the Planner splits layers accordingly.
+
+### When it makes sense
+
+- Prototyping on commodity hardware (developer laptops, cloud VMs)
+- Running 1B–7B models where token latency is acceptable at 2–8 tok/s
+- Distributing a 7B model across two 16 GB RAM machines so it fits in memory
+
+### Quick setup (two CPU machines)
+
+**On both machines** — install binaries and register the agent:
+
+```bash
+# Machine 1 and Machine 2
+./tools/setup-cpu-inference.sh
+
+export PURSER_LLAMACPP_BIN=~/.purser/bin
+export PURSER_ENGINE_BACKEND=cpu
+export PURSER_CPU_THREADS=4
+export PURSER_CONTROL_PLANE_ADDR=http://192.168.1.10:9443
+export PURSER_JOIN_TOKEN=<token>
+./purser-agent
+```
+
+**Register the model** (on Machine 1 or the control plane host):
+
+```bash
+curl -X POST http://192.168.1.10:8080/api/v1/models/import/cpu \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model_id":  "tinyllama-1.1b",
+    "gguf_path": "/home/user/.purser/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    "context_max": 2048
+  }'
+```
+
+**Deploy and run**:
+
+```bash
+curl -X POST http://192.168.1.10:8080/api/v1/models/tinyllama-1.1b/deploy \
+  -H 'Authorization: Bearer <admin-key>' \
+  -d '{"quantization": "Q4_K_M"}'
+```
+
+The Planner will automatically distribute the 22 transformer layers across both
+CPU machines, minimising the pipeline latency given their measured link bandwidth.
+
+!!! tip "RAM requirements for CPU inference"
+    Each node must have enough RAM to hold the layers assigned to it. A rough
+    guide: TinyLlama 1.1B Q4_K_M = 0.7 GB total; Llama3 7B Q4_K_M = 4.1 GB
+    total. The Planner tries to balance the load but you can check the split
+    with `GET /api/v1/models/{id}/plan`.
+
+See [CPU-only Inference (No GPU Required)](cpu-inference.md) for the full guide.
+
+---
+
 ## See also
 
 - [Architecture — Data Plane](architecture.md#data-plane)
+- [CPU-only Inference (No GPU Required)](cpu-inference.md)
 - [What-if Planner API](../operations/what-if-planner.md)
 - [Fleet management](../operations/reconciler.md)

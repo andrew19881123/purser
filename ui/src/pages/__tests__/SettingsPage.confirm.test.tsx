@@ -1,5 +1,8 @@
 /**
- * SettingsPage — revoke-confirm modal hardening tests (H11).
+ * ApiKeysPage — revoke-confirm modal hardening tests (H11).
+ *
+ * The API key management table was moved from SettingsPage to ApiKeysPage
+ * in v0.6. These tests follow the functionality, not the file name.
  *
  * Verifies:
  * 1. Clicking "Revoke" opens a Modal instead of calling the mutation immediately.
@@ -7,7 +10,7 @@
  * 3. Clicking Revoke in the modal calls revoke.mutate with the correct key id.
  */
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { SettingsPage } from '../SettingsPage';
+import { ApiKeysPage } from '../ApiKeysPage';
 import { I18nProvider } from '../../i18n';
 import type { ReactNode } from 'react';
 import type { ApiKey } from '../../api/types';
@@ -42,20 +45,6 @@ vi.mock('../../hooks/queries', () => ({
     isError: false,
     error: null,
   }),
-  useUsageSummary: () => ({
-    data: { tenants: [] },
-    isLoading: false,
-    isError: false,
-    error: null,
-    refetch: vi.fn(),
-  }),
-  useEnterpriseStatus: () => ({
-    data: { edition: 'community', licensee: 'community', features: [] },
-    isLoading: false,
-    isError: false,
-    error: null,
-    refetch: vi.fn(),
-  }),
 }));
 
 // ---- helpers ----------------------------------------------------------------
@@ -87,9 +76,9 @@ beforeEach(() => {
 
 // ---- tests ------------------------------------------------------------------
 
-describe('SettingsPage — revoke API key modal', () => {
+describe('ApiKeysPage — revoke API key modal', () => {
   it('revoke_apikey_opens_confirm_modal_without_mutating', () => {
-    render(<SettingsPage />, { wrapper: Wrapper });
+    render(<ApiKeysPage />, { wrapper: Wrapper });
 
     fireEvent.click(screen.getByText('Revoke'));
 
@@ -99,7 +88,7 @@ describe('SettingsPage — revoke API key modal', () => {
   });
 
   it('revoke_apikey_cancel_closes_modal_without_mutating', () => {
-    render(<SettingsPage />, { wrapper: Wrapper });
+    render(<ApiKeysPage />, { wrapper: Wrapper });
 
     fireEvent.click(screen.getByText('Revoke'));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -111,7 +100,7 @@ describe('SettingsPage — revoke API key modal', () => {
   });
 
   it('revoke_apikey_confirm_calls_mutate_with_key_id', () => {
-    render(<SettingsPage />, { wrapper: Wrapper });
+    render(<ApiKeysPage />, { wrapper: Wrapper });
 
     fireEvent.click(screen.getByText('Revoke'));
 

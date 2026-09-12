@@ -13,6 +13,12 @@
 //!   (wins over `PURSER_LLAMACPP_BIN`).
 //! - `PURSER_LLAMACPP_LLAMA_SERVER_BIN` — explicit path to the `llama-server`
 //!   binary (wins over `PURSER_LLAMACPP_BIN`).
+//! - `PURSER_LLAMACPP_MODEL_DIR` — directory searched for model files (GGUF) when
+//!   the model reference passed to `llama-server` is not an absolute path. When
+//!   set, `build_host_launch` prefixes the model_ref with this directory so that a
+//!   logical name like `tinyllama-1b` resolves to `<model_dir>/tinyllama-1b` on
+//!   disk. Useful for compose / demo stacks where a `purser-models` volume is
+//!   mounted at a fixed path (e.g. `/models`).
 //! - `PURSER_LLAMACPP_TRUSTED_SUBNETS` — comma-separated CIDRs the `rpc-server`
 //!   worker is allowed to bind to (see [`crate::security`]).
 //! - `PURSER_LLAMACPP_HOST_BIND` / `PURSER_LLAMACPP_HOST_PORT` /
@@ -58,6 +64,10 @@ pub struct LlamaCppConfig {
     pub startup_timeout: Duration,
     /// Grace period between `SIGTERM` and `SIGKILL` when stopping a process.
     pub stop_grace: Duration,
+    /// Directory to prepend to model references that are not absolute paths.
+    /// When `Some("/models")` and model_ref is `"tinyllama-1b"`, llama-server
+    /// receives `-m /models/tinyllama-1b`. Set via `PURSER_LLAMACPP_MODEL_DIR`.
+    pub model_dir: Option<PathBuf>,
 }
 
 impl Default for LlamaCppConfig {
@@ -73,6 +83,7 @@ impl Default for LlamaCppConfig {
             trusted_subnets: default_trusted_subnets(),
             startup_timeout: Duration::from_secs(120),
             stop_grace: Duration::from_secs(10),
+            model_dir: None,
         }
     }
 }
@@ -123,6 +134,12 @@ impl LlamaCppConfig {
         if let Ok(s) = std::env::var("PURSER_LLAMACPP_NGL") {
             if let Ok(n) = s.parse::<u32>() {
                 cfg.n_gpu_layers = n;
+            }
+        }
+        if let Some(p) = std::env::var_os("PURSER_LLAMACPP_MODEL_DIR") {
+            let dir = PathBuf::from(p);
+            if !dir.as_os_str().is_empty() {
+                cfg.model_dir = Some(dir);
             }
         }
 

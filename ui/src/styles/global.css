@@ -153,14 +153,30 @@ a:hover {
   flex-direction: column;
   gap: 18px;
 }
-.nav__group-title {
+
+/* Section label — always reserves 2px for the border so layout never shifts */
+.nav__section-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  padding: 0 12px 6px;
+  /* left 10px + 2px transparent border = 12px total, same as inactive links */
+  padding: 0 12px 6px 10px;
+  margin-top: 8px;
   font-weight: 600;
+  border-left: 2px solid transparent;
 }
+
+/* Active section: accent border on the label only — one clear signal, not
+   per-item noise. Items inside also get a subtle 4px extra indent. */
+.nav__section--active .nav__section-label {
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+.nav__section--active .nav__link {
+  padding-left: 16px;
+}
+
 .nav__list {
   display: flex;
   flex-direction: column;
@@ -1280,7 +1296,7 @@ a:hover {
     flex-direction: row;
     gap: 14px;
   }
-  .nav__group-title {
+  .nav__section-label {
     display: none;
   }
   .nav__list {

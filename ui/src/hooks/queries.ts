@@ -7,13 +7,13 @@
 // cache invalidation after operator actions, and — crucially for Phase 2 — it
 // keeps every component decoupled from *how* data is fetched. Swapping the mock
 // client for a real `fetch('/api/v1')` implementation touches zero components.
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useMutation,
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { api, type CreateApiKeyInput } from '../api/client';
+import { api, type CreateApiKeyInput, type CreateDataPlaneInput, type CreateServiceAccountInput } from '../api/client';
 import { config } from '../api/config';
 import type { ChatClient } from '../api/openai';
 import type {
@@ -22,6 +22,7 @@ import type {
   ImportSource,
   InferenceAuditParams,
   MetricsSnapshot,
+  WhatIfRequest,
 } from '../api/types';
 
 export const qk = {
@@ -38,6 +39,11 @@ export const qk = {
   apiKeys: ['apiKeys'] as const,
   gatewayModels: (baseUrl: string) => ['gatewayModels', baseUrl] as const,
   reconcilerStatus: ['reconcilerStatus'] as const,
+  sloCompliance: (windowHours: number) => ['sloCompliance', windowHours] as const,
+
+  dataPlanes: ['dataPlanes'] as const,
+  serviceAccounts: ['serviceAccounts'] as const,
+  platformUsers: ['platformUsers'] as const,
 };
 
 // --- fleet ------------------------------------------------------------------
@@ -649,7 +655,117 @@ export function useMyTeamPermissions(teamId: string | undefined) {
   });
 }
 
+// --- data planes ------------------------------------------------------------
+
+export function useDataPlanes() {
+  return useQuery({
+    queryKey: qk.dataPlanes,
+    queryFn: () => api.listDataPlanes(),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateDataPlane() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateDataPlaneInput) => api.createDataPlane(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.dataPlanes }),
+  });
+}
+
+export function useRefreshDataPlaneConfig() {
+  return useMutation({
+    mutationFn: (id: string) => api.refreshDataPlaneConfig(id),
+  });
+}
+
+// --- service accounts -------------------------------------------------------
+
+export function useServiceAccounts() {
+  return useQuery({
+    queryKey: qk.serviceAccounts,
+    queryFn: () => api.listServiceAccounts(),
+  });
+}
+
+export function useCreateServiceAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateServiceAccountInput) => api.createServiceAccount(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAccounts }),
+  });
+}
+
+export function useRevokeServiceAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.revokeServiceAccount(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAccounts }),
+  });
+}
+
+// --- platform users ---------------------------------------------------------
+
+export function usePlatformUsers() {
+  return useQuery({
+    queryKey: qk.platformUsers,
+    queryFn: () => api.listPlatformUsers(),
+  });
+}
+
 // --- live metrics (SSE) -----------------------------------------------------
+
+// --- team slugs derived from API keys (for API key creation form) -----------
+
+/**
+ * Returns the unique set of team slugs already used in existing API keys.
+ * Used to populate the "Team" dropdown in the Create API Key form so
+ * operators pick from existing tenants rather than free-typing.
+ */
+export function useApiKeyTeamSlugs(): string[] {
+  const { data: keys } = useApiKeys();
+  return useMemo(() => {
+    if (!keys || keys.length === 0) return [];
+    return Array.from(new Set(keys.map((k) => k.team).filter(Boolean)));
+  }, [keys]);
+}
+
+// --- what-if planner --------------------------------------------------------
+
+export function useWhatIfPlan() {
+  return useMutation({
+    mutationFn: (request: WhatIfRequest) => api.whatIfPlan(request),
+  });
+}
+
+// --- SLO compliance ---------------------------------------------------------
+
+export function useSloCompliance(windowHours = 24) {
+  return useQuery({
+    queryKey: qk.sloCompliance(windowHours),
+    queryFn: () =>
+      api.getSloCompliance(windowHours).catch((e: unknown) => {
+        // 404 = endpoint not available in this CP version (pre-v0.6); hide silently.
+        if (e instanceof Error && e.message.includes('404')) return null;
+        throw e;
+      }),
+    refetchInterval: 60_000,
+  });
+}
+
+// --- billing forecast -------------------------------------------------------
+
+export function useBillingForecast() {
+  return useQuery({
+    queryKey: ['billingForecast'],
+    queryFn: () =>
+      api.getBillingForecast().catch((e: unknown) => {
+        // 404/402 = endpoint not available in this CP version; hide silently.
+        if (e instanceof Error && /40[24]/.test(e.message)) return null;
+        throw e;
+      }),
+  });
+}
 
 /**
  * Subscribe to GET /api/v1/metrics for the lifetime of the component and expose
@@ -680,4 +796,53 @@ export function useMetricsStream(): { snapshot: MetricsSnapshot | null; streamEr
     };
   }, []);
   return { snapshot, streamError };
+}
+
+// --- SLO compliance (full nested shape, v0.6) --------------------------------
+
+export const sloQk = {
+  complianceFull: (windowHours: number) => ['sloComplianceFull', windowHours] as const,
+};
+
+export function useSloComplianceFull(windowHours = 24) {
+  return useQuery({
+    queryKey: sloQk.complianceFull(windowHours),
+    queryFn: () =>
+      api.getSloComplianceFull(windowHours).catch((e: unknown) => {
+        // 404 = endpoint not available in this CP version; hide silently.
+        if (e instanceof Error && e.message.includes('404')) return null;
+        throw e;
+      }),
+    refetchInterval: 60_000,
+  });
+}
+
+// --- policy-as-code (enterprise: policy_engine) ----------------------------
+
+export const policyQk = {
+  list: ['policies'] as const,
+};
+
+export function usePolicies() {
+  return useQuery({
+    queryKey: policyQk.list,
+    queryFn: () => api.listPolicies(),
+  });
+}
+
+export function useUpsertPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, rego, enabled }: { name: string; rego: string; enabled?: boolean }) =>
+      api.upsertPolicy(name, rego, enabled),
+    onSuccess: () => qc.invalidateQueries({ queryKey: policyQk.list }),
+  });
+}
+
+export function useDeletePolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.deletePolicy(name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: policyQk.list }),
+  });
 }

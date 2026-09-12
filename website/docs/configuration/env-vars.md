@@ -16,8 +16,10 @@ Source: `go/controlplane/main.go` (`loadConfig()`)
 | `PURSER_PKI_DIR` | `pki-state` | Directory for the internal CA key and certificate persistence. Under Kubernetes, set to `/data/pki-state`. |
 | `PURSER_GATEWAY_ADDR` | (empty) | Gateway base URL the Orchestrator pushes route updates to (e.g. `http://gateway:8080`). When empty, route sync is a no-op. |
 | `PURSER_GATEWAY_TOKEN` | (empty) | Shared secret sent by the Control Plane to the Gateway in the `X-Purser-Internal-Token` header for route sync. Must match `PURSER_GATEWAY_INTERNAL_TOKEN` on the Gateway. |
+| `PURSER_ROUTE_RECONCILE_INTERVAL` | `30` (seconds) | How often the Control Plane re-pushes the desired route set — one route per `ACTIVE` deployment — to the Gateway, and deletes routes whose model is no longer `ACTIVE`. The Gateway holds its routing table in memory only, so this loop is what restores routes after a Gateway restart. Set to `0` or an invalid value to fall back to the 30-second default. A failed pass (Gateway unreachable) retries after 5 seconds. |
 | `PURSER_CLUSTER_ID` | `default` | Cluster identifier echoed in join-token responses so an enrolling Agent knows which cluster it is joining. |
 | `PURSER_AGENT_PORT` | `0` | Port the Orchestrator dials on each node to reach `AgentService`. `0` uses the default `50151`. |
+| `PURSER_AGENT_GRPC_INSECURE` | `false` | When `true`, the Orchestrator connects to agents over plain gRPC instead of the PKI-issued mTLS channel. **Dev/demo use only.** Needed when the Control Plane runs with PKI enabled (e.g. in Docker Compose) but agents run natively without a matching TLS configuration. Never use in production. |
 | `PURSER_LICENSE_KEY` | (empty) | Enterprise license key. Verified **offline** against the embedded ed25519 public key — no phone-home. Absent = community edition (enterprise features disabled). A present-but-invalid key causes a fatal startup error. |
 | `PURSER_HF_TOKEN` | (empty) | HuggingFace API token used by `POST /api/v1/models/import` when the caller does not supply an `X-HF-Token` header. Required for private and gated models; leave empty for public-model-only access. |
 | `PURSER_OIDC_ISSUER` | (empty) | OIDC provider discovery URL. When set, the Control Plane enforces OIDC authentication on the admin UI and management REST API. Example: `https://login.microsoftonline.com/<tenant>/v2.0`. Must be paired with `PURSER_OIDC_CLIENT_ID`. |
@@ -174,7 +176,8 @@ Both variables are **required** — the gateway refuses to start with a clear er
 | Variable | Default | Description |
 |---|---|---|
 | `PURSER_GATEWAY_INTERNAL_TOKEN` | (none) | Shared secret for the management plane (route sync). The Control Plane sends it in the `X-Purser-Internal-Token` header. When absent, route sync is disabled (fail-closed). Must match `PURSER_GATEWAY_TOKEN` on the Control Plane. |
-| `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway runs in **OPEN DEV MODE** — any non-empty bearer token is accepted. **Always set this in production.** |
+| `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway **refuses to start** unless `PURSER_GATEWAY_DEV_MODE=1` is set explicitly (fail-closed). |
+| `PURSER_GATEWAY_DEV_MODE` | `0` | Set to `1` to allow starting with **no** API keys configured: any non-empty bearer token is then accepted and mapped to the `default` tenant, and a warning is logged on every startup. **Never set this in production** — it disables authentication. Ignored when `PURSER_GATEWAY_API_KEYS` is non-empty (keys always take precedence). |
 
 ### Quota and rate limiting
 
@@ -223,7 +226,7 @@ See [OpenTelemetry configuration](otel.md) for full details: emitted signals, me
 
 ### Control Plane env vars (29)
 
-`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_OIDC_CLIENT_SECRET`, `PURSER_OIDC_REDIRECT_URI`, `PURSER_SESSION_SECRET`, `PURSER_OIDC_GROUP_MAPPINGS`, `PURSER_ALLOWED_ORIGINS`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
+`PURSER_DB`, `PURSER_ADDR`, `PURSER_GRPC_ADDR`, `PURSER_PKI_DIR`, `PURSER_GATEWAY_ADDR`, `PURSER_GATEWAY_TOKEN`, `PURSER_ROUTE_RECONCILE_INTERVAL`, `PURSER_CLUSTER_ID`, `PURSER_AGENT_PORT`, `PURSER_LICENSE_KEY`, `PURSER_HF_TOKEN`, `PURSER_OIDC_ISSUER`, `PURSER_OIDC_CLIENT_ID`, `PURSER_OIDC_CLIENT_SECRET`, `PURSER_OIDC_REDIRECT_URI`, `PURSER_SESSION_SECRET`, `PURSER_OIDC_GROUP_MAPPINGS`, `PURSER_ALLOWED_ORIGINS`, `PURSER_PLANNER_ORDERING_THRESHOLD`, `PURSER_RECONCILER_INTERVAL`, `PURSER_RECONCILER_NODE_OFFLINE_AFTER`, `PURSER_RECONCILER_HYSTERESIS`, `PURSER_RECONCILER_ACTION_COOLDOWN`, `PURSER_RECONCILER_WEBHOOK_URL`, `PURSER_RECONCILER_WEBHOOK_RETRIES`, `PURSER_TLS_CERT`, `PURSER_TLS_KEY`, `PURSER_TLS_AUTO`, `PURSER_RATE_LIMIT_RPS`, `PURSER_RATE_LIMIT_KEY_RPS`
 
 ### Agent env vars (22)
 
