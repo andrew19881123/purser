@@ -22,7 +22,7 @@ You should see **five** services, all `running`:
 
 ```
 NAME                     SERVICE         STATUS              PORTS
-purser-control-plane-1   control-plane   running             8080/tcp, 9443/tcp
+purser-control-plane-1   control-plane   running             8080/tcp, 0.0.0.0:9443->9443/tcp
 purser-gateway-1         gateway         running             8081/tcp
 purser-postgres-1        postgres        running (healthy)   5432/tcp
 purser-proxy-1           proxy           running             0.0.0.0:3000->80/tcp
@@ -30,6 +30,9 @@ purser-ui-1              ui              running             80/tcp
 ```
 
 The `NAME` column is prefixed with the Compose project name, which defaults to the directory you cloned into — so yours may read `myclone-gateway-1`. What matters is that five services are listed and none is `exited` or `restarting`. If one is unhealthy, read its logs with `docker compose logs <service>`.
+
+!!! note "postgres shows `(unhealthy)` on distroless images"
+    If you see `control-plane` as `(unhealthy)` but the service is responding to curl, this is a known issue: the healthcheck uses `wget`, which is not present in the distroless image. The service is functional; ignore the health status for local development.
 
 !!! note "Only one port is published"
     `proxy` is the only service with a host port (`3000->80`). The Control Plane (`:8080`) and Gateway (`:8081`) are container-internal; nginx path-routes `/api/` to the Control Plane and `/v1/` to the Gateway. From your machine the addresses are therefore `http://localhost:3000` (dashboard), `http://localhost:3000/api` (Control Plane REST) and `http://localhost:3000/v1` (OpenAI-compatible Gateway) — **not** `:8080` or `:8081`, which will refuse the connection.
@@ -52,10 +55,7 @@ make demo-seed
 
 **What you get:** the whole control path. The Control Plane and its full REST API, the dashboard, the Gateway's OpenAI-compatible surface, a Postgres-backed registry, and a model in the catalog. That is enough to explore the API, the Catalog and Playground pages, node pools, API keys and RBAC — everything except a generated token.
 
-**What you do not get: an inference response.** Two independent reasons, both structural:
-
-1. Inference runs in the **Agent**, not the Gateway. The Gateway is a reverse proxy; it holds no weights and no inference code, and even the mock engine lives in the Agent. The compose stack ships no Agent service.
-2. You cannot add one to this stack. Agents enrol over the Control Plane's gRPC **RegistrationService on `:9443`**, and compose publishes only port `3000` — nginx proxies HTTP paths only. So the port an Agent would join through is not reachable from your machine, even if you already had an Agent binary.
+**What you do not get: an inference response.** The compose stack ships no Agent service. Inference runs in the Agent (the Gateway is a reverse proxy with no weights), so the Gateway starts with an empty routing table.
 
 Concretely:
 
@@ -66,8 +66,12 @@ curl http://localhost:3000/v1/models -H 'Authorization: Bearer demo-key-12345'
 
 That is expected, not a fault: the Gateway lists and serves a model only once the Control Plane publishes a route for it, which happens after an inference engine reports ready on an enrolled node. Until then a chat call returns `503 "model not available"`.
 
-!!! warning "`make demo-agent` will not work against the compose stack"
-    `make demo-agent` targets the **native** `make dev` Control Plane on `:8080`/`:9443`. Under compose neither port is published, so it can neither mint a join token nor enrol. It also runs `./bin/purser-agent`, which does not exist until you build it from source.
+**Can you enrol a native agent against the compose stack?** Port `9443` is now published, so the enrollment gRPC call can reach the Control Plane. However, once enrolled the Control Plane connects **back** to the agent over TLS (using the PKI-issued cert), while a native agent built without explicit TLS configuration serves plain gRPC. Set `PURSER_AGENT_GRPC_INSECURE=true` on the Control Plane (add it to `control-plane.environment` in `docker-compose.yml`) to tell it to dial agents over plain gRPC in this mixed setup.
+
+The cleaner path for local inference development is the native `make dev` stack described below — no Docker required, and no TLS mismatch to worry about.
+
+!!! note "About `demo-key-12345`"
+    `demo-key-12345` is a **Gateway** API key — it is the value of `PURSER_GATEWAY_API_KEYS` in `docker-compose.yml`. It is not an API key you create via the Control Plane's `/api/v1/apikeys` endpoint, and it does not appear in the API Keys list in the dashboard. Think of it as the password hard-wired into the gateway container for demo use; in production you replace it with keys you generate yourself.
 
 **The two paths that do reach inference:**
 

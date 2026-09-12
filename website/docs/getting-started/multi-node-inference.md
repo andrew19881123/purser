@@ -72,13 +72,16 @@ nodes can enrol. If your cluster has no load-balancer provisioner, use
 `NodePort` or a port-forward — see the
 [Quickstart Helm section](quickstart.md#step-1-install-the-control-plane-helm).
 
-!!! danger "Do not use `docker compose up -d` for this guide"
-    The demo compose stack publishes a single port (`3000`), and its nginx
-    proxies HTTP paths only. The gRPC RegistrationService an Agent enrols
-    through is not reachable from another machine, so no GPU node can ever
-    join a compose-based Control Plane. Use Helm, or run the Control Plane
-    natively with `PURSER_ADDR=:8080 PURSER_GRPC_ADDR=:9443` bound to a LAN
-    interface.
+!!! warning "Docker Compose is not suitable for multi-machine GPU inference"
+    The demo compose stack is a single-machine demo. Even though port `9443`
+    is now published on `localhost`, it is not reachable from **other machines**
+    on your LAN unless you bind Docker to a non-loopback interface — which
+    requires additional configuration. More importantly, the compose stack runs
+    the Control Plane with `PURSER_PKI_DIR` enabled, which requires
+    `PURSER_AGENT_GRPC_INSECURE=true` on the CP to talk to native agents over
+    plain gRPC. For a real multi-node GPU setup, use Helm (which handles this
+    correctly) or run the Control Plane natively with
+    `PURSER_ADDR=:8080 PURSER_GRPC_ADDR=:9443` bound to a LAN interface.
 
 Note the Control Plane address (e.g. `192.168.1.10`) — the REST API is on
 `:8080` and Agents enrol against `:9443`.

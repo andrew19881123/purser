@@ -10,8 +10,8 @@ by DORA Article 12.
 
 | Database | Default in | Backup tool |
 |---|---|---|
-| PostgreSQL (`PURSER_DB_DRIVER=postgres`) | Helm chart, docker-compose production | `pg_dump` / `pg_restore` |
-| SQLite (`PURSER_DB_DRIVER=sqlite`) | Development, single-node | `control-plane backup` (`VACUUM INTO`) |
+| PostgreSQL (`PURSER_DB_DRIVER=postgres`) | Helm chart (production) | `pg_dump` / `pg_restore` |
+| SQLite (`PURSER_DB_DRIVER=sqlite`) | Development, single-node, `docker compose` demo | `control-plane backup` (`VACUUM INTO`) |
 
 Jump to the section for your database:
 - [PostgreSQL backup](#postgresql-backup) / [PostgreSQL restore](#postgresql-restore)
