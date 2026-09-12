@@ -28,6 +28,9 @@ import type {
   ChainVerifyResponse,
   ClusterCapacity,
   CustomRole,
+  ClusterStatus,
+  ConfigApplyResult,
+  ConfigDiff,
   DataPlane,
   DataPlaneWithToken,
   DeployOverrides,
@@ -315,6 +318,18 @@ export interface PurserApi {
   eraseSubject(input: GdprErasureInput): Promise<GdprErasureResult>;
   /** GET /api/v1/gdpr/erasure-log — past erasure operations (backend stub returns []). */
   getGdprErasureLog(): Promise<GdprErasureLogEntry[]>;
+
+  // --- HA / Raft cluster status ---
+  /** GET /api/v1/cluster/status — Raft topology (leader/state/peers). UNauthenticated. */
+  getClusterStatus(): Promise<ClusterStatus>;
+
+  // --- config-as-code (purser.yaml desired state) ---
+  /** GET /api/v1/config/export — current cluster config as a raw YAML document. */
+  exportConfig(): Promise<string>;
+  /** POST /api/v1/config/diff — dry-run a submitted purser.yaml; returns the diff. Safe. */
+  diffConfig(yaml: string): Promise<ConfigDiff>;
+  /** POST /api/v1/config/apply — apply a submitted purser.yaml. MUTATING, cluster-wide. */
+  applyConfig(yaml: string): Promise<ConfigApplyResult>;
 
   // --- policy-as-code (enterprise: policy_engine) ---
   /** GET /api/v1/policies — 402 without the policy_engine feature. */

@@ -925,3 +925,64 @@ export function useDeletePolicy() {
     onSuccess: () => qc.invalidateQueries({ queryKey: policyQk.list }),
   });
 }
+
+// --- HA / Raft cluster status ----------------------------------------------
+
+/**
+ * GET /api/v1/cluster/status — Raft topology (leader / state / peers).
+ * The endpoint is UNauthenticated and always returns 200 (standalone or raft),
+ * so a single-node cluster reports `mode: "standalone", isLeader: true` rather
+ * than erroring. Refreshed on an interval so a leadership change is visible.
+ */
+export function useClusterStatus() {
+  return useQuery({
+    queryKey: ['clusterStatus'],
+    queryFn: () => api.getClusterStatus(),
+    refetchInterval: 15_000,
+    retry: 1,
+  });
+}
+
+// --- config-as-code (purser.yaml desired state) ----------------------------
+
+export const configCodeQk = {
+  export: ['configExport'] as const,
+};
+
+/** GET /api/v1/config/export — current cluster config as a raw YAML document. */
+export function useConfigExport() {
+  return useQuery({
+    queryKey: configCodeQk.export,
+    queryFn: () => api.exportConfig(),
+    // The exported config only changes when models/deployments change; no need
+    // to poll aggressively. Operators can refetch explicitly.
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+  });
+}
+
+/** POST /api/v1/config/diff — dry-run a submitted config. Safe (no mutation). */
+export function useConfigDiff() {
+  return useMutation({
+    mutationFn: (yaml: string) => api.diffConfig(yaml),
+  });
+}
+
+/**
+ * POST /api/v1/config/apply — apply a submitted config. MUTATING, cluster-wide.
+ * On success the read-mostly caches that an apply can change (catalog,
+ * deployments, capacity, the config export itself) are invalidated so every
+ * open view reflects the new desired state.
+ */
+export function useConfigApply() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (yaml: string) => api.applyConfig(yaml),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: configCodeQk.export });
+      qc.invalidateQueries({ queryKey: qk.catalog });
+      qc.invalidateQueries({ queryKey: qk.deployments });
+      qc.invalidateQueries({ queryKey: qk.capacity });
+    },
+  });
+}

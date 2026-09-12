@@ -876,3 +876,28 @@ curl http://cp:8080/api/v1/config/export \
 `GET /api/v1/config/export` returns a `Content-Type: application/yaml` body in
 the same `ClusterConfig` format as the input, representing the current live
 state of the cluster (models + active deployments).
+
+### From the dashboard
+
+The operator dashboard exposes the same three operations under
+**Administration → Config as code** (`/config`), for operators who prefer a UI
+over `curl`:
+
+- **View** — the current exported `purser.yaml` is shown read-only in a
+  syntax-panelled code view (backed by `GET /config/export`). Use
+  **Load current into editor** to seed the editor from live state.
+- **Diff** — paste or upload a candidate `purser.yaml` and click **Diff** to run
+  `POST /config/diff`. The page renders the returned change set (models /
+  deployments to add or remove, quotas to upsert) as a structured summary. This
+  is a **safe, read-only** dry run — it never mutates the cluster.
+- **Apply** — clicking **Apply configuration** does **not** apply immediately.
+  It arms a confirmation dialog that spells out that the operation is
+  **mutating and cluster-wide and cannot be undone automatically**; only an
+  explicit **Confirm apply** click issues `POST /config/apply`. On success the
+  page shows the applied counts and the dashboard's catalog/deployment/capacity
+  views are refreshed.
+
+!!! tip "GitOps stays the source of truth"
+    The dashboard Apply is intended for one-off / break-glass changes. For
+    routine changes, keep `purser.yaml` in Git and let the reconcile loop or CI
+    (`config apply`) converge the cluster — see the GitOps workflow above.

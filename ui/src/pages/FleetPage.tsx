@@ -16,6 +16,7 @@ import {
 import { IconServer } from '../components/icons';
 import {
   useCapacity,
+  useClusterStatus,
   useMetricsStream,
   useNodes,
   useNodeAction,
@@ -26,7 +27,7 @@ import {
 import { useT, type TFunc } from '../i18n';
 import { gb, tokS } from '../lib/format';
 import { errorMessage } from '../lib/errors';
-import type { ClusterCapacity, EngineMetrics, LinkQuality, NodeView, SloModelCompliance } from '../api/types';
+import type { ClusterCapacity, ClusterStatus, EngineMetrics, LinkQuality, NodeView, SloModelCompliance } from '../api/types';
 
 const LINK_TONE: Record<LinkQuality, Tone> = {
   excellent: 'success',
@@ -210,6 +211,140 @@ export function ReconcilerStatusCard({
           </time>
         </p>
       )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HA / Raft cluster status card
+//
+// Read-only view of the control-plane's high-availability topology, backed by
+// GET /api/v1/cluster/status (UNauthenticated). It handles four states:
+//   - loading  → spinner
+//   - error    → neutral "Status unknown" badge (endpoint unreachable)
+//   - standalone (single node, no HA) → informational; is_leader is always true
+//     and there are no peers. This is the normal shape for a single-node deploy
+//     and must NOT read as an error.
+//   - raft     → leader address, raft state, and peer count from the stats map.
+//
+// Mirrors the ReconcilerStatusCard pattern (Card + stat-grid + collapsible
+// details) so it sits naturally beside it on the Fleet page.
+// ---------------------------------------------------------------------------
+
+const RAFT_STATE_TONE: Record<string, Tone> = {
+  Leader: 'success',
+  Follower: 'info',
+  Candidate: 'warning',
+  Shutdown: 'danger',
+};
+
+export function ClusterStatusCard() {
+  const t = useT();
+  const { data, isLoading, isError } = useClusterStatus();
+
+  if (isLoading) {
+    return (
+      <Card title={t('clusterStatus.title')}>
+        <LoadingBlock />
+      </Card>
+    );
+  }
+
+  if (isError || !data) {
+    return (
+      <Card title={t('clusterStatus.title')}>
+        <p>
+          <Badge tone="neutral">{t('clusterStatus.unknown')}</Badge>{' '}
+          <span className="muted">{t('clusterStatus.unknownHint')}</span>
+        </p>
+      </Card>
+    );
+  }
+
+  return <ClusterStatusBody status={data} t={t} />;
+}
+
+function ClusterStatusBody({ status, t }: { status: ClusterStatus; t: TFunc }) {
+  // Standalone (single-node, no HA) — a normal, non-error state.
+  if (status.mode === 'standalone') {
+    return (
+      <Card title={t('clusterStatus.title')}>
+        <div className="stat-grid">
+          <div className="stat">
+            <span className="stat__value">
+              <Badge tone="neutral">{t('clusterStatus.standalone')}</Badge>
+            </span>
+            <span className="stat__label">{t('clusterStatus.stat.mode')}</span>
+          </div>
+          <div className="stat">
+            <span className="stat__value">
+              <Badge tone="success">{t('clusterStatus.thisLeader')}</Badge>
+            </span>
+            <span className="stat__label">{t('clusterStatus.stat.thisNode')}</span>
+          </div>
+        </div>
+        <p className="muted" style={{ marginBottom: 0 }}>{t('clusterStatus.standaloneHint')}</p>
+      </Card>
+    );
+  }
+
+  // Raft mode — surface leader, state, and peer count.
+  const stateStr = status.state ?? '';
+  const peers = status.stats?.numPeers ?? status.stats?.numVoters;
+  const peerCount = peers !== undefined ? Number(peers) : undefined;
+  // hashicorp/raft's num_peers excludes the local node; total members = peers + 1.
+  const members = peerCount !== undefined && isFinite(peerCount) ? peerCount + 1 : undefined;
+  const statEntries = status.stats ? Object.entries(status.stats) : [];
+
+  return (
+    <Card title={t('clusterStatus.title')}>
+      <div className="stat-grid">
+        {/* The raft `state` IS this node's role (Leader/Follower/Candidate),
+            so a separate "this node" indicator would be redundant. */}
+        <div className="stat">
+          <span className="stat__value">
+            <Badge tone={RAFT_STATE_TONE[stateStr] ?? 'neutral'}>
+              {stateStr || t('clusterStatus.stat.state')}
+            </Badge>
+          </span>
+          <span className="stat__label">{t('clusterStatus.stat.state')}</span>
+        </div>
+        {members !== undefined && (
+          <div className="stat">
+            <span className="stat__value">{members}</span>
+            <span className="stat__label">{t('clusterStatus.stat.members')}</span>
+          </div>
+        )}
+        {peerCount !== undefined && (
+          <div className="stat">
+            <span className="stat__value">{peerCount}</span>
+            <span className="stat__label">{t('clusterStatus.stat.peers')}</span>
+          </div>
+        )}
+      </div>
+
+      {status.leader && (
+        <p className="muted">
+          {t('clusterStatus.stat.leader')}:{' '}
+          <code className="inline-code" style={{ fontSize: '0.85em' }}>{status.leader}</code>
+        </p>
+      )}
+
+      {statEntries.length > 0 && (
+        <details className="reconciler__config">
+          <summary className="muted">{t('clusterStatus.stats')}</summary>
+          <dl className="reconciler__config-grid">
+            {statEntries.map(([k, v]) => (
+              <div key={k} style={{ display: 'contents' }}>
+                <dt><code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85em' }}>{k}</code></dt>
+                <dd>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      )}
+
+      <p className="muted" style={{ marginBottom: 0 }}>{t('clusterStatus.raftHint')}</p>
     </Card>
   );
 }
@@ -748,6 +883,8 @@ export function FleetPage() {
       {!reconcilerStatus.isLoading && (
         <ReconcilerStatusCard status={reconcilerStatus.data} />
       )}
+
+      <ClusterStatusCard />
 
       <SloStatusCard t={t} />
 

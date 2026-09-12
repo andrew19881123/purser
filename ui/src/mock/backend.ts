@@ -916,6 +916,45 @@ export const mockBackend: PurserApi = {
     return delay(undefined as void);
   },
 
+  // --- HA / Raft cluster status (mock: single-node standalone, no HA) ---
+  getClusterStatus() {
+    return delay({ mode: 'standalone' as const, isLeader: true });
+  },
+
+  // --- config-as-code (mock) ---
+  exportConfig() {
+    return delay(
+      [
+        'apiVersion: purser/v1',
+        'kind: ClusterConfig',
+        'cluster:',
+        '  id: mock-cluster',
+        'models: []',
+        'deployments: []',
+        '',
+      ].join('\n'),
+    );
+  },
+  diffConfig(_yaml: string) {
+    return delay({
+      modelsToAdd: [],
+      modelsToRemove: [],
+      deploymentsToAdd: [],
+      deploymentsToRemove: [],
+      quotasToUpsert: [],
+    });
+  },
+  applyConfig(_yaml: string) {
+    return delay({
+      modelsAdded: 0,
+      deploymentsAdded: 0,
+      quotasUpserted: 0,
+      orgsAdded: 0,
+      nodePoolsAdded: 0,
+      slosUpserted: 0,
+    });
+  },
+
   // --- data planes ---
   getSloCompliance(_windowHours = 24) { return delay({ models: [], window_hours: 24 }); },
   listDataPlanes() { return delay([]); },

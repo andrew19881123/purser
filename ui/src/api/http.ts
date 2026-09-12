@@ -69,6 +69,9 @@ import type {
   PoliciesResponse,
   Policy,
   PoolTeamQuota,
+  ClusterStatus,
+  ConfigApplyResult,
+  ConfigDiff,
   ReconcilerStatus,
   Role,
   RolesResponse,
@@ -201,9 +204,9 @@ function createClient(baseUrl: string) {
 
   /**
    * Like `request`, but returns the RAW response body text without JSON parsing
-   * or key camelization. Used for on-demand document downloads (compliance
-   * exports) where the operator should get exactly the bytes the server emitted
-   * — snake_case field names and all. Error handling (ApiError, 401 redirect)
+   * or key camelization. Used for documents the server emits verbatim — the
+   * compliance exports (snake_case JSON downloaded as-is) and the config-as-code
+   * export (a YAML document, not JSON). Error handling (ApiError, 401 redirect)
    * is identical to `request`, so an enterprise gate still surfaces as a 402.
    */
   async function requestText(path: string): Promise<string> {
@@ -211,7 +214,7 @@ function createClient(baseUrl: string) {
     try {
       res = await fetch(`${baseUrl}${path}`, {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/yaml, application/json, text/plain' },
         credentials: 'same-origin',
       });
     } catch (err) {
@@ -240,7 +243,52 @@ function createClient(baseUrl: string) {
     return res.text();
   }
 
-  return { request, requestText };
+  /**
+   * POST a RAW text body (e.g. a purser.yaml document) and parse the JSON
+   * response (camelized). Unlike `request`, the body is sent verbatim with a
+   * `text/yaml` content type — the config diff/apply endpoints read the raw
+   * bytes and parse them server-side, so we must NOT JSON-encode the body.
+   * Error handling (ApiError, 401 redirect) mirrors `request`.
+   */
+  async function requestRaw<T>(path: string, bodyText: string): Promise<T> {
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/yaml' },
+        credentials: 'same-origin',
+        body: bodyText,
+      });
+    } catch (err) {
+      throw new ApiError(0, err instanceof Error ? err.message : 'Network error');
+    }
+    if (!res.ok) {
+      let body: unknown;
+      let message = `HTTP ${res.status}`;
+      try {
+        body = camelizeKeys(await res.json());
+        const m =
+          body && typeof body === 'object'
+            ? ((body as Record<string, unknown>).message ??
+              (body as Record<string, unknown>).error)
+            : undefined;
+        if (typeof m === 'string' && m.length > 0) message = m;
+      } catch {
+        /* non-JSON error body — keep the status message */
+      }
+      if (res.status === 401) {
+        const { handleUnauthorized } = await import('./config');
+        handleUnauthorized();
+      }
+      throw new ApiError(res.status, message, body);
+    }
+    if (res.status === 204) return undefined as T;
+    const text = await res.text();
+    if (!text) return undefined as T;
+    return camelizeKeys(JSON.parse(text)) as T;
+  }
+
+  return { request, requestText, requestRaw };
 }
 
 // --- normalizers (graceful, backend-shape-tolerant) -------------------------
@@ -692,7 +740,7 @@ function normalizeApproval(raw: unknown): DeploymentApproval {
 }
 
 export function createHttpApi(baseUrl: string): PurserApi {
-  const { request, requestText } = createClient(baseUrl);
+  const { request, requestText, requestRaw } = createClient(baseUrl);
 
   return {
     // --- fleet ---
@@ -1255,6 +1303,73 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     deletePolicy: (name: string): Promise<void> =>
       request<void>(`/policies/${enc(name)}`, { method: 'DELETE' }),
+
+    // --- HA / Raft cluster status ---
+    // GET /api/v1/cluster/status -> { mode, is_leader, leader?, state?, stats? }.
+    getClusterStatus: (): Promise<ClusterStatus> =>
+      request<unknown>('/cluster/status').then(normalizeClusterStatus),
+
+    // --- config-as-code ---
+    // GET /api/v1/config/export -> raw purser.yaml document (Content-Type: application/yaml).
+    exportConfig: (): Promise<string> => requestText('/config/export'),
+
+    // POST /api/v1/config/diff -> dry-run diff of the submitted purser.yaml. Safe (no mutation).
+    diffConfig: (yaml: string): Promise<ConfigDiff> =>
+      requestRaw<unknown>('/config/diff', yaml).then(normalizeConfigDiff),
+
+    // POST /api/v1/config/apply -> apply the submitted purser.yaml. MUTATING, cluster-wide.
+    applyConfig: (yaml: string): Promise<ConfigApplyResult> =>
+      requestRaw<unknown>('/config/apply', yaml).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        // The server wraps the counts under an "applied" key.
+        return normalizeConfigApplyResult(r.applied ?? r);
+      }),
+  };
+}
+
+// --- config-as-code / cluster-status normalizers ---------------------------
+
+function normalizeConfigDiff(raw: unknown): ConfigDiff {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const objArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const strArr = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => str(x)) : [];
+  return {
+    modelsToAdd: objArr(d.modelsToAdd),
+    modelsToRemove: strArr(d.modelsToRemove),
+    deploymentsToAdd: objArr(d.deploymentsToAdd),
+    deploymentsToRemove: strArr(d.deploymentsToRemove),
+    quotasToUpsert: objArr(d.quotasToUpsert),
+  };
+}
+
+function normalizeConfigApplyResult(raw: unknown): ConfigApplyResult {
+  const a = (raw ?? {}) as Record<string, unknown>;
+  return {
+    modelsAdded: num(a.modelsAdded),
+    deploymentsAdded: num(a.deploymentsAdded),
+    quotasUpserted: num(a.quotasUpserted),
+    orgsAdded: num(a.orgsAdded),
+    nodePoolsAdded: num(a.nodePoolsAdded),
+    slosUpserted: num(a.slosUpserted),
+  };
+}
+
+function normalizeClusterStatus(raw: unknown): ClusterStatus {
+  const c = (raw ?? {}) as Record<string, unknown>;
+  const mode = c.mode === 'raft' ? 'raft' : 'standalone';
+  const stats =
+    c.stats && typeof c.stats === 'object'
+      ? Object.fromEntries(
+          Object.entries(c.stats as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+        )
+      : undefined;
+  return {
+    mode,
+    isLeader: bool(c.isLeader, mode === 'standalone'),
+    leader: typeof c.leader === 'string' && c.leader ? c.leader : undefined,
+    state: typeof c.state === 'string' && c.state ? c.state : undefined,
+    stats,
   };
 }
 

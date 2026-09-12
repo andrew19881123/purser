@@ -34,6 +34,7 @@ import { ApiKeysPage } from './pages/ApiKeysPage';
 import { WhatIfPlannerPage } from './pages/WhatIfPlannerPage';
 import { RolesPage } from './pages/RolesPage';
 import { SLOPage } from './pages/SLOPage';
+import { ConfigCodePage } from './pages/ConfigCodePage';
 
 // Route table, exported separately from the configured `router` so tests can
 // build an isolated `createMemoryRouter(routes, { initialEntries })` against the
@@ -52,6 +53,7 @@ export const routes: RouteObject[] = [
       { path: 'join-token', element: <JoinTokenPage /> },
       { path: 'playground', element: <PlaygroundPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'config', element: <ConfigCodePage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'admin-audit', element: <AdminAuditLogPage /> },
       { path: 'compliance', element: <CompliancePage /> },

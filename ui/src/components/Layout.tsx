@@ -10,6 +10,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useI18n, useT, LOCALES, type Locale } from '../i18n';
 import { useTheme } from '../lib/theme';
 import {
+  IconBox,
   IconBuildingOffice,
   IconCalculator,
   IconChart,
@@ -87,6 +88,7 @@ const OBSERVABILITY: NavItem[] = [
 // Cluster management: enrolling new nodes and global settings.
 const ADMINISTRATION: NavItem[] = [
   { to: '/join-token', labelKey: 'nav.joinTokens', icon: <IconPlus /> },
+  { to: '/config',     labelKey: 'nav.configCode', icon: <IconBox /> },
   { to: '/settings',   labelKey: 'nav.settings',   icon: <IconSettings /> },
 ];
 

@@ -43,6 +43,7 @@ vi.mock('../../hooks/queries', () => ({
   }),
   useReconcilerStatus: () => ({ isLoading: false, isError: false, data: undefined }),
   useSloCompliance: () => ({ isLoading: false, isError: false, data: null }),
+  useClusterStatus: () => ({ isLoading: false, isError: false, data: undefined }),
 }));
 
 // ---- helpers ----------------------------------------------------------------

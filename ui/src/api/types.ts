@@ -1095,3 +1095,53 @@ export interface Policy {
 export interface PoliciesResponse {
   policies: Policy[];
 }
+
+// ---------------------------------------------------------------------------
+// Config-as-code — GET /config/export, POST /config/diff, POST /config/apply.
+// The wire exchanges a raw purser.yaml document (export returns YAML text; diff
+// and apply take a raw YAML body). Diff/apply responses are JSON, camelized by
+// the HTTP client. Object arrays (models/deployments/quotas) are kept opaque
+// (`unknown[]`) — the viewer surfaces counts and identifiers, not full specs.
+// ---------------------------------------------------------------------------
+
+export interface ConfigDiff {
+  /** Model specs the apply would create. */
+  modelsToAdd: unknown[];
+  /** Model IDs the apply would remove. */
+  modelsToRemove: string[];
+  /** Deployment specs the apply would create. */
+  deploymentsToAdd: unknown[];
+  /** Deployment IDs the apply would remove. */
+  deploymentsToRemove: string[];
+  /** Quota specs the apply would upsert. */
+  quotasToUpsert: unknown[];
+}
+
+/** Counts returned by POST /config/apply (from the server's `applied` object). */
+export interface ConfigApplyResult {
+  modelsAdded: number;
+  deploymentsAdded: number;
+  quotasUpserted: number;
+  orgsAdded: number;
+  nodePoolsAdded: number;
+  slosUpserted: number;
+}
+
+// ---------------------------------------------------------------------------
+// HA / Raft cluster status — GET /api/v1/cluster/status (UNauthenticated).
+// Standalone (no Raft) responds { mode: "standalone", isLeader: true }. In Raft
+// mode the response also carries the leader address, the Raft state string, and
+// the opaque hashicorp/raft stats map (keys camelized by the HTTP client, e.g.
+// `num_peers` -> `numPeers`).
+// ---------------------------------------------------------------------------
+
+export interface ClusterStatus {
+  mode: 'standalone' | 'raft';
+  isLeader: boolean;
+  /** Leader raft address (raft mode only). */
+  leader?: string;
+  /** Raft state string, e.g. "Leader", "Follower", "Candidate" (raft mode only). */
+  state?: string;
+  /** Opaque hashicorp/raft stats map (raft mode only); keys are camelized. */
+  stats?: Record<string, string>;
+}
