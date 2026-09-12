@@ -1,11 +1,12 @@
 # Observability
 
-Purser exposes three complementary observability surfaces:
+Purser exposes four complementary observability surfaces:
 
 1. **Gateway `/metrics`** — Prometheus scrape of inference request metrics from each gateway instance.
 2. **Agent `/metrics`** — Prometheus scrape of per-node hardware and engine metrics from each agent.
 3. **Control Plane `/metrics`** — Prometheus scrape of cluster health, node status, and deployment counts from the CP.
 4. **OpenTelemetry traces** — Distributed traces for every inference request, enriched with the [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/).
+5. **`GET /api/v1/metrics`** — Live cluster metrics stream (Server-Sent Events) used by the operator dashboard.
 
 All Prometheus endpoints are unauthenticated. Restrict access using network policy or a firewall — do not expose them to the public internet.
 
@@ -227,6 +228,77 @@ groups:
           rate(purser_gateway_requests_total[5m]) > 0.05
         for: 2m
         labels: { severity: critical }
+```
+
+---
+
+## Live metrics stream (SSE)
+
+### `GET /api/v1/metrics`
+
+The control-plane exposes a real-time cluster metrics stream over Server-Sent Events (SSE).
+This is the source the operator dashboard polls to render the live fleet view.
+
+**Auth:** Any authenticated request.
+
+**Response:** `Content-Type: text/event-stream`. The connection stays open; one JSON frame is emitted immediately and then once per tick (default 5 s). Close the connection to stop the stream.
+
+#### Frame format
+
+Each SSE frame is a single `data:` line containing a JSON object:
+
+```json
+{
+  "at": "2026-09-12T10:00:00Z",
+  "aggregate_decode_tok_s": 1250.5,
+  "nodes": [
+    {
+      "node_id": "node-abc123",
+      "state": "NODE_STATE_RUNNING",
+      "metrics": {
+        "prefill_tok_s": 800.0,
+        "decode_tok_s": 420.5,
+        "ram_used_gb": 32.0,
+        "vram_used_gb": 18.5,
+        "queue_depth": 3,
+        "accepted_tokens_ratio": 0.92
+      }
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `at` | UTC timestamp of the snapshot. |
+| `aggregate_decode_tok_s` | Sum of `decode_tok_s` across all nodes. |
+| `nodes[].node_id` | Node identifier. |
+| `nodes[].state` | Current node lifecycle state (e.g. `NODE_STATE_RUNNING`). |
+| `nodes[].metrics.decode_tok_s` | Decode (auto-regressive) throughput in tokens/s. |
+| `nodes[].metrics.prefill_tok_s` | Prefill (prompt-processing) throughput in tokens/s. |
+| `nodes[].metrics.vram_used_gb` | VRAM currently consumed by the engine (GiB). |
+| `nodes[].metrics.ram_used_gb` | System RAM currently used (GiB). |
+| `nodes[].metrics.queue_depth` | Inference requests in the engine queue. |
+| `nodes[].metrics.accepted_tokens_ratio` | Speculative-decoding acceptance ratio (0–1). |
+
+!!! note "Nodes with no heartbeat"
+    Nodes that have not yet reported metrics are included in the frame with all metric fields
+    set to `0.0`. This ensures the node array is always complete — missing nodes indicate
+    a configuration problem, not a reporting gap.
+
+#### Example curl session
+
+```bash
+curl -N -H "Authorization: Bearer <token>" \
+     https://cp.internal:8080/api/v1/metrics
+```
+
+Each SSE event arrives as:
+
+```
+data: {"at":"2026-09-12T10:00:05Z","aggregate_decode_tok_s":420.5,"nodes":[...]}
+
+data: {"at":"2026-09-12T10:00:10Z","aggregate_decode_tok_s":422.1,"nodes":[...]}
 ```
 
 ---

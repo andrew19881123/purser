@@ -131,7 +131,7 @@
     ],
     "page": "/fleet",
     "nav": "nav.fleet",
-    "docs": null,
+    "docs": "operations/fleet.md",
     "perm": null,
     "gated": false
   },
@@ -308,7 +308,7 @@
     ],
     "page": "/platform/users",
     "nav": "nav.platformUsers",
-    "docs": null,
+    "docs": "api/platform-users.md",
     "perm": null,
     "gated": false
   },
@@ -460,7 +460,7 @@
     ],
     "page": null,
     "nav": null,
-    "docs": null,
+    "docs": "enterprise/ha-control-plane.md",
     "perm": null,
     "gated": false
   },
@@ -488,7 +488,7 @@
     ],
     "page": null,
     "nav": null,
-    "docs": null,
+    "docs": "operations/observability.md",
     "perm": null,
     "gated": false
   }

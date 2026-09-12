@@ -123,6 +123,7 @@ nav:
     - Python SDK: integrations/python-sdk.md
     - TypeScript SDK: integrations/typescript-sdk.md
   - Operations:
+    - Fleet Management: operations/fleet.md
     - Observability (Prometheus / OpenTelemetry): operations/observability.md
     - Grafana Dashboards: operations/grafana.md
     - Database Configuration: operations/database.md
