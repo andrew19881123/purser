@@ -13,7 +13,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { api, type CreateApiKeyInput } from '../api/client';
+import { api, type CreateApiKeyInput, type CreateDataPlaneInput, type CreateServiceAccountInput } from '../api/client';
 import { config } from '../api/config';
 import type { ChatClient } from '../api/openai';
 import type {
@@ -40,6 +40,10 @@ export const qk = {
   gatewayModels: (baseUrl: string) => ['gatewayModels', baseUrl] as const,
   reconcilerStatus: ['reconcilerStatus'] as const,
   sloCompliance: (windowHours: number) => ['sloCompliance', windowHours] as const,
+
+  dataPlanes: ['dataPlanes'] as const,
+  serviceAccounts: ['serviceAccounts'] as const,
+  platformUsers: ['platformUsers'] as const,
 };
 
 // --- fleet ------------------------------------------------------------------
@@ -648,6 +652,64 @@ export function useMyTeamPermissions(teamId: string | undefined) {
     queryKey: ['myTeamPermissions', teamId ?? ''],
     queryFn: () => api.getMyTeamPermissions(teamId as string),
     enabled: Boolean(teamId),
+  });
+}
+
+// --- data planes ------------------------------------------------------------
+
+export function useDataPlanes() {
+  return useQuery({
+    queryKey: qk.dataPlanes,
+    queryFn: () => api.listDataPlanes(),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateDataPlane() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateDataPlaneInput) => api.createDataPlane(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.dataPlanes }),
+  });
+}
+
+export function useRefreshDataPlaneConfig() {
+  return useMutation({
+    mutationFn: (id: string) => api.refreshDataPlaneConfig(id),
+  });
+}
+
+// --- service accounts -------------------------------------------------------
+
+export function useServiceAccounts() {
+  return useQuery({
+    queryKey: qk.serviceAccounts,
+    queryFn: () => api.listServiceAccounts(),
+  });
+}
+
+export function useCreateServiceAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateServiceAccountInput) => api.createServiceAccount(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAccounts }),
+  });
+}
+
+export function useRevokeServiceAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.revokeServiceAccount(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.serviceAccounts }),
+  });
+}
+
+// --- platform users ---------------------------------------------------------
+
+export function usePlatformUsers() {
+  return useQuery({
+    queryKey: qk.platformUsers,
+    queryFn: () => api.listPlatformUsers(),
   });
 }
 

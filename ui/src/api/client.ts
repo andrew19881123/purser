@@ -27,6 +27,8 @@ import type {
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  DataPlane,
+  DataPlaneWithToken,
   DeployOverrides,
   Deployment,
   DeploymentApproval,
@@ -45,10 +47,14 @@ import type {
   NodePool,
   NodeView,
   Organization,
+  PlatformUser,
   PlanPreviewResult,
   PoolTeamQuota,
   ReconcilerStatus,
   SloComplianceResponse,
+
+  ServiceAccount,
+  ServiceAccountWithSecret,
   Team,
   TeamMember,
   UsageSummary,
@@ -65,6 +71,20 @@ export interface CreateApiKeyInput {
   monthlyQuota: number | null;
   /** RBAC role; defaults to "admin" on the server if omitted. */
   role?: 'admin' | 'viewer' | 'inference';
+}
+
+export interface CreateDataPlaneInput {
+  name: string;
+  tier?: string;
+  gatewayUrl?: string;
+  description?: string;
+}
+
+export interface CreateServiceAccountInput {
+  name: string;
+  teamId: string;
+  description?: string;
+  role: string;
 }
 
 export interface PurserApi {
@@ -213,6 +233,26 @@ export interface PurserApi {
   // --- billing forecast ---
   /** GET /api/v1/billing/forecast — projected spend and days to budget exhaustion. 402 without billing feature. */
   getBillingForecast(): Promise<BillingForecastResponse>;
+
+  // --- v0.5 data planes ---
+  /** GET /api/v1/platform/dataplanes — list all registered Data Planes. */
+  listDataPlanes(): Promise<DataPlane[]>;
+  /** POST /api/v1/platform/dataplanes — register a new DP; returns join token once. */
+  createDataPlane(input: CreateDataPlaneInput): Promise<DataPlaneWithToken>;
+  /** POST /api/v1/platform/dataplanes/{id}/config/refresh — trigger immediate config rebuild. */
+  refreshDataPlaneConfig(id: string): Promise<void>;
+
+  // --- v0.5 service accounts ---
+  /** GET /api/v1/service-accounts — list all machine identities. */
+  listServiceAccounts(): Promise<ServiceAccount[]>;
+  /** POST /api/v1/service-accounts — create a machine identity; returns secret once. */
+  createServiceAccount(input: CreateServiceAccountInput): Promise<ServiceAccountWithSecret>;
+  /** DELETE /api/v1/service-accounts/{id} — revoke a service account. */
+  revokeServiceAccount(id: string): Promise<void>;
+
+  // --- v0.5 platform users ---
+  /** GET /api/v1/platform/users — list all platform users (admin only). */
+  listPlatformUsers(): Promise<PlatformUser[]>;
 }
 
 // The mock fixtures live behind a dynamic import so they are code-split out of

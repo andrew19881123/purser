@@ -11,12 +11,13 @@ import type {
   ApiKeyWithSecret,
   AuditEntry,
   AuditLog,
-  BillingForecastResponse,
   BillingReport,
   BillingSummary,
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  DataPlane,
+  DataPlaneWithToken,
   Deployment,
   DeploymentPlan,
   EffectivePermissions,
@@ -34,17 +35,17 @@ import type {
   NodePool,
   NodeView,
   Organization,
+  PlatformUser,
   PlanPreviewResult,
   PoolTeamQuota,
   ReconcilerStatus,
-  SloComplianceResponse,
+  ServiceAccount,
+  ServiceAccountWithSecret,
   Team,
   TeamMember,
   UsageSummary,
-  WhatIfRequest,
-  WhatIfResult,
 } from '../api/types';
-import type { CreateApiKeyInput, PurserApi } from '../api/client';
+import type { CreateApiKeyInput, CreateDataPlaneInput, CreateServiceAccountInput, PurserApi } from '../api/client';
 import { ApiError } from '../api/http';
 import { clamp } from '../lib/format';
 import {
@@ -71,6 +72,127 @@ const deployments = new Map<string, Deployment>();
 const plans = new Map<string, DeploymentPlan>();
 /** Models imported through the Model Studio (added at runtime). */
 let importedModels: ModelSpec[] = [];
+
+// --- data planes fixture data -----------------------------------------------
+
+const _now = Date.now();
+let mockDataPlanes: DataPlane[] = [
+  {
+    id: 'dp-prod-01',
+    name: 'prod-cluster',
+    description: 'Primary production inference cluster',
+    tier: 'production',
+    gatewayUrl: 'https://gpu-prod.acme.com',
+    status: 'active',
+    configSnapshot: { routingTable: { 'qwen3-moe-235b': {}, 'llama3-8b': {} }, authBundle: {}, policyBundle: [] },
+    lastHeartbeat: new Date(_now - 45_000).toISOString(),
+    nodeCount: 8,
+    createdAt: new Date(_now - 86_400_000 * 30).toISOString(),
+    updatedAt: new Date(_now - 3_600_000).toISOString(),
+  },
+  {
+    id: 'dp-staging-01',
+    name: 'staging-cluster',
+    description: 'Pre-production validation cluster',
+    tier: 'staging',
+    gatewayUrl: 'https://gpu-staging.acme.com',
+    status: 'active',
+    configSnapshot: { routingTable: { 'llama3-8b': {} }, authBundle: {}, policyBundle: [] },
+    lastHeartbeat: new Date(_now - 120_000).toISOString(),
+    nodeCount: 3,
+    createdAt: new Date(_now - 86_400_000 * 14).toISOString(),
+    updatedAt: new Date(_now - 7_200_000).toISOString(),
+  },
+  {
+    id: 'dp-dev-01',
+    name: 'dev-sandbox',
+    description: 'Developer experimentation cluster',
+    tier: 'development',
+    gatewayUrl: 'https://gpu-dev.internal',
+    status: 'degraded',
+    configSnapshot: null,
+    lastHeartbeat: new Date(_now - 600_000).toISOString(),
+    nodeCount: 1,
+    createdAt: new Date(_now - 86_400_000 * 7).toISOString(),
+    updatedAt: new Date(_now - 600_000).toISOString(),
+  },
+];
+
+// --- service accounts fixture data ------------------------------------------
+
+let mockServiceAccounts: ServiceAccount[] = [
+  {
+    id: 'sa-ci-prod-01',
+    name: 'ci-pipeline-prod',
+    tenant: 'platform',
+    description: 'GitHub Actions production deployment pipeline',
+    role: 'inference',
+    scopes: [],
+    clientId: 'sa_ci_prod_a1b2c3d4',
+    enabled: true,
+    lastUsedAt: new Date(_now - 3_600_000).toISOString(),
+    createdAt: new Date(_now - 86_400_000 * 90).toISOString(),
+  },
+  {
+    id: 'sa-monitor-01',
+    name: 'prometheus-exporter',
+    tenant: 'infrastructure',
+    description: 'Metrics collection service',
+    role: 'viewer',
+    scopes: [],
+    clientId: 'sa_mon_e5f6g7h8',
+    enabled: true,
+    lastUsedAt: new Date(_now - 300_000).toISOString(),
+    createdAt: new Date(_now - 86_400_000 * 45).toISOString(),
+  },
+  {
+    id: 'sa-legacy-01',
+    name: 'legacy-integration',
+    tenant: 'engineering',
+    description: 'Deprecated connector for legacy LiteLLM instance',
+    role: 'admin',
+    scopes: [],
+    clientId: 'sa_leg_i9j0k1l2',
+    enabled: false,
+    lastUsedAt: new Date(_now - 86_400_000 * 30).toISOString(),
+    createdAt: new Date(_now - 86_400_000 * 180).toISOString(),
+  },
+];
+
+// --- platform users fixture data --------------------------------------------
+
+const mockPlatformUsers: PlatformUser[] = [
+  {
+    id: 'alice@acme.com',
+    email: 'alice@acme.com',
+    displayName: 'Alice Chen',
+    orgId: 'acme',
+    orgName: 'Acme Corp',
+    teams: ['platform', 'engineering'],
+    role: 'admin',
+    lastActiveAt: new Date(_now - 3_600_000).toISOString(),
+  },
+  {
+    id: 'bob@acme.com',
+    email: 'bob@acme.com',
+    displayName: 'Bob Patel',
+    orgId: 'acme',
+    orgName: 'Acme Corp',
+    teams: ['engineering'],
+    role: 'member',
+    lastActiveAt: new Date(_now - 86_400_000 * 2).toISOString(),
+  },
+  {
+    id: 'carol@partner.io',
+    email: 'carol@partner.io',
+    displayName: 'Carol Kim',
+    orgId: 'partner',
+    orgName: 'Partner Inc',
+    teams: ['inference-users'],
+    role: 'viewer',
+    lastActiveAt: new Date(_now - 86_400_000 * 14).toISOString(),
+  },
+];
 
 /** Returns seed catalog + any runtime-imported models. */
 function allModels(): ModelSpec[] {
@@ -748,49 +870,78 @@ export const mockBackend: PurserApi = {
     return delay({ entries: filtered.slice(0, limit), count: filtered.length });
   },
 
-  // --- what-if planner ---
+  // --- data planes ---
 
-  whatIfPlan(body: WhatIfRequest): Promise<WhatIfResult> {
-    if (body.hypothetical_nodes.length === 0 && !body.include_existing_nodes) {
-      return delay({ feasible: false, reason: 'No nodes available for simulation.' }, 400);
-    }
-    const assignments: WhatIfResult['assignments'] = body.hypothetical_nodes.map((n, i) => ({
-      node_id: n.node_id || `virtual-${i + 1}`,
-      layer_start: i * 12,
-      layer_end: (i + 1) * 12 - 1,
-    }));
-    return delay({
-      feasible: true,
-      assignments,
-      estimated_decode_tok_s_min: 38,
-      estimated_decode_tok_s_max: 72,
-      current_plan: { feasible: body.include_existing_nodes },
-      improvement_delta: 0.28,
-    }, 600);
+  listDataPlanes(): Promise<DataPlane[]> {
+    return delay(structuredClone(mockDataPlanes));
   },
 
-  // --- SLO compliance ---
-
-  getSloCompliance(_windowHours = 24): Promise<SloComplianceResponse> {
-    const modelIds = Array.from(new Set(
-      Array.from(deployments.values()).map((d) => d.plan.modelId),
-    ));
-    return delay({
-      models: modelIds.map((modelId, i) => ({
-        model_id: modelId,
-        ttft_target_ms: 500,
-        ttft_actual_compliance_pct: 82 + (i % 3) * 6,
-        status: i % 3 === 2 ? 'breached' as const : 'met' as const,
-      })),
-      window_hours: _windowHours,
-    }, 300);
+  createDataPlane(input: CreateDataPlaneInput): Promise<DataPlaneWithToken> {
+    const rand = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36])
+      .join('');
+    const dp: DataPlane = {
+      id: `dp-${rand.slice(0, 8)}`,
+      name: input.name,
+      description: input.description,
+      tier: input.tier ?? 'development',
+      gatewayUrl: input.gatewayUrl ?? '',
+      status: 'registering',
+      configSnapshot: null,
+      lastHeartbeat: null,
+      nodeCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    mockDataPlanes = [dp, ...mockDataPlanes];
+    return delay({ dataplane: structuredClone(dp), joinToken: `dp_${rand}` }, 500);
   },
 
-  // --- billing forecast ---
-  // In mock mode, behave like there is no enterprise license.
-  getBillingForecast(): Promise<BillingForecastResponse> {
-    return Promise.reject(
-      Object.assign(new Error('Enterprise license required'), { status: 402 }),
-    );
+  refreshDataPlaneConfig(id: string): Promise<void> {
+    const dp = mockDataPlanes.find((d) => d.id === id);
+    if (!dp) return Promise.reject(new ApiError(404, 'data plane not found'));
+    dp.configSnapshot = { routingTable: {}, authBundle: {}, policyBundle: [], generatedAt: new Date().toISOString() };
+    dp.updatedAt = new Date().toISOString();
+    return delay(undefined, 300);
+  },
+
+  // --- service accounts ---
+
+  listServiceAccounts(): Promise<ServiceAccount[]> {
+    return delay(structuredClone(mockServiceAccounts));
+  },
+
+  createServiceAccount(input: CreateServiceAccountInput): Promise<ServiceAccountWithSecret> {
+    const rand = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36])
+      .join('');
+    const clientId = `sa_${input.teamId.slice(0, 4)}_${rand.slice(0, 8)}`;
+    const sa: ServiceAccount = {
+      id: `sa-${rand.slice(0, 8)}`,
+      name: input.name,
+      tenant: input.teamId,
+      description: input.description ?? '',
+      role: input.role,
+      scopes: [],
+      clientId,
+      enabled: true,
+      lastUsedAt: null,
+      createdAt: new Date().toISOString(),
+    };
+    mockServiceAccounts = [sa, ...mockServiceAccounts];
+    return delay({ ...structuredClone(sa), clientSecret: `${clientId}_${rand}` }, 500);
+  },
+
+  revokeServiceAccount(id: string): Promise<void> {
+    const sa = mockServiceAccounts.find((s) => s.id === id);
+    if (!sa) return Promise.reject(new ApiError(404, 'service account not found'));
+    sa.enabled = false;
+    return delay(undefined, 350);
+  },
+
+  // --- platform users ---
+
+  listPlatformUsers(): Promise<PlatformUser[]> {
+    return delay(structuredClone(mockPlatformUsers));
   },
 };

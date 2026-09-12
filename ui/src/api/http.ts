@@ -32,6 +32,8 @@ import type {
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  DataPlane,
+  DataPlaneWithToken,
   DeployOverrides,
   Deployment,
   DeploymentApproval,
@@ -56,19 +58,23 @@ import type {
   NodeView,
   Organization,
   PerfEstimate,
+  PlatformUser,
   PlanPreviewResult,
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
   BillingForecastResponse,
   SloComplianceResponse,
+
+  ServiceAccount,
+  ServiceAccountWithSecret,
   Team,
   TeamMember,
   UsageSummary,
   WhatIfRequest,
   WhatIfResult,
 } from './types';
-import type { CreateApiKeyInput, PurserApi } from './client';
+import type { CreateApiKeyInput, CreateDataPlaneInput, CreateServiceAccountInput, PurserApi } from './client';
 
 // --- error type -------------------------------------------------------------
 
@@ -1016,6 +1022,80 @@ export function createHttpApi(baseUrl: string): PurserApi {
         return {
           entries: Array.isArray(r.entries) ? r.entries as BillingForecastResponse['entries'] : [],
         };
+
+    // --- data planes ---
+    listDataPlanes: (): Promise<DataPlane[]> =>
+      request<unknown>('/platform/dataplanes').then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.dataplanes ?? raw;
+        return Array.isArray(arr) ? (arr as DataPlane[]) : [];
+      }),
+
+    createDataPlane: (input: CreateDataPlaneInput): Promise<DataPlaneWithToken> =>
+      request<unknown>('/platform/dataplanes', {
+        method: 'POST',
+        body: { name: input.name, tier: input.tier, gateway_url: input.gatewayUrl, description: input.description },
+      }).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          dataplane: (r.dataplane ?? r) as DataPlane,
+          joinToken: String(r.joinToken ?? r.join_token ?? ''),
+        };
+      }),
+
+    refreshDataPlaneConfig: (id: string): Promise<void> =>
+      request<void>(`/platform/dataplanes/${enc(id)}/config/refresh`, { method: 'POST' }),
+
+    // --- service accounts ---
+    listServiceAccounts: (): Promise<ServiceAccount[]> =>
+      request<unknown>('/service-accounts').then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.serviceAccounts ?? raw;
+        return Array.isArray(arr) ? (arr as ServiceAccount[]) : [];
+      }),
+
+    createServiceAccount: (input: CreateServiceAccountInput): Promise<ServiceAccountWithSecret> =>
+      request<unknown>('/service-accounts', {
+        method: 'POST',
+        body: { name: input.name, team_id: input.teamId, description: input.description, role: input.role },
+      }).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          id: String(r.id ?? ''),
+          name: String(r.name ?? input.name),
+          tenant: String(r.teamId ?? r.team_id ?? r.tenant ?? input.teamId),
+          description: input.description ?? '',
+          role: String(r.role ?? input.role),
+          scopes: Array.isArray(r.scopes) ? (r.scopes as string[]) : [],
+          clientId: String(r.clientId ?? r.client_id ?? ''),
+          enabled: true,
+          lastUsedAt: null,
+          createdAt: new Date().toISOString(),
+          clientSecret: String(r.clientSecret ?? r.client_secret ?? ''),
+        } satisfies ServiceAccountWithSecret;
+      }),
+
+    revokeServiceAccount: (id: string): Promise<void> =>
+      request<void>(`/service-accounts/${enc(id)}`, { method: 'DELETE' }),
+
+    // --- platform users ---
+    listPlatformUsers: (): Promise<PlatformUser[]> =>
+      request<unknown>('/platform/users').then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.users ?? raw;
+        if (!Array.isArray(arr)) return [];
+        return arr.map((u: unknown) => {
+          const e = (u ?? {}) as Record<string, unknown>;
+          // Go returns { user_sub, org_id, role } (camelizeKeys gives userSub, orgId).
+          const sub = String(e.userSub ?? e.user_sub ?? e.id ?? '');
+          return {
+            id: sub,
+            email: sub,
+            displayName: String(e.displayName ?? e.display_name ?? sub),
+            orgId: String(e.orgId ?? e.org_id ?? ''),
+            orgName: String(e.orgName ?? e.org_name ?? e.orgId ?? e.org_id ?? ''),
+            teams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
+            role: String(e.role ?? 'member'),
+            lastActiveAt: typeof e.lastActiveAt === 'string' ? e.lastActiveAt : null,
+          } satisfies PlatformUser;
+        });
       }),
   };
 }

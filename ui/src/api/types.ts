@@ -706,12 +706,20 @@ export interface PoolTeamQuota {
   priority: number;
 }
 
+/**
+ * A platform user as returned by GET /api/v1/platform/users.
+ * The Go API currently surfaces user_sub, org_id, role from the org_members
+ * table. displayName and team membership require OIDC/LDAP (Wave 3).
+ */
 export interface PlatformUser {
   id: string;
   email: string;
-  display_name?: string;
-  auth_method: string;
-  last_seen_at?: string;
+  displayName: string;
+  orgId: string;
+  orgName: string;
+  teams: string[];
+  role: string;
+  lastActiveAt: string | null;
 }
 
 export interface EffectivePermissions {
@@ -858,4 +866,75 @@ export interface BillingForecastEntry {
 
 export interface BillingForecastResponse {
   entries: BillingForecastEntry[];
+
+// (WhatIf types are already defined above in types.ts)
+
+// ---------------------------------------------------------------------------
+// Data Planes — GET/POST /api/v1/platform/dataplanes (v0.5+)
+// ---------------------------------------------------------------------------
+
+/**
+ * A registered Data Plane: a named inference cluster (GPU nodes + Gateway)
+ * connected to the Control Plane. GET /api/v1/platform/dataplanes
+ */
+export interface DataPlane {
+  id: string;
+  name: string;
+  description?: string;
+  /** 'production' | 'staging' | 'development' — operator-defined tier */
+  tier: string;
+  /** Gateway endpoint used by inference clients */
+  gatewayUrl: string;
+  /** 'registering' | 'active' | 'degraded' | 'offline' */
+  status: string;
+  /** Latest config snapshot from the CP push (routing table, auth bundle). */
+  configSnapshot?: Record<string, unknown> | null;
+  /** ISO-8601 last heartbeat from the DP gateway; null before first contact. */
+  lastHeartbeat: string | null;
+  nodeCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Returned exactly once on DP creation:
+ * { dataplane: DataPlane, join_token: "dp_…" } — token shown once only.
+ */
+export interface DataPlaneWithToken {
+  dataplane: DataPlane;
+  joinToken: string;
+}
+
+// ---------------------------------------------------------------------------
+// Service Accounts — GET/POST/DELETE /api/v1/service-accounts (v0.5+)
+// Machine identities for CI/CD pipelines and automation.
+// ---------------------------------------------------------------------------
+
+/**
+ * A machine identity used for OAuth2 client_credentials auth.
+ * GET /api/v1/service-accounts
+ */
+export interface ServiceAccount {
+  id: string;
+  name: string;
+  /** Team slug (stored as "tenant" in Go for routing compatibility). */
+  tenant: string;
+  description: string;
+  /** 'admin' | 'inference' | 'viewer' */
+  role: string;
+  scopes: string[];
+  /** OAuth2 client_id (public identifier). */
+  clientId: string;
+  enabled: boolean;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+/**
+ * Returned exactly once on creation — includes the client_secret.
+ * POST /api/v1/service-accounts
+ */
+export interface ServiceAccountWithSecret extends ServiceAccount {
+  /** OAuth2 client_secret — shown once; never stored in cleartext. */
+  clientSecret: string;
 }
