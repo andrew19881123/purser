@@ -5,7 +5,7 @@
 // rewrite support, swap back to hash routing with a one-liner:
 //   import { createHashRouter } from 'react-router-dom';
 //   export const router = createHashRouter([...]);
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, type RouteObject } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { FleetPage } from './pages/FleetPage';
@@ -21,15 +21,21 @@ import { ApprovalsPage } from './pages/ApprovalsPage';
 import { ChargebackPage } from './pages/ChargebackPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { OrganizationsPage } from './pages/OrganizationsPage';
+import { TeamsListPage } from './pages/TeamsListPage';
 import { TeamPage } from './pages/TeamPage';
 import { NodePoolsPage } from './pages/NodePoolsPage';
-import { ComingSoonPage } from './pages/ComingSoonPage';
 import { DataPlanesPage } from './pages/DataPlanesPage';
 import { ServiceAccountsPage } from './pages/ServiceAccountsPage';
 import { PoliciesPage } from './pages/PoliciesPage';
+import { PlatformUsersPage } from './pages/PlatformUsersPage';
+import { ApiKeysPage } from './pages/ApiKeysPage';
+import { WhatIfPlannerPage } from './pages/WhatIfPlannerPage';
 import { SLOPage } from './pages/SLOPage';
 
-export const router = createBrowserRouter([
+// Route table, exported separately from the configured `router` so tests can
+// build an isolated `createMemoryRouter(routes, { initialEntries })` against the
+// exact same config (see routing.reachability.test.tsx).
+export const routes: RouteObject[] = [
   {
     path: '/',
     element: <Layout />,
@@ -48,16 +54,20 @@ export const router = createBrowserRouter([
       { path: 'chargeback', element: <ChargebackPage /> },
       // v0.4 platform model routes
       { path: 'platform/orgs', element: <OrganizationsPage /> },
+      { path: 'platform/orgs/:orgId/teams', element: <TeamsListPage /> },
       { path: 'platform/orgs/:orgId/teams/:teamId', element: <TeamPage /> },
       { path: 'platform/pools', element: <NodePoolsPage /> },
-      // v0.6 new platform routes (stubs until features land)
+      { path: 'platform/users', element: <PlatformUsersPage /> },
+      // v0.6 platform routes
       { path: 'platform/dataplanes', element: <DataPlanesPage /> },
       { path: 'platform/service-accounts', element: <ServiceAccountsPage /> },
       { path: 'platform/policies', element: <PoliciesPage /> },
-      { path: 'planner/what-if', element: <ComingSoonPage /> },
-      { path: 'api-keys', element: <ComingSoonPage /> },
+      { path: 'planner/what-if', element: <WhatIfPlannerPage /> },
+      { path: 'api-keys', element: <ApiKeysPage /> },
       { path: 'slo', element: <SLOPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
-]);
+];
+
+export const router = createBrowserRouter(routes);

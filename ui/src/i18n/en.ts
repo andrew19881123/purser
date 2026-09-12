@@ -471,6 +471,7 @@ export const en = {
 
   // v0.4 platform model: organizations, teams, node pools
   'nav.organizations': 'Organizations',
+  'nav.platformUsers': 'Platform Users',
   'nav.nodePools': 'Node Pools',
   'platform.orgs.title': 'Organizations',
   'platform.orgs.createOrg': 'Create Organization',
@@ -500,6 +501,19 @@ export const en = {
   'platform.teams.noPermissions': 'No permissions assigned.',
   'platform.teams.addMember.userId': 'User ID',
   'platform.teams.addMember.roleId': 'Role ID',
+  // Teams list (per-organization)
+  'platform.teams.listTitle': 'Teams',
+  'platform.teams.listSubtitle': 'Teams in this organization.',
+  'platform.teams.createTeam': 'Create Team',
+  'platform.teams.noTeams': 'No teams yet.',
+  'platform.teams.name': 'Name',
+  'platform.teams.slug': 'Slug',
+  'platform.teams.description': 'Description',
+  'platform.teams.delete': 'Delete',
+  'platform.teams.deleteConfirm': 'Delete team {name}? This cannot be undone.',
+  'platform.teams.col.name': 'Name',
+  'platform.teams.col.slug': 'Slug',
+  'platform.teams.col.description': 'Description',
   'error.teams': 'Could not load team.',
   'platform.pools.title': 'Node Pools',
   'platform.pools.exclusive': 'Exclusive',

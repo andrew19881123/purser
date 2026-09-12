@@ -382,6 +382,7 @@ export const it: Record<StringKey, string> = {
 
   // v0.4 modello di piattaforma: organizzazioni, team, pool di nodi
   'nav.organizations': 'Organizzazioni',
+  'nav.platformUsers': 'Utenti Piattaforma',
   'nav.nodePools': 'Pool di Nodi',
   'platform.orgs.title': 'Organizzazioni',
   'platform.orgs.createOrg': 'Crea Organizzazione',
@@ -411,6 +412,19 @@ export const it: Record<StringKey, string> = {
   'platform.teams.noPermissions': 'Nessun permesso assegnato.',
   'platform.teams.addMember.userId': 'ID Utente',
   'platform.teams.addMember.roleId': 'ID Ruolo',
+  // Elenco team (per organizzazione)
+  'platform.teams.listTitle': 'Team',
+  'platform.teams.listSubtitle': 'Team di questa organizzazione.',
+  'platform.teams.createTeam': 'Crea Team',
+  'platform.teams.noTeams': 'Nessun team ancora.',
+  'platform.teams.name': 'Nome',
+  'platform.teams.slug': 'Slug',
+  'platform.teams.description': 'Descrizione',
+  'platform.teams.delete': 'Elimina',
+  'platform.teams.deleteConfirm': 'Eliminare il team {name}? Questa operazione non può essere annullata.',
+  'platform.teams.col.name': 'Nome',
+  'platform.teams.col.slug': 'Slug',
+  'platform.teams.col.description': 'Descrizione',
   'error.teams': 'Impossibile caricare il team.',
   'platform.pools.title': 'Pool di Nodi',
   'platform.pools.exclusive': 'Esclusivo',

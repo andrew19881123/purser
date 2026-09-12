@@ -28,7 +28,8 @@ legacy format will be accepted through at least v0.6.
 
 ### Via the Dashboard
 
-1. Open the **Settings** page and select the **API Keys** tab.
+1. Open the **API Keys** page from the sidebar (**Governance → API Keys**), or
+   click **Manage API keys** on the **Settings** page.
 2. Click **New Key**.
 3. Enter a name, select the tenant (team), role, and optionally an expiry date.
 4. Click **Create** — the plaintext key is shown once. Copy it before closing the dialog.
@@ -209,8 +210,9 @@ Update integrations before v0.6 ships.
 
 ## Dashboard: API Key Usage
 
-The **Settings → API Keys** page in the operator dashboard gives a live view of
-every key alongside its token consumption.
+The dedicated **API Keys** page in the operator dashboard (open it from the
+sidebar under **Governance → API Keys**, or via **Manage API keys** on the
+**Settings** page) gives a live view of every key alongside its token consumption.
 
 ### Key table columns
 
