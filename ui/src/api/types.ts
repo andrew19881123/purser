@@ -768,6 +768,53 @@ export interface EffectivePermissions {
 }
 
 // ---------------------------------------------------------------------------
+// RBAC custom roles — GET/POST /api/v1/platform/orgs/{orgId}/roles and
+// GET/PUT/DELETE .../roles/{id}. A role is a named bundle of permission
+// strings, scoped to one org. Built-in ("system") roles are read-only.
+// The Go type is registry.CustomRole; camelizeKeys maps its snake_case wire
+// fields (org_id, is_system, created_at, updated_at) onto these camelCase names.
+// ---------------------------------------------------------------------------
+
+export interface CustomRole {
+  id: string;
+  /** Owning org id; empty for platform built-in roles. */
+  orgId?: string;
+  name: string;
+  description?: string;
+  /** Fine-grained permission keys, e.g. ["team:models:deploy"]. */
+  permissions: string[];
+  /** Built-in platform roles cannot be edited or deleted. */
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Response shape for GET /api/v1/platform/orgs/{orgId}/roles. */
+export interface RolesResponse {
+  roles: CustomRole[];
+}
+
+/** The scope buckets the permission catalog is grouped into for display. */
+export type PermissionScope = 'platform' | 'org' | 'team' | 'inference';
+
+/**
+ * One entry of the permission catalog — GET /api/v1/platform/permissions.
+ * Every key here is a string the enforcement layer actually checks, so a role
+ * built from these keys genuinely grants access.
+ */
+export interface PermissionDescriptor {
+  key: string;
+  description: string;
+  /** "platform" | "org" | "team" | "inference" */
+  scope: string;
+}
+
+/** Response shape for GET /api/v1/platform/permissions. */
+export interface PermissionsResponse {
+  permissions: PermissionDescriptor[];
+}
+
+// ---------------------------------------------------------------------------
 // Inference Audit Log — GET /api/v1/inference-audit
 // Per-request tamper-evident log; distinct from the administrative audit log.
 // ---------------------------------------------------------------------------

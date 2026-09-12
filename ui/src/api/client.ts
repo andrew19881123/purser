@@ -27,6 +27,7 @@ import type {
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  CustomRole,
   DataPlane,
   DataPlaneWithToken,
   DeployOverrides,
@@ -50,11 +51,13 @@ import type {
   NodePool,
   NodeView,
   Organization,
+  PermissionsResponse,
   PlatformUser,
   PlanPreviewResult,
   PoliciesResponse,
   Policy,
   PoolTeamQuota,
+  RolesResponse,
   ReconcilerStatus,
   SloComplianceResponse,
 
@@ -92,6 +95,20 @@ export interface CreateServiceAccountInput {
   teamId: string;
   description?: string;
   role: string;
+}
+
+/** Body for POST /api/v1/platform/orgs/{orgId}/roles. */
+export interface CreateRoleInput {
+  name: string;
+  description?: string;
+  permissions: string[];
+}
+
+/** Body for PUT /api/v1/platform/orgs/{orgId}/roles/{id}. */
+export interface UpdateRoleInput {
+  name?: string;
+  description?: string;
+  permissions: string[];
 }
 
 export interface PurserApi {
@@ -228,6 +245,20 @@ export interface PurserApi {
   // --- v0.4 platform model: current user ---
   getMe(): Promise<{ actor: string; orgs: Organization[]; teams: Team[] }>;
   getMyTeamPermissions(teamId: string): Promise<EffectivePermissions>;
+
+  // --- v0.4 RBAC: custom roles (org-scoped) + permission catalog ---
+  /** GET /api/v1/platform/orgs/{orgId}/roles — built-in + custom roles for an org. */
+  listRoles(orgId: string): Promise<RolesResponse>;
+  /** POST /api/v1/platform/orgs/{orgId}/roles — create a custom role (org_admin). 409 on name conflict. */
+  createRole(orgId: string, data: CreateRoleInput): Promise<CustomRole>;
+  /** GET /api/v1/platform/orgs/{orgId}/roles/{id} — a single role. */
+  getRole(orgId: string, id: string): Promise<CustomRole>;
+  /** PUT /api/v1/platform/orgs/{orgId}/roles/{id} — replace a custom role. 409 for system roles. */
+  updateRole(orgId: string, id: string, data: UpdateRoleInput): Promise<CustomRole>;
+  /** DELETE /api/v1/platform/orgs/{orgId}/roles/{id} — 204; 409 if system or in-use. */
+  deleteRole(orgId: string, id: string): Promise<void>;
+  /** GET /api/v1/platform/permissions — the fine-grained permission catalog (not gated). */
+  listPermissions(): Promise<PermissionsResponse>;
 
   // --- what-if planner ---
   /** POST /api/v1/planner/what-if — simulate hardware ROI without committing a deployment. */

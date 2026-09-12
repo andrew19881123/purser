@@ -33,6 +33,7 @@ import type {
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  CustomRole,
   DataPlane,
   DataPlaneWithToken,
   DeployOverrides,
@@ -62,6 +63,7 @@ import type {
   NodeView,
   Organization,
   PerfEstimate,
+  PermissionsResponse,
   PlatformUser,
   PlanPreviewResult,
   PoliciesResponse,
@@ -69,6 +71,7 @@ import type {
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
+  RolesResponse,
   ServiceAccount,
   ServiceAccountWithSecret,
   SloApiResponse,
@@ -79,7 +82,14 @@ import type {
   WhatIfRequest,
   WhatIfResult,
 } from './types';
-import type { CreateApiKeyInput, CreateDataPlaneInput, CreateServiceAccountInput, PurserApi } from './client';
+import type {
+  CreateApiKeyInput,
+  CreateDataPlaneInput,
+  CreateRoleInput,
+  CreateServiceAccountInput,
+  PurserApi,
+  UpdateRoleInput,
+} from './client';
 
 // --- error type -------------------------------------------------------------
 
@@ -1022,6 +1032,35 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     getMyTeamPermissions: (teamId) =>
       request<EffectivePermissions>(`/platform/teams/${enc(teamId)}/my-permissions`),
+
+    // --- v0.4 RBAC: custom roles (org-scoped) + permission catalog ---
+    listRoles: (orgId): Promise<RolesResponse> =>
+      request<unknown>(`/platform/orgs/${enc(orgId)}/roles`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return { roles: Array.isArray(r.roles) ? (r.roles as CustomRole[]) : [] };
+      }),
+
+    createRole: (orgId, data: CreateRoleInput) =>
+      request<CustomRole>(`/platform/orgs/${enc(orgId)}/roles`, { method: 'POST', body: data }),
+
+    getRole: (orgId, id) =>
+      request<CustomRole>(`/platform/orgs/${enc(orgId)}/roles/${enc(id)}`),
+
+    updateRole: (orgId, id, data: UpdateRoleInput) =>
+      request<CustomRole>(`/platform/orgs/${enc(orgId)}/roles/${enc(id)}`, { method: 'PUT', body: data }),
+
+    deleteRole: (orgId, id) =>
+      request<void>(`/platform/orgs/${enc(orgId)}/roles/${enc(id)}`, { method: 'DELETE' }),
+
+    listPermissions: (): Promise<PermissionsResponse> =>
+      request<unknown>('/platform/permissions').then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          permissions: Array.isArray(r.permissions)
+            ? (r.permissions as PermissionsResponse['permissions'])
+            : [],
+        };
+      }),
 
     // --- inference audit ---
     listInferenceAudit: (params: InferenceAuditParams = {}): Promise<InferenceAuditResponse> => {

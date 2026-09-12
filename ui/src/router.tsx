@@ -32,6 +32,7 @@ import { PoliciesPage } from './pages/PoliciesPage';
 import { PlatformUsersPage } from './pages/PlatformUsersPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { WhatIfPlannerPage } from './pages/WhatIfPlannerPage';
+import { RolesPage } from './pages/RolesPage';
 import { SLOPage } from './pages/SLOPage';
 
 // Route table, exported separately from the configured `router` so tests can
@@ -60,6 +61,8 @@ export const routes: RouteObject[] = [
       { path: 'platform/orgs', element: <OrganizationsPage /> },
       { path: 'platform/orgs/:orgId/teams', element: <TeamsListPage /> },
       { path: 'platform/orgs/:orgId/teams/:teamId', element: <TeamPage /> },
+      { path: 'platform/orgs/:orgId/roles', element: <RolesPage /> },
+      { path: 'platform/roles', element: <RolesPage /> },
       { path: 'platform/pools', element: <NodePoolsPage /> },
       { path: 'platform/users', element: <PlatformUsersPage /> },
       // v0.6 platform routes

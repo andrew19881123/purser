@@ -247,3 +247,54 @@ curl -X POST /api/v1/platform/teams/{teamId}/members \
 
 Once the team membership is in place the key's `tenant` field is used to
 resolve the custom role on every request — no key rotation required.
+
+---
+
+## Managing custom roles in the dashboard
+
+Custom roles now have a first-class management UI in the operator dashboard, so
+you no longer have to hand-craft the `curl` calls above. Roles are **scoped to
+an organization**, and the page is reached two ways:
+
+- **Governance → Roles** in the sidebar. Because roles belong to an org, this
+  entry first asks you to pick an organization, then opens that org's roles.
+- **Directly** at `/platform/orgs/{orgId}/roles` (the org drill-down).
+
+These endpoints are **not** enterprise-gated — custom roles work in the
+community edition.
+
+### The roles list
+
+The page lists every role the org can assign — the platform **built-in** roles
+(`Organization Administrator`, `Team Administrator`, `Developer`, `Viewer`,
+`Inference Only`) alongside any **custom** roles you create. Each row shows the
+role name, a **Built-in**/**Custom** type badge, a preview of its permission
+keys, and its description. Built-in roles are read-only: they have no Edit or
+Delete controls.
+
+### Creating and editing a role
+
+**Create role** opens a dialog with a name, an optional description, and a
+**permission multi-select grouped by scope** — Platform, Organization, Team,
+and Inference. The checkboxes are populated live from
+`GET /api/v1/platform/permissions`, which returns the *same* permission
+vocabulary the enforcement layer actually checks. That means a role you build
+from these checkboxes genuinely grants the access it lists — there is no risk of
+selecting a permission string that grants nothing. Editing a custom role
+reopens the same dialog with its current name, description, and permissions
+pre-selected.
+
+### Deleting a role
+
+**Delete** is confirm-first: the first click arms a **Confirm delete** control;
+only the confirming click issues the `DELETE`. The control plane refuses to
+delete a **built-in** role (`409 system_role`) or a role that is still
+**assigned to a team member** (`409 role_in_use`) — remove the assignments
+first, then delete.
+
+### Assigning a role to a team member
+
+On a team's detail page (**Organizations → team**), **Invite Member** now offers
+a **Role** dropdown populated from the org's roles (built-in + custom) instead of
+a free-text field, so assigning a member a role is a pick, not a typed string.
+The selected role's `id` is sent as `role_id` when the member is added.

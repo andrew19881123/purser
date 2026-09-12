@@ -683,6 +683,57 @@ export function useMyTeamPermissions(teamId: string | undefined) {
   });
 }
 
+// --- v0.4 RBAC: custom roles + permission catalog --------------------------
+
+export const roleQk = {
+  list: (orgId: string) => ['roles', orgId] as const,
+  permissions: ['permissionCatalog'] as const,
+};
+
+/** GET /api/v1/platform/orgs/{orgId}/roles — built-in + custom roles for an org. */
+export function useRoles(orgId: string | undefined) {
+  return useQuery({
+    queryKey: roleQk.list(orgId ?? ''),
+    queryFn: () => api.listRoles(orgId as string),
+    enabled: Boolean(orgId),
+  });
+}
+
+/** GET /api/v1/platform/permissions — the fine-grained permission catalog. */
+export function usePermissionCatalog() {
+  return useQuery({
+    queryKey: roleQk.permissions,
+    queryFn: () => api.listPermissions(),
+    // The catalog is effectively static for a given control-plane version.
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useCreateRole(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.createRole>[1]) => api.createRole(orgId, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: roleQk.list(orgId) }),
+  });
+}
+
+export function useUpdateRole(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof api.updateRole>[2] }) =>
+      api.updateRole(orgId, id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: roleQk.list(orgId) }),
+  });
+}
+
+export function useDeleteRole(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteRole(orgId, id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: roleQk.list(orgId) }),
+  });
+}
+
 // --- data planes ------------------------------------------------------------
 
 export function useDataPlanes() {

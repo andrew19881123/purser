@@ -16,11 +16,15 @@ import type {
   CatalogEntry,
   ChainVerifyResponse,
   ClusterCapacity,
+  CustomRole,
   Deployment,
   DeploymentPlan,
   EffectivePermissions,
   EnterpriseStatus,
   ImportSource,
+  PermissionDescriptor,
+  PermissionsResponse,
+  RolesResponse,
   InferenceAuditResponse,
   JoinInfo,
   JoinTokenResult,
@@ -40,7 +44,14 @@ import type {
   TeamMember,
   UsageSummary,
 } from '../api/types';
-import type { CreateApiKeyInput, CreateDataPlaneInput, CreateServiceAccountInput, PurserApi } from '../api/client';
+import type {
+  CreateApiKeyInput,
+  CreateDataPlaneInput,
+  CreateRoleInput,
+  CreateServiceAccountInput,
+  PurserApi,
+  UpdateRoleInput,
+} from '../api/client';
 import type { DataPlaneWithToken, ServiceAccountWithSecret } from '../api/types';
 import { ApiError } from '../api/http';
 import { clamp } from '../lib/format';
@@ -73,6 +84,70 @@ let importedModels: ModelSpec[] = [];
 function allModels(): ModelSpec[] {
   return [...mockModels, ...importedModels];
 }
+
+// --- RBAC: permission catalog + roles store ---------------------------------
+// The catalog mirrors go/controlplane/permissions/permissions.go (the 22-string
+// canonical vocabulary). Built-in system roles are read-only; custom roles are
+// kept in a per-org mutable store so create/update/delete visibly take effect.
+
+const PERMISSION_CATALOG: PermissionDescriptor[] = [
+  // Platform
+  { key: 'platform:orgs:create', description: 'Create a new organization on the platform', scope: 'platform' },
+  { key: 'platform:orgs:delete', description: 'Delete an existing organization (and all its teams)', scope: 'platform' },
+  { key: 'platform:pools:manage', description: 'Add, edit, or remove GPU/compute pools platform-wide', scope: 'platform' },
+  { key: 'platform:users:invite', description: 'Invite users to the platform before they belong to an org', scope: 'platform' },
+  // Org
+  { key: 'org:teams:create', description: 'Create a new team within the organization', scope: 'org' },
+  { key: 'org:teams:delete', description: 'Delete a team and all its associated resources', scope: 'org' },
+  { key: 'org:members:invite', description: 'Invite a user to the organization', scope: 'org' },
+  { key: 'org:members:remove', description: 'Remove a member from the organization', scope: 'org' },
+  { key: 'org:roles:create', description: 'Create a custom role definition scoped to the org', scope: 'org' },
+  { key: 'org:roles:delete', description: 'Delete a custom role definition', scope: 'org' },
+  { key: 'org:pools:request', description: 'Request additional compute pool quota for the org', scope: 'org' },
+  // Team
+  { key: 'team:models:deploy', description: "Deploy a model to a team's serving pool", scope: 'team' },
+  { key: 'team:models:undeploy', description: 'Remove a deployed model from the serving pool', scope: 'team' },
+  { key: 'team:keys:create', description: 'Issue (or rotate) an API key for the team', scope: 'team' },
+  { key: 'team:keys:revoke', description: 'Revoke an existing API key', scope: 'team' },
+  { key: 'team:members:view', description: 'List team members and their roles', scope: 'team' },
+  { key: 'team:members:invite', description: 'Add a member to the team', scope: 'team' },
+  { key: 'team:members:remove', description: 'Remove a member from the team', scope: 'team' },
+  { key: 'team:metrics:view', description: 'Read inference throughput, latency, and cost metrics', scope: 'team' },
+  { key: 'team:approvals:view', description: 'View pending deployment approval requests', scope: 'team' },
+  { key: 'team:approvals:review', description: 'Approve or reject deployment requests', scope: 'team' },
+  // Inference
+  { key: 'inference:call', description: 'Send requests to the gateway (/v1/chat/completions, etc.)', scope: 'inference' },
+];
+
+/** Built-in system roles (orgId empty, read-only). Mirror engine.go SystemRoles(). */
+function systemRoles(): CustomRole[] {
+  const ts = new Date('2026-01-01T00:00:00Z').toISOString();
+  const mk = (id: string, name: string, permissions: string[]): CustomRole => ({
+    id, orgId: '', name, description: '', permissions, isSystem: true, createdAt: ts, updatedAt: ts,
+  });
+  return [
+    mk('org_admin', 'Organization Administrator', [
+      'org:teams:create', 'org:teams:delete', 'org:members:invite', 'org:members:remove',
+      'org:roles:create', 'org:roles:delete', 'org:pools:request',
+      'team:models:deploy', 'team:models:undeploy', 'team:keys:create', 'team:keys:revoke',
+      'team:members:view', 'team:members:invite', 'team:members:remove',
+      'team:metrics:view', 'team:approvals:view', 'team:approvals:review', 'inference:call',
+    ]),
+    mk('team_admin', 'Team Administrator', [
+      'team:models:deploy', 'team:models:undeploy', 'team:keys:create', 'team:keys:revoke',
+      'team:members:view', 'team:members:invite', 'team:members:remove',
+      'team:metrics:view', 'team:approvals:view', 'team:approvals:review', 'inference:call',
+    ]),
+    mk('developer', 'Developer', [
+      'team:models:deploy', 'team:models:undeploy', 'team:keys:create', 'team:metrics:view', 'inference:call',
+    ]),
+    mk('viewer', 'Viewer', ['team:members:view', 'team:metrics:view', 'team:approvals:view']),
+    mk('inference_only', 'Inference Only', ['inference:call']),
+  ];
+}
+
+/** Per-org custom roles created at runtime. */
+const customRolesByOrg = new Map<string, CustomRole[]>();
 
 /** Record a plan so it is retrievable by id (mirror of GET /plans/{id}). */
 function rememberPlan(plan: DeploymentPlan): DeploymentPlan {
@@ -705,6 +780,74 @@ export const mockBackend: PurserApi = {
       permissions: ['read', 'deploy'],
       is_org_admin: false,
     }, 200);
+  },
+
+  // --- RBAC: custom roles + permission catalog ---
+
+  listRoles(orgId): Promise<RolesResponse> {
+    const custom = (customRolesByOrg.get(orgId) ?? []).map((r) => ({ ...r, orgId }));
+    return delay({ roles: [...systemRoles(), ...custom] });
+  },
+
+  createRole(orgId, data: CreateRoleInput): Promise<CustomRole> {
+    const list = customRolesByOrg.get(orgId) ?? [];
+    if (list.some((r) => r.name === data.name) || systemRoles().some((r) => r.name === data.name)) {
+      return Promise.reject(new ApiError(409, 'a role with that name already exists in this org'));
+    }
+    const now = new Date().toISOString();
+    const role: CustomRole = {
+      id: `role-${Math.random().toString(36).slice(2, 10)}`,
+      orgId,
+      name: data.name,
+      description: data.description ?? '',
+      permissions: data.permissions ?? [],
+      isSystem: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    customRolesByOrg.set(orgId, [...list, role]);
+    return delay(structuredClone(role), 400);
+  },
+
+  getRole(orgId, id): Promise<CustomRole> {
+    const role = [...systemRoles(), ...(customRolesByOrg.get(orgId) ?? [])].find((r) => r.id === id);
+    if (!role) throw new NotFoundError(`Role ${id} was not found.`);
+    return delay(structuredClone(role), 180);
+  },
+
+  updateRole(orgId, id, data: UpdateRoleInput): Promise<CustomRole> {
+    const list = customRolesByOrg.get(orgId) ?? [];
+    const idx = list.findIndex((r) => r.id === id);
+    if (idx < 0) {
+      if (systemRoles().some((r) => r.id === id)) {
+        return Promise.reject(new ApiError(409, 'system roles cannot be modified'));
+      }
+      throw new NotFoundError(`Role ${id} was not found.`);
+    }
+    const updated: CustomRole = {
+      ...list[idx],
+      name: data.name ?? list[idx].name,
+      description: data.description ?? list[idx].description,
+      permissions: data.permissions ?? list[idx].permissions,
+      updatedAt: new Date().toISOString(),
+    };
+    const next = [...list];
+    next[idx] = updated;
+    customRolesByOrg.set(orgId, next);
+    return delay(structuredClone(updated), 350);
+  },
+
+  deleteRole(orgId, id): Promise<void> {
+    if (systemRoles().some((r) => r.id === id)) {
+      return Promise.reject(new ApiError(409, 'system roles cannot be deleted'));
+    }
+    const list = customRolesByOrg.get(orgId) ?? [];
+    customRolesByOrg.set(orgId, list.filter((r) => r.id !== id));
+    return delay(undefined, 300);
+  },
+
+  listPermissions(): Promise<PermissionsResponse> {
+    return delay({ permissions: structuredClone(PERMISSION_CATALOG) });
   },
 
   // --- inference audit ---

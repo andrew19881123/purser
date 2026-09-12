@@ -65,6 +65,7 @@ const PLATFORM: NavItem[] = [
 const GOVERNANCE: NavItem[] = [
   { to: '/platform/orgs',             labelKey: 'nav.organizations',  icon: <IconBuildingOffice /> },
   { to: '/platform/users',            labelKey: 'nav.platformUsers',  icon: <IconUsers /> },
+  { to: '/platform/roles',            labelKey: 'nav.roles',          icon: <IconUsers /> },
   { to: '/api-keys',                  labelKey: 'nav.apiKeys',        icon: <IconKey /> },
   { to: '/platform/service-accounts', labelKey: 'nav.serviceAccounts', icon: <IconRobot /> },
   { to: '/platform/policies',         labelKey: 'nav.policies',       icon: <IconShield /> },

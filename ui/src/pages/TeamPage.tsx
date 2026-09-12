@@ -27,6 +27,7 @@ import {
   useRemoveTeamMember,
   useNodePools,
   useMyTeamPermissions,
+  useRoles,
 } from '../hooks/queries';
 import { useT } from '../i18n';
 import { errorMessage } from '../lib/errors';
@@ -37,21 +38,28 @@ import type { TeamMember } from '../api/types';
 // ---------------------------------------------------------------------------
 
 interface InviteMemberModalProps {
+  orgId: string | undefined;
   teamId: string;
   onClose: () => void;
 }
 
-function InviteMemberModal({ teamId, onClose }: InviteMemberModalProps) {
+function InviteMemberModal({ orgId, teamId, onClose }: InviteMemberModalProps) {
   const t = useT();
+  const { data: rolesData } = useRoles(orgId);
+  const roles = rolesData?.roles ?? [];
   const [userId, setUserId] = useState('');
-  const [roleId, setRoleId] = useState('member');
+  const [roleId, setRoleId] = useState('');
   const userIdField = useFieldId('invite-user');
   const roleIdField = useFieldId('invite-role');
   const addMember = useAddTeamMember(teamId);
 
+  // Assigning a role is now a pick from the org's roles (built-in + custom),
+  // not a typed string. Default to the first role until the operator chooses.
+  const selectedRole = roleId || roles[0]?.id || '';
+
   function handleSubmit() {
     if (!userId.trim()) return;
-    void addMember.mutateAsync({ user_id: userId.trim(), role_id: roleId.trim() || 'member' })
+    void addMember.mutateAsync({ user_id: userId.trim(), role_id: selectedRole || 'developer' })
       .then(onClose);
   }
 
@@ -87,15 +95,24 @@ function InviteMemberModal({ teamId, onClose }: InviteMemberModalProps) {
             autoFocus
           />
         </Field>
-        <Field label={t('platform.teams.addMember.roleId')} htmlFor={roleIdField}>
-          <input
+        <Field label={t('roles.assign.label')} htmlFor={roleIdField} hint={t('roles.assign.hint')}>
+          <select
             id={roleIdField}
-            className="input"
-            type="text"
-            value={roleId}
+            className="select"
+            value={selectedRole}
             onChange={(e) => setRoleId(e.target.value)}
-            placeholder="member"
-          />
+          >
+            {roles.length === 0 && (
+              <option value="" disabled>
+                {t('roles.assign.loading')}
+              </option>
+            )}
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
         </Field>
         {addMember.isError && (
           <p style={{ color: 'var(--color-danger)', fontSize: '0.85em' }}>
@@ -112,10 +129,11 @@ function InviteMemberModal({ teamId, onClose }: InviteMemberModalProps) {
 // ---------------------------------------------------------------------------
 
 interface MembersCardProps {
+  orgId: string | undefined;
   teamId: string;
 }
 
-function MembersCard({ teamId }: MembersCardProps) {
+function MembersCard({ orgId, teamId }: MembersCardProps) {
   const t = useT();
   const [showInvite, setShowInvite] = useState(false);
   const { data, isLoading, isError, error, refetch } = useTeamMembers(teamId);
@@ -205,7 +223,7 @@ function MembersCard({ teamId }: MembersCardProps) {
           </div>
         )}
       </Card>
-      {showInvite && <InviteMemberModal teamId={teamId} onClose={() => setShowInvite(false)} />}
+      {showInvite && <InviteMemberModal orgId={orgId} teamId={teamId} onClose={() => setShowInvite(false)} />}
     </>
   );
 }
@@ -357,7 +375,7 @@ export function TeamPage() {
       />
       {breadcrumb}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1.5rem' }}>
-        {teamId && <MembersCard teamId={teamId} />}
+        {teamId && <MembersCard orgId={orgId} teamId={teamId} />}
         {teamId && <NodePoolCard teamId={teamId} />}
         {teamId && <MyPermissionsCard teamId={teamId} />}
       </div>
