@@ -78,7 +78,8 @@ Returns a chargeback report for a configurable time window.
 | `start` | RFC3339 string | now − 30 days | Window start (inclusive) |
 | `end` | RFC3339 string | now | Window end (inclusive) |
 | `tenant_id` | string | _(all tenants)_ | Filter to a single tenant |
-| `format` | `json` \| `csv` | `json` | Response format |
+| `format` | `json` \| `csv` \| `xlsx` \| `pdf` | `json` | Response format |
+| `sla_threshold_ms` | number | _(off)_ | When set, attaches per-tenant SLA compliance stats to the JSON response (see below) |
 
 #### JSON response
 
@@ -117,6 +118,31 @@ Returns a chargeback report for a configurable time window.
 
 Rows are ordered by `total_tokens` descending (heaviest consumers first).
 
+#### SLA compliance stats (`sla_threshold_ms`)
+
+When the request includes `sla_threshold_ms=<latency-budget>`, the JSON response
+gains an `sla_stats` array with one row per distinct tenant. Each row reports the
+fraction of that tenant's requests whose `latency_ms` was **below** the requested
+threshold, so you can track a latency SLO alongside spend:
+
+```json
+{
+  "period_start": "2026-08-07T00:00:00Z",
+  "period_end":   "2026-09-06T00:00:00Z",
+  "total_requests": 45230,
+  "total_tokens":   18234560,
+  "tenants": [ /* … as above … */ ],
+  "sla_stats": [
+    { "tenant_id": "team-eng", "sla_compliance_rate": 0.982, "sla_threshold_ms": 2000 },
+    { "tenant_id": "team-fin", "sla_compliance_rate": 0.874, "sla_threshold_ms": 2000 }
+  ]
+}
+```
+
+`sla_compliance_rate` is a fraction in `[0.0, 1.0]`. The array is **omitted**
+entirely when `sla_threshold_ms` is not supplied. The **SLA Compliance** tab of the
+ChargebackPage surfaces these rows and lets the operator set the threshold live.
+
 #### CSV response
 
 When `format=csv` is specified:
@@ -145,7 +171,51 @@ curl -H "Authorization: Bearer $TOKEN" \
 curl -H "Authorization: Bearer $TOKEN" \
   "https://purser.example.com/api/v1/billing/report?format=csv" \
   -o billing-report.csv
+
+# With per-tenant SLA compliance against a 2 s latency budget
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://purser.example.com/api/v1/billing/report?sla_threshold_ms=2000"
 ```
+
+---
+
+### GET /api/v1/billing/models/adoption
+
+Returns a per-model **request/token time-series** so you can see which models are
+gaining or losing traction over the window. Only the top 10 models by total request
+count are included.
+
+**Auth:** Bearer token with `admin` or `viewer` role.  
+**Enterprise gate:** `billing` feature required (returns `402` without it).
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `window` | `daily` \| `weekly` | `daily` | Bucket granularity |
+| `days` | number (1–90) | `30` | Look-back window in days |
+
+#### JSON response
+
+```json
+{
+  "window": "daily",
+  "days": 30,
+  "series": [
+    {
+      "model_id": "qwen3-moe",
+      "buckets": [
+        { "date": "2026-09-01", "requests": 1240, "tokens_out": 512340 },
+        { "date": "2026-09-02", "requests": 1355, "tokens_out": 548120 }
+      ]
+    }
+  ]
+}
+```
+
+The **Model Adoption** tab of the ChargebackPage renders each series as a row with
+aggregate totals and an inline request-count sparkline; a Daily/Weekly toggle maps
+to the `window` parameter.
 
 ---
 
@@ -328,19 +398,24 @@ curl -H "Authorization: Bearer $TOKEN" \
 ## ChargebackPage (UI)
 
 The operator dashboard includes a dedicated **Chargeback** page in the
-**Observability** sidebar section. It provides:
+**Observability** sidebar section. A **period picker** (Last 7 / 30 / 90 days) in
+the page header scopes every tab, and the work is split across four tabs:
 
-- **Period picker** — Last 7 / 30 / 90 days
-- **Summary stats** — total requests, total tokens, active tenant count
-- **Usage table** — per tenant+model breakdown, ordered by total tokens
-- **Export buttons** — one-click download of the report as **CSV**, **XLSX**, or
-  **PDF**
-- **Spending Forecast card** — per-team burn rate, projected monthly spend, and
-  estimated days until budget exhaustion (backed by `GET /api/v1/billing/forecast`;
-  hidden when the `billing` feature is not licensed)
+- **Usage** — summary stats (total requests, total tokens, active tenants), the
+  per tenant+model usage table ordered by total tokens, one-click CSV / XLSX / PDF
+  export, and the spending-forecast card.
+- **Model Adoption** — the `/billing/models/adoption` time-series, one row per model
+  with aggregate requests, tokens out, and a request-count sparkline. A Daily/Weekly
+  toggle switches the bucket granularity.
+- **SLA Compliance** — per-tenant compliance rate against a latency threshold. The
+  threshold (ms) input re-requests `/billing/report?sla_threshold_ms=…` live; each
+  rate is colour-coded (≥ 99 % green, ≥ 95 % amber, otherwise red).
+- **Per Org / Team** — enter an org id or a team id (tenant), pick the scope, and
+  load the rollup from `/platform/orgs/{orgId}/billing` or
+  `/platform/teams/{teamId}/billing` (cost totals + per-team / per-model breakdown).
 
-Without a valid `billing` license the page shows an *Enterprise license required*
-message instead of data.
+Without a valid `billing` license the page (and each enterprise-gated tab) shows an
+*Enterprise license required* message instead of data.
 
 ---
 

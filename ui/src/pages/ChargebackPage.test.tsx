@@ -12,6 +12,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 vi.mock('../hooks/queries', () => ({
   useBillingReport: vi.fn(),
   useBillingForecast: vi.fn(),
+  useModelAdoption: vi.fn(),
+  useOrgBilling: vi.fn(),
+  useTeamBilling: vi.fn(),
 }));
 
 // Mock i18n so we can match raw key strings in assertions.
@@ -58,6 +61,9 @@ const MOCK_REPORT = {
 const mq = queries as unknown as {
   useBillingReport: ReturnType<typeof vi.fn>;
   useBillingForecast: ReturnType<typeof vi.fn>;
+  useModelAdoption: ReturnType<typeof vi.fn>;
+  useOrgBilling: ReturnType<typeof vi.fn>;
+  useTeamBilling: ReturnType<typeof vi.fn>;
 };
 
 function mkQueryClient() {
@@ -85,6 +91,10 @@ beforeEach(() => {
     isLoading: false,
     error: Object.assign(new Error('Enterprise license required'), { status: 402 }),
   });
+  // New tab hooks — default to empty/idle; individual tests override.
+  mq.useModelAdoption.mockReturnValue({ data: undefined, isLoading: false, error: null });
+  mq.useOrgBilling.mockReturnValue({ data: undefined, isLoading: false, error: null });
+  mq.useTeamBilling.mockReturnValue({ data: undefined, isLoading: false, error: null });
 });
 
 describe('ChargebackPage — export buttons', () => {
@@ -116,5 +126,77 @@ describe('ChargebackPage — export buttons', () => {
     expect(typeof end).toBe('string');
     // The mock returns a URL containing the xlsx format parameter.
     expect((mockFn.mock.results[0]?.value as string) ?? '').toContain('format=xlsx');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model adoption tab
+// ---------------------------------------------------------------------------
+
+const MOCK_ADOPTION = {
+  window: 'daily' as const,
+  days: 30,
+  series: [
+    {
+      model_id: 'llama3-8b',
+      buckets: [
+        { date: '2026-09-01', requests: 10, tokens_out: 1000 },
+        { date: '2026-09-02', requests: 25, tokens_out: 2500 },
+      ],
+    },
+  ],
+};
+
+describe('ChargebackPage — model adoption tab', () => {
+  it('renders adoption rows from mocked data when the tab is active', () => {
+    mq.useModelAdoption.mockReturnValue({ data: MOCK_ADOPTION, isLoading: false, error: null });
+    renderPage();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'chargeback.tab.adoption' }));
+
+    // The model id appears in the adoption table.
+    expect(screen.getByText('llama3-8b')).toBeDefined();
+    // Aggregate requests (10 + 25 = 35) is rendered.
+    expect(screen.getByText('35')).toBeDefined();
+  });
+
+  it('calls useModelAdoption once the adoption tab is shown', () => {
+    mq.useModelAdoption.mockReturnValue({ data: MOCK_ADOPTION, isLoading: false, error: null });
+    renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: 'chargeback.tab.adoption' }));
+    expect(mq.useModelAdoption).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SLA compliance tab
+// ---------------------------------------------------------------------------
+
+describe('ChargebackPage — SLA compliance tab', () => {
+  it('requests the billing report with an sla threshold and renders the rate', () => {
+    mq.useBillingReport.mockImplementation((params: { slaThresholdMs?: number }) => {
+      if (params.slaThresholdMs != null) {
+        return {
+          data: {
+            ...MOCK_REPORT,
+            sla_stats: [{ tenant_id: 'acme/eng', sla_compliance_rate: 0.95, sla_threshold_ms: 2000 }],
+          },
+          isLoading: false,
+          error: null,
+        };
+      }
+      return { data: MOCK_REPORT, isLoading: false, error: null };
+    });
+
+    renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: 'chargeback.tab.sla' }));
+
+    // The SLA hook variant must have been called with a numeric threshold.
+    const calledWithThreshold = mq.useBillingReport.mock.calls.some(
+      (c: unknown[]) => (c[0] as { slaThresholdMs?: number })?.slaThresholdMs != null,
+    );
+    expect(calledWithThreshold).toBe(true);
+    // The tenant SLA row is rendered.
+    expect(screen.getByText('acme/eng')).toBeDefined();
   });
 });

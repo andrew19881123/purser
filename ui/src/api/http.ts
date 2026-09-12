@@ -35,6 +35,7 @@ import type {
   ClusterCapacity,
   CustomRole,
   DataPlane,
+  DataPlaneNode,
   DataPlaneWithToken,
   DeployOverrides,
   Deployment,
@@ -56,12 +57,14 @@ import type {
   LinkQuality,
   MetricsSnapshot,
   MetricsStreamHandlers,
+  ModelAdoptionResponse,
   ModelHealth,
   ModelSpec,
   NodeLoadStatus,
   NodePool,
   NodeView,
   Organization,
+  OrgBillingReport,
   PerfEstimate,
   PermissionsResponse,
   PlatformUser,
@@ -80,7 +83,10 @@ import type {
   SloApiResponse,
   SloComplianceResponse,
   Team,
+  TeamBillingReport,
   TeamMember,
+  UpdateDataPlaneInput,
+  UpdateNodePoolInput,
   UsageSummary,
   WhatIfRequest,
   WhatIfResult,
@@ -979,9 +985,10 @@ export function createHttpApi(baseUrl: string): PurserApi {
       request<unknown>('/reconciler/status').then((raw) => raw as ReconcilerStatus),
 
     // --- billing / chargeback ---
-    getBillingReport: (start: string, end: string, tenantId?: string): Promise<BillingReport> => {
+    getBillingReport: (start: string, end: string, tenantId?: string, slaThresholdMs?: number): Promise<BillingReport> => {
       const params = new URLSearchParams({ start, end });
       if (tenantId) params.set('tenant_id', tenantId);
+      if (slaThresholdMs != null) params.set('sla_threshold_ms', String(slaThresholdMs));
       return request<BillingReport>(`/billing/report?${params.toString()}`);
     },
 
@@ -1008,6 +1015,31 @@ export function createHttpApi(baseUrl: string): PurserApi {
       if (tenantId) params.set('tenant_id', tenantId);
       const qs = params.toString() ? `?${params.toString()}` : '';
       return request<BillingSummary>(`/billing/summary${qs}`);
+    },
+
+    // GET /api/v1/billing/models/adoption — per-model request/token time-series.
+    getModelAdoption: (window: 'daily' | 'weekly' = 'daily', days = 30): Promise<ModelAdoptionResponse> => {
+      const params = new URLSearchParams({ window, days: String(days) });
+      return request<unknown>(`/billing/models/adoption?${params.toString()}`).then((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        return {
+          window: r.window === 'weekly' ? 'weekly' : 'daily',
+          days: typeof r.days === 'number' ? r.days : days,
+          series: Array.isArray(r.series) ? (r.series as ModelAdoptionResponse['series']) : [],
+        };
+      });
+    },
+
+    // GET /api/v1/platform/orgs/{orgId}/billing — per-org billing rollup.
+    getOrgBilling: (orgId: string, start: string, end: string): Promise<OrgBillingReport> => {
+      const params = new URLSearchParams({ start, end });
+      return request<OrgBillingReport>(`/platform/orgs/${enc(orgId)}/billing?${params.toString()}`);
+    },
+
+    // GET /api/v1/platform/teams/{teamId}/billing — per-team billing rollup.
+    getTeamBilling: (teamId: string, start: string, end: string): Promise<TeamBillingReport> => {
+      const params = new URLSearchParams({ start, end });
+      return request<TeamBillingReport>(`/platform/teams/${enc(teamId)}/billing?${params.toString()}`);
     },
 
     // --- v0.4 platform model: organizations ---
@@ -1055,6 +1087,14 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     getNodePool: (id) =>
       request<NodePool>(`/platform/pools/${enc(id)}`),
+
+    // PUT /api/v1/platform/pools/{id} — update name/description/policy.
+    updateNodePool: (id, input: UpdateNodePoolInput) =>
+      request<NodePool>(`/platform/pools/${enc(id)}`, { method: 'PUT', body: input }),
+
+    // DELETE /api/v1/platform/pools/{id} — 204 on success; 409 if nodes assigned.
+    deleteNodePool: (id) =>
+      request<void>(`/platform/pools/${enc(id)}`, { method: 'DELETE' }),
 
     listPoolNodes: (poolId) =>
       request<{ node_ids: string[] }>(`/platform/pools/${enc(poolId)}/nodes`),
@@ -1189,6 +1229,42 @@ export function createHttpApi(baseUrl: string): PurserApi {
 
     refreshDataPlaneConfig: (id: string): Promise<void> =>
       request<void>(`/platform/dataplanes/${enc(id)}/config/refresh`, { method: 'POST' }),
+
+    // PUT /api/v1/platform/dataplanes/{id} — snakeizeKeys turns gatewayUrl → gateway_url.
+    updateDataPlane: (id: string, input: UpdateDataPlaneInput): Promise<DataPlane> =>
+      request<unknown>(`/platform/dataplanes/${enc(id)}`, {
+        method: 'PUT',
+        body: input,
+      }).then((raw) => (raw ?? {}) as DataPlane),
+
+    // DELETE /api/v1/platform/dataplanes/{id} — 204 on success.
+    deleteDataPlane: (id: string): Promise<void> =>
+      request<void>(`/platform/dataplanes/${enc(id)}`, { method: 'DELETE' }),
+
+    // GET /api/v1/platform/dataplanes/{id}/nodes — unwraps { nodes: [...] }.
+    listDataPlaneNodes: (id: string): Promise<DataPlaneNode[]> =>
+      request<unknown>(`/platform/dataplanes/${enc(id)}/nodes`).then((raw) => {
+        const arr = (raw as Record<string, unknown>)?.nodes ?? raw;
+        if (!Array.isArray(arr)) return [];
+        return arr.map((n: unknown) => {
+          const e = (n ?? {}) as Record<string, unknown>;
+          return {
+            id: String(e.id ?? ''),
+            hostname: String(e.hostname ?? e.id ?? ''),
+            state: normalizeEnumStr(e.state, NODE_STATES) || String(e.state ?? ''),
+            os: e.os != null ? String(e.os) : undefined,
+            arch: e.arch != null ? String(e.arch) : undefined,
+          } satisfies DataPlaneNode;
+        });
+      }),
+
+    // POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId} — 204 on success.
+    assignNodeToDataPlane: (id: string, nodeId: string): Promise<void> =>
+      request<void>(`/platform/dataplanes/${enc(id)}/nodes/${enc(nodeId)}`, { method: 'POST' }),
+
+    // DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId} — 204 on success.
+    unassignNodeFromDataPlane: (id: string, nodeId: string): Promise<void> =>
+      request<void>(`/platform/dataplanes/${enc(id)}/nodes/${enc(nodeId)}`, { method: 'DELETE' }),
 
     // --- service accounts ---
     listServiceAccounts: (): Promise<ServiceAccount[]> =>

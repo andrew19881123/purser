@@ -18,6 +18,11 @@ vi.mock('../hooks/queries', () => ({
   useDataPlanes: vi.fn(),
   useCreateDataPlane: vi.fn(),
   useRefreshDataPlaneConfig: vi.fn(),
+  useUpdateDataPlane: vi.fn(),
+  useDeleteDataPlane: vi.fn(),
+  useDataPlaneNodes: vi.fn(),
+  useAssignNodeToDataPlane: vi.fn(),
+  useUnassignNodeFromDataPlane: vi.fn(),
 }));
 
 import * as queries from '../hooks/queries';
@@ -26,6 +31,11 @@ const mq = queries as unknown as {
   useDataPlanes: ReturnType<typeof vi.fn>;
   useCreateDataPlane: ReturnType<typeof vi.fn>;
   useRefreshDataPlaneConfig: ReturnType<typeof vi.fn>;
+  useUpdateDataPlane: ReturnType<typeof vi.fn>;
+  useDeleteDataPlane: ReturnType<typeof vi.fn>;
+  useDataPlaneNodes: ReturnType<typeof vi.fn>;
+  useAssignNodeToDataPlane: ReturnType<typeof vi.fn>;
+  useUnassignNodeFromDataPlane: ReturnType<typeof vi.fn>;
 };
 
 function success<T>(data: T) {
@@ -35,7 +45,7 @@ function loading() {
   return { isLoading: true, isError: false, error: null, data: undefined, refetch: vi.fn() };
 }
 
-const mutationStub = { mutate: vi.fn(), isPending: false };
+const mutationStub = { mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false, isError: false, error: null };
 
 function mkDp(overrides: Partial<import('../api/types').DataPlane> = {}): import('../api/types').DataPlane {
   return {
@@ -54,9 +64,15 @@ function mkDp(overrides: Partial<import('../api/types').DataPlane> = {}): import
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   mq.useDataPlanes.mockReturnValue(success([]));
   mq.useCreateDataPlane.mockReturnValue(mutationStub);
   mq.useRefreshDataPlaneConfig.mockReturnValue(mutationStub);
+  mq.useUpdateDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false, isError: false, error: null });
+  mq.useDeleteDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false, isError: false, error: null });
+  mq.useDataPlaneNodes.mockReturnValue({ data: [], isLoading: false, isError: false, error: null, refetch: vi.fn() });
+  mq.useAssignNodeToDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false, isError: false, error: null });
+  mq.useUnassignNodeFromDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false, isError: false, error: null });
 });
 
 // ---------------------------------------------------------------------------
@@ -223,5 +239,100 @@ describe('DataPlanesPage — config refresh', () => {
     // Click refresh
     fireEvent.click(screen.getByTestId('refresh-config-btn'));
     expect(mutate).toHaveBeenCalledWith('dp-test-01', expect.any(Object));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edit DP (modal pattern)
+// ---------------------------------------------------------------------------
+
+describe('DataPlanesPage — edit', () => {
+  it('opens edit modal and submits changed fields via useUpdateDataPlane', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    mq.useUpdateDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync, isPending: false, isError: false, error: null });
+    mq.useDataPlanes.mockReturnValue(success([mkDp()]));
+
+    render(<DataPlanesPage />);
+    fireEvent.click(screen.getByText('test-cluster'));
+    fireEvent.click(screen.getByTestId('edit-dp-btn'));
+
+    const nameInput = screen.getByTestId('edit-dp-name') as HTMLInputElement;
+    expect(nameInput.value).toBe('test-cluster');
+    fireEvent.change(nameInput, { target: { value: 'renamed-cluster' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('edit-dp-submit'));
+    });
+
+    expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'dp-test-01', input: expect.objectContaining({ name: 'renamed-cluster' }) }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delete DP (arm→confirm)
+// ---------------------------------------------------------------------------
+
+describe('DataPlanesPage — delete (arm→confirm)', () => {
+  it('first click arms; second click confirms and calls useDeleteDataPlane', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    mq.useDeleteDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync, isPending: false, isError: false, error: null });
+    mq.useDataPlanes.mockReturnValue(success([mkDp()]));
+
+    render(<DataPlanesPage />);
+    fireEvent.click(screen.getByText('test-cluster'));
+
+    fireEvent.click(screen.getByTestId('delete-dp-btn'));
+    expect(mutateAsync).not.toHaveBeenCalled();
+
+    // Armed → confirm
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('delete-dp-confirm'));
+    });
+    expect(mutateAsync).toHaveBeenCalledWith('dp-test-01');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Node assign / unassign
+// ---------------------------------------------------------------------------
+
+describe('DataPlanesPage — node assignment', () => {
+  it('assign node calls useAssignNodeToDataPlane with dp id and node id', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    mq.useAssignNodeToDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync, isPending: false, isError: false, error: null });
+    mq.useDataPlanes.mockReturnValue(success([mkDp()]));
+
+    render(<DataPlanesPage />);
+    fireEvent.click(screen.getByText('test-cluster'));
+
+    fireEvent.change(screen.getByTestId('assign-node-input'), { target: { value: 'node-9' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('assign-node-btn'));
+    });
+
+    expect(mutateAsync).toHaveBeenCalledWith({ id: 'dp-test-01', nodeId: 'node-9' });
+  });
+
+  it('renders assigned nodes and unassign is confirm-first', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    mq.useUnassignNodeFromDataPlane.mockReturnValue({ mutate: vi.fn(), mutateAsync, isPending: false, isError: false, error: null });
+    mq.useDataPlaneNodes.mockReturnValue(success([{ id: 'node-1', hostname: 'gpu-1', state: 'ready' }]));
+    mq.useDataPlanes.mockReturnValue(success([mkDp()]));
+
+    render(<DataPlanesPage />);
+    fireEvent.click(screen.getByText('test-cluster'));
+
+    // The assigned node is listed.
+    expect(screen.getByText('gpu-1')).toBeDefined();
+
+    // Arm then confirm.
+    fireEvent.click(screen.getByTestId('unassign-node-node-1'));
+    expect(mutateAsync).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unassign-node-confirm-node-1'));
+    });
+    expect(mutateAsync).toHaveBeenCalledWith({ id: 'dp-test-01', nodeId: 'node-1' });
   });
 });

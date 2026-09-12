@@ -17,14 +17,30 @@ import {
   ErrorState,
   LoadingBlock,
   PageHeader,
+  Tabs,
+  TabPanel,
+  type TabItem,
   type Tone,
 } from '../components/ui';
-import { useT } from '../i18n';
-import { useBillingForecast, useBillingReport } from '../hooks/queries';
+import { useT, type TFunc } from '../i18n';
+import {
+  useBillingForecast,
+  useBillingReport,
+  useModelAdoption,
+  useOrgBilling,
+  useTeamBilling,
+} from '../hooks/queries';
 import { api } from '../api/client';
 import { ApiError } from '../api/http';
 import { errorMessage } from '../lib/errors';
-import type { BillingForecastEntry, BillingTenantUsage } from '../api/types';
+import type {
+  BillingForecastEntry,
+  BillingTenantUsage,
+  ModelAdoptionSeries,
+  OrgBillingReport,
+  TeamBillingReport,
+  TenantSLAStat,
+} from '../api/types';
 
 // ---------------------------------------------------------------------------
 // Period picker
@@ -167,11 +183,358 @@ function ForecastCard() {
 }
 
 // ---------------------------------------------------------------------------
+// Model adoption panel — GET /billing/models/adoption time-series.
+// Enterprise-gated (billing); 402 shows the same upgrade prompt as the report.
+// ---------------------------------------------------------------------------
+
+/** Inline sparkline for a model's per-bucket request counts. */
+function Sparkline({ values }: { values: number[] }) {
+  if (values.length === 0) return <span className="muted">—</span>;
+  const max = Math.max(...values, 1);
+  const w = 90;
+  const h = 22;
+  const step = values.length > 1 ? w / (values.length - 1) : 0;
+  const pts = values
+    .map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * h).toFixed(1)}`)
+    .join(' ');
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true" style={{ display: 'block' }}>
+      <polyline points={pts} fill="none" stroke="#0d9488" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function AdoptionRow({ series }: { series: ModelAdoptionSeries }) {
+  const totalRequests = series.buckets.reduce((s, b) => s + b.requests, 0);
+  const totalTokens = series.buckets.reduce((s, b) => s + b.tokens_out, 0);
+  return (
+    <tr>
+      <td><code className="inline-code" style={{ fontSize: '0.85em' }}>{series.model_id}</code></td>
+      <td>{fmtNum(totalRequests)}</td>
+      <td>{fmtNum(totalTokens)}</td>
+      <td><Sparkline values={series.buckets.map((b) => b.requests)} /></td>
+    </tr>
+  );
+}
+
+function ModelAdoptionPanel() {
+  const t = useT();
+  const [window, setWindow] = useState<'daily' | 'weekly'>('daily');
+  const { data, isLoading, error } = useModelAdoption({ window, days: 30 });
+
+  if (error instanceof ApiError && error.status === 402) {
+    return <EmptyState message={t('chargeback.adoption.enterprise.required')} />;
+  }
+
+  const actions = (
+    <select
+      value={window}
+      onChange={(e) => setWindow(e.target.value as 'daily' | 'weekly')}
+      className="select"
+      aria-label={t('chargeback.adoption.window.label')}
+    >
+      <option value="daily">{t('chargeback.adoption.window.daily')}</option>
+      <option value="weekly">{t('chargeback.adoption.window.weekly')}</option>
+    </select>
+  );
+
+  return (
+    <Card title={t('chargeback.adoption.title')} action={actions}>
+      <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: 0 }}>
+        {t('chargeback.adoption.subtitle')}
+      </p>
+      {isLoading ? (
+        <LoadingBlock />
+      ) : error ? (
+        <ErrorState message={errorMessage(error, t, 'error.modelAdoption')} />
+      ) : !data || data.series.length === 0 ? (
+        <EmptyState message={t('chargeback.adoption.empty')} />
+      ) : (
+        <div className="table-wrap" style={{ overflowX: 'auto' }}>
+          <table className="table" data-testid="adoption-table">
+            <thead>
+              <tr>
+                <th scope="col">{t('chargeback.adoption.col.model')}</th>
+                <th scope="col">{t('chargeback.adoption.col.requests')}</th>
+                <th scope="col">{t('chargeback.adoption.col.tokensOut')}</th>
+                <th scope="col">{t('chargeback.adoption.col.trend')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.series.map((s) => (
+                <AdoptionRow key={s.model_id} series={s} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SLA compliance panel — requests the report with a sla_threshold_ms so the
+// backend attaches per-tenant compliance stats.
+// ---------------------------------------------------------------------------
+
+function slaTone(rate: number): Tone {
+  if (rate >= 0.99) return 'success';
+  if (rate >= 0.95) return 'warning';
+  return 'danger';
+}
+
+function SlaCompliancePanel({ days }: { days: number }) {
+  const t = useT();
+  const [threshold, setThreshold] = useState<number>(2000);
+  const { data, isLoading, error } = useBillingReport({ days, slaThresholdMs: threshold });
+
+  if (error instanceof ApiError && error.status === 402) {
+    return <EmptyState message={t('chargeback.enterprise.required')} />;
+  }
+
+  const stats: TenantSLAStat[] = data?.sla_stats ?? [];
+
+  const actions = (
+    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '13px' }}>
+      {t('chargeback.sla.threshold')}
+      <input
+        type="number"
+        min={1}
+        step={100}
+        value={threshold}
+        onChange={(e) => setThreshold(Math.max(1, Number(e.target.value) || 1))}
+        className="input input--compact"
+        style={{ width: 110 }}
+        aria-label={t('chargeback.sla.threshold')}
+        data-testid="sla-threshold-input"
+      />
+    </label>
+  );
+
+  return (
+    <Card title={t('chargeback.sla.title')} action={actions}>
+      <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: 0 }}>
+        {t('chargeback.sla.subtitle')}
+      </p>
+      {isLoading ? (
+        <LoadingBlock />
+      ) : error ? (
+        <ErrorState message={errorMessage(error, t, 'error.billing')} />
+      ) : stats.length === 0 ? (
+        <EmptyState message={t('chargeback.sla.empty')} />
+      ) : (
+        <div className="table-wrap" style={{ overflowX: 'auto' }}>
+          <table className="table" data-testid="sla-table">
+            <thead>
+              <tr>
+                <th scope="col">{t('chargeback.sla.col.tenant')}</th>
+                <th scope="col">{t('chargeback.sla.col.rate')}</th>
+                <th scope="col">{t('chargeback.sla.col.threshold')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.map((s, i) => (
+                <tr key={`${s.tenant_id}-${i}`}>
+                  <td>{s.tenant_id}</td>
+                  <td>
+                    <Badge tone={slaTone(s.sla_compliance_rate)}>
+                      {(s.sla_compliance_rate * 100).toFixed(1)}%
+                    </Badge>
+                  </td>
+                  <td>{fmtNum(s.sla_threshold_ms)} ms</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-org / per-team billing panel.
+// ---------------------------------------------------------------------------
+
+function StatRow({ report }: { report: OrgBillingReport | TeamBillingReport }) {
+  const t = useT();
+  const isOrg = 'teams' in report;
+  return (
+    <Card>
+      <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', padding: '0.5rem 0' }}>
+        {!isOrg && (
+          <StatTile label={t('chargeback.tenants.stat.requests')} value={fmtNum((report as TeamBillingReport).total_requests)} />
+        )}
+        <StatTile label={t('chargeback.tenants.stat.tokens')} value={fmtNum(report.total_tokens)} />
+        <StatTile label={t('chargeback.tenants.stat.cost')} value={`$${report.total_cost_usd.toFixed(2)}`} />
+        {isOrg && (
+          <StatTile label={t('chargeback.tenants.stat.teams')} value={(report as OrgBillingReport).teams.length} />
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function TeamBillingTable({ report }: { report: TeamBillingReport }) {
+  const t = useT();
+  const rows = report.by_model ?? [];
+  if (rows.length === 0) return <EmptyState message={t('chargeback.tenants.empty')} />;
+  return (
+    <div className="table-wrap" style={{ overflowX: 'auto' }}>
+      <table className="table">
+        <thead>
+          <tr>
+            <th scope="col">{t('chargeback.tenants.col.model')}</th>
+            <th scope="col">{t('chargeback.tenants.col.requests')}</th>
+            <th scope="col">{t('chargeback.tenants.col.tokens')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={`${row.model_id}-${i}`}>
+              <td>{row.model_id}</td>
+              <td>{fmtNum(row.request_count)}</td>
+              <td>{fmtNum(row.total_tokens)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OrgBillingTable({ report }: { report: OrgBillingReport }) {
+  const t = useT();
+  if (report.teams.length === 0) return <EmptyState message={t('chargeback.tenants.empty')} />;
+  return (
+    <div className="table-wrap" style={{ overflowX: 'auto' }}>
+      <table className="table">
+        <thead>
+          <tr>
+            <th scope="col">{t('chargeback.tenants.col.team')}</th>
+            <th scope="col">{t('chargeback.tenants.col.requests')}</th>
+            <th scope="col">{t('chargeback.tenants.col.tokens')}</th>
+            <th scope="col">{t('chargeback.tenants.col.cost')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {report.teams.map((tm, i) => (
+            <tr key={`${tm.team_id}-${i}`}>
+              <td>{tm.team_name || tm.team_id}</td>
+              <td>{fmtNum(tm.total_requests)}</td>
+              <td>{fmtNum(tm.total_tokens)}</td>
+              <td>${tm.total_cost_usd.toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Body of the org scope — isolated so its hook only runs when an id is set. */
+function OrgBillingBody({ orgId, days, t }: { orgId: string; days: number; t: TFunc }) {
+  const { data, isLoading, error } = useOrgBilling(orgId, days);
+  if (error instanceof ApiError && error.status === 402) {
+    return <EmptyState message={t('chargeback.enterprise.required')} />;
+  }
+  if (isLoading) return <LoadingBlock />;
+  if (error) return <ErrorState message={errorMessage(error, t, 'error.orgBilling')} />;
+  if (!data) return null;
+  return (
+    <>
+      <StatRow report={data} />
+      <div style={{ marginTop: '1rem' }}>
+        <OrgBillingTable report={data} />
+      </div>
+    </>
+  );
+}
+
+/** Body of the team scope — isolated so its hook only runs when an id is set. */
+function TeamBillingBody({ teamId, days, t }: { teamId: string; days: number; t: TFunc }) {
+  const { data, isLoading, error } = useTeamBilling(teamId, days);
+  if (error instanceof ApiError && error.status === 402) {
+    return <EmptyState message={t('chargeback.enterprise.required')} />;
+  }
+  if (isLoading) return <LoadingBlock />;
+  if (error) return <ErrorState message={errorMessage(error, t, 'error.teamBilling')} />;
+  if (!data) return null;
+  return (
+    <>
+      <StatRow report={data} />
+      <div style={{ marginTop: '1rem' }}>
+        <TeamBillingTable report={data} />
+      </div>
+    </>
+  );
+}
+
+function TenantBillingPanel({ days }: { days: number }) {
+  const t = useT();
+  const [scope, setScope] = useState<'org' | 'team'>('org');
+  const [draftId, setDraftId] = useState('');
+  const [loadedId, setLoadedId] = useState('');
+
+  function load() {
+    setLoadedId(draftId.trim());
+  }
+
+  return (
+    <Card title={t('chargeback.tenants.title')}>
+      <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: 0 }}>
+        {t('chargeback.tenants.subtitle')}
+      </p>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: '1rem' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', fontSize: '12px', gap: '0.2rem' }}>
+          {t('chargeback.tenants.scope.label')}
+          <select
+            value={scope}
+            onChange={(e) => { setScope(e.target.value as 'org' | 'team'); setLoadedId(''); }}
+            className="select"
+            aria-label={t('chargeback.tenants.scope.label')}
+            data-testid="tenants-scope"
+          >
+            <option value="org">{t('chargeback.tenants.scope.org')}</option>
+            <option value="team">{t('chargeback.tenants.scope.team')}</option>
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', fontSize: '12px', gap: '0.2rem', flex: 1, minWidth: 220 }}>
+          {t('chargeback.tenants.id.label')}
+          <input
+            className="input"
+            value={draftId}
+            placeholder={t('chargeback.tenants.id.placeholder')}
+            onChange={(e) => setDraftId(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
+            aria-label={t('chargeback.tenants.id.label')}
+            data-testid="tenants-id-input"
+          />
+        </label>
+        <Button variant="primary" onClick={load} disabled={!draftId.trim()} data-testid="tenants-load-btn">
+          {t('chargeback.tenants.load')}
+        </Button>
+      </div>
+      {!loadedId ? (
+        <EmptyState message={t('chargeback.tenants.prompt')} />
+      ) : scope === 'org' ? (
+        <OrgBillingBody orgId={loadedId} days={days} t={t} />
+      ) : (
+        <TeamBillingBody teamId={loadedId} days={days} t={t} />
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
+type ChargebackTab = 'usage' | 'adoption' | 'sla' | 'tenants';
+
 export function ChargebackPage() {
   const t = useT();
+  const [tab, setTab] = useState<ChargebackTab>('usage');
   const [days, setDays] = useState<number>(30);
   const [downloadingXlsx, setDownloadingXlsx] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
@@ -225,31 +588,46 @@ export function ChargebackPage() {
     );
   }
 
+  const periodPicker = (
+    <select
+      value={days}
+      onChange={(e) => setDays(Number(e.target.value))}
+      className="select"
+      aria-label={t('chargeback.period.label')}
+    >
+      {PERIOD_OPTIONS.map((o) => (
+        <option key={o.days} value={o.days}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+
   const pageActions = (
     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-      <select
-        value={days}
-        onChange={(e) => setDays(Number(e.target.value))}
-        className="select"
-        aria-label={t('chargeback.period.label')}
-      >
-        {PERIOD_OPTIONS.map((o) => (
-          <option key={o.days} value={o.days}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      <Button onClick={handleExportCsv} disabled={!report}>
-        {t('chargeback.action.exportCsv')}
-      </Button>
-      <Button onClick={handleExportXlsx} disabled={!report || downloadingXlsx}>
-        {downloadingXlsx ? t('chargeback.action.downloading') : t('chargeback.action.exportXlsx')}
-      </Button>
-      <Button onClick={handleExportPdf} disabled={!report || downloadingPdf}>
-        {downloadingPdf ? t('chargeback.action.downloading') : t('chargeback.action.exportPdf')}
-      </Button>
+      {periodPicker}
+      {tab === 'usage' && (
+        <>
+          <Button onClick={handleExportCsv} disabled={!report}>
+            {t('chargeback.action.exportCsv')}
+          </Button>
+          <Button onClick={handleExportXlsx} disabled={!report || downloadingXlsx}>
+            {downloadingXlsx ? t('chargeback.action.downloading') : t('chargeback.action.exportXlsx')}
+          </Button>
+          <Button onClick={handleExportPdf} disabled={!report || downloadingPdf}>
+            {downloadingPdf ? t('chargeback.action.downloading') : t('chargeback.action.exportPdf')}
+          </Button>
+        </>
+      )}
     </div>
   );
+
+  const tabs: TabItem[] = [
+    { id: 'usage', label: t('chargeback.tab.usage') },
+    { id: 'adoption', label: t('chargeback.tab.adoption') },
+    { id: 'sla', label: t('chargeback.tab.sla') },
+    { id: 'tenants', label: t('chargeback.tab.tenants') },
+  ];
 
   return (
     <div className="page">
@@ -259,35 +637,61 @@ export function ChargebackPage() {
         actions={pageActions}
       />
 
-      {/* Summary stats */}
-      {report && (
-        <div style={{ marginBottom: '1rem' }}>
-          <Card>
-            <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', padding: '0.5rem 0' }}>
-              <StatTile label={t('chargeback.stat.totalRequests')} value={fmtNum(report.total_requests)} />
-              <StatTile label={t('chargeback.stat.totalTokens')} value={fmtNum(report.total_tokens)} />
-              <StatTile
-                label={t('chargeback.stat.activeTenants')}
-                value={new Set(report.tenants.map((tu) => tu.tenant_id)).size}
-              />
+      <div style={{ marginBottom: '1rem' }}>
+        <Tabs tabs={tabs} active={tab} onChange={(id) => setTab(id as ChargebackTab)} ariaLabel={t('chargeback.title')} />
+      </div>
+
+      {tab === 'usage' && (
+        <TabPanel id="usage">
+          {/* Summary stats */}
+          {report && (
+            <div style={{ marginBottom: '1rem' }}>
+              <Card>
+                <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', padding: '0.5rem 0' }}>
+                  <StatTile label={t('chargeback.stat.totalRequests')} value={fmtNum(report.total_requests)} />
+                  <StatTile label={t('chargeback.stat.totalTokens')} value={fmtNum(report.total_tokens)} />
+                  <StatTile
+                    label={t('chargeback.stat.activeTenants')}
+                    value={new Set(report.tenants.map((tu) => tu.tenant_id)).size}
+                  />
+                </div>
+              </Card>
             </div>
+          )}
+
+          {/* Usage table */}
+          <Card>
+            {isLoading ? (
+              <LoadingBlock />
+            ) : error ? (
+              <ErrorState message={errorMessage(error, t, 'error.billing')} />
+            ) : report ? (
+              <UsageTable rows={report.tenants} />
+            ) : null}
           </Card>
-        </div>
+
+          {/* Spending forecast — enterprise feature; hidden when 402 */}
+          <ForecastCard />
+        </TabPanel>
       )}
 
-      {/* Usage table */}
-      <Card>
-        {isLoading ? (
-          <LoadingBlock />
-        ) : error ? (
-          <ErrorState message={errorMessage(error, t, 'error.billing')} />
-        ) : report ? (
-          <UsageTable rows={report.tenants} />
-        ) : null}
-      </Card>
+      {tab === 'adoption' && (
+        <TabPanel id="adoption">
+          <ModelAdoptionPanel />
+        </TabPanel>
+      )}
 
-      {/* Spending forecast — enterprise feature; hidden when 402 */}
-      <ForecastCard />
+      {tab === 'sla' && (
+        <TabPanel id="sla">
+          <SlaCompliancePanel days={days} />
+        </TabPanel>
+      )}
+
+      {tab === 'tenants' && (
+        <TabPanel id="tenants">
+          <TenantBillingPanel days={days} />
+        </TabPanel>
+      )}
     </div>
   );
 }

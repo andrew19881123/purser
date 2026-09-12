@@ -78,6 +78,20 @@ curl -X POST https://purser.example.com/api/v1/platform/pools \
 | `owner_id` | no | org or team UUID when owner_type is org/team |
 | `policy` | no | `exclusive` (default) or `shared` |
 
+#### Update a pool
+
+`PUT` accepts any subset of `name`, `description`, and `policy`; omitted fields are
+left unchanged. `policy` must be `shared` or `exclusive`.
+
+```bash
+curl -X PUT https://purser.example.com/api/v1/platform/pools/$POOL_ID \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "ML-GPU-Lab-2", "policy": "shared"}'
+```
+
+Returns **200** with the updated pool JSON (same shape as create).
+
 #### Delete a pool
 
 Returns **409 Conflict** if any nodes are still assigned. Remove all nodes first.
@@ -273,6 +287,21 @@ Team C (shared pool: node-3, node-4; quota: max_deployments=2)
 | `PUT` | `/api/v1/platform/pools/{id}/quotas/{teamId}` | Upsert team quota (shared pools) |
 | `GET` | `/api/v1/platform/pools/{id}/quotas` | List team quotas |
 | `DELETE` | `/api/v1/platform/pools/{id}/quotas/{teamId}` | Delete team quota |
+
+---
+
+## Node Pools page (UI)
+
+The **Node Pools** page in the operator dashboard lists every pool with its owner,
+policy, and node count. Per row:
+
+- **Assign Node** expands an inline panel to add/remove nodes and (for shared pools)
+  view team quotas.
+- **Edit** opens a modal to change the pool name, description, or policy
+  (`PUT /pools/{id}`).
+- **Delete** uses an arm→confirm interaction: the first click arms the button (it
+  turns red and shows *Delete {name}?*), the second confirms. The control plane
+  returns **409** if the pool still has assigned nodes — remove them first.
 
 ---
 

@@ -31,17 +31,22 @@ import type {
   KeyUsage,
   MetricsSnapshot,
   MetricsStreamHandlers,
+  ModelAdoptionResponse,
   ModelHealth,
   ModelHealthStatus,
   ModelSpec,
   NodePool,
   NodeView,
   Organization,
+  OrgBillingReport,
   PlanPreviewResult,
   PoolTeamQuota,
   ReconcilerStatus,
   Team,
+  TeamBillingReport,
   TeamMember,
+  UpdateDataPlaneInput,
+  UpdateNodePoolInput,
   UsageSummary,
 } from '../api/types';
 import type {
@@ -52,7 +57,12 @@ import type {
   PurserApi,
   UpdateRoleInput,
 } from '../api/client';
-import type { DataPlaneWithToken, ServiceAccountWithSecret } from '../api/types';
+import type {
+  DataPlane,
+  DataPlaneNode,
+  DataPlaneWithToken,
+  ServiceAccountWithSecret,
+} from '../api/types';
 import { ApiError } from '../api/http';
 import { clamp } from '../lib/format';
 import {
@@ -603,6 +613,25 @@ export const mockBackend: PurserApi = {
     });
   },
 
+  // Adoption + per-org/per-team billing are enterprise-gated; mock has no license.
+  getModelAdoption(): Promise<ModelAdoptionResponse> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
+  getOrgBilling(): Promise<OrgBillingReport> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
+  getTeamBilling(): Promise<TeamBillingReport> {
+    return Promise.reject(
+      Object.assign(new Error('Enterprise license required'), { status: 402 }),
+    );
+  },
+
   streamMetrics(handlers: MetricsStreamHandlers): () => void {
     const emit = () => {
       const samples = nodes
@@ -740,6 +769,24 @@ export const mockBackend: PurserApi = {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }, 200);
+  },
+
+  updateNodePool(id, input: UpdateNodePoolInput): Promise<NodePool> {
+    return delay({
+      id,
+      name: input.name ?? 'Mock Pool',
+      description: input.description,
+      owner_type: 'platform',
+      owner_id: 'platform',
+      policy: input.policy ?? 'shared',
+      node_ids: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, 350);
+  },
+
+  deleteNodePool(_id): Promise<void> {
+    return delay(undefined, 350);
   },
 
   listPoolNodes(): Promise<{ node_ids: string[] }> {
@@ -963,6 +1010,25 @@ export const mockBackend: PurserApi = {
     return delay({ dataplane: dp, joinToken: 'dp_demo' });
   },
   refreshDataPlaneConfig(_id: string) { return delay(undefined as void); },
+  updateDataPlane(id: string, input: UpdateDataPlaneInput): Promise<DataPlane> {
+    const dp = {
+      id,
+      name: input.name ?? 'demo',
+      description: input.description,
+      tier: input.tier ?? 'development',
+      gatewayUrl: input.gatewayUrl ?? '',
+      status: input.status ?? 'active',
+      lastHeartbeat: null,
+      nodeCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as DataPlane;
+    return delay(dp, 350);
+  },
+  deleteDataPlane(_id: string) { return delay(undefined as void); },
+  listDataPlaneNodes(_id: string): Promise<DataPlaneNode[]> { return delay([]); },
+  assignNodeToDataPlane(_id: string, _nodeId: string) { return delay(undefined as void); },
+  unassignNodeFromDataPlane(_id: string, _nodeId: string) { return delay(undefined as void); },
 
   // --- service accounts ---
   listServiceAccounts() { return delay([]); },

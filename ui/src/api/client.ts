@@ -32,7 +32,13 @@ import type {
   ConfigApplyResult,
   ConfigDiff,
   DataPlane,
+  DataPlaneNode,
   DataPlaneWithToken,
+  ModelAdoptionResponse,
+  OrgBillingReport,
+  TeamBillingReport,
+  UpdateDataPlaneInput,
+  UpdateNodePoolInput,
   DeployOverrides,
   Deployment,
   DeploymentApproval,
@@ -198,8 +204,10 @@ export interface PurserApi {
   /**
    * GET /api/v1/billing/report — 402 without the "billing" feature.
    * Returns chargeback report grouped by tenant+model for the given window.
+   * When `slaThresholdMs` is provided the report also carries per-tenant SLA
+   * compliance stats (`sla_stats`) computed against that latency threshold.
    */
-  getBillingReport(start: string, end: string, tenantId?: string): Promise<BillingReport>;
+  getBillingReport(start: string, end: string, tenantId?: string, slaThresholdMs?: number): Promise<BillingReport>;
   /**
    * Returns the URL for CSV download (format=csv). Callers create a link and
    * navigate to it directly — no fetch needed.
@@ -217,6 +225,15 @@ export interface PurserApi {
   getBillingPdfUrl(start: string, end: string, tenantId?: string): string;
   /** GET /api/v1/billing/summary — quick stats, not enterprise-gated. */
   getBillingSummary(tenantId?: string): Promise<BillingSummary>;
+  /**
+   * GET /api/v1/billing/models/adoption — per-model request/token time-series.
+   * 402 without the "billing" feature. `window` buckets by day or ISO week.
+   */
+  getModelAdoption(window?: 'daily' | 'weekly', days?: number): Promise<ModelAdoptionResponse>;
+  /** GET /api/v1/platform/orgs/{orgId}/billing — 402 without "billing". */
+  getOrgBilling(orgId: string, start: string, end: string): Promise<OrgBillingReport>;
+  /** GET /api/v1/platform/teams/{teamId}/billing — 402 without "billing". */
+  getTeamBilling(teamId: string, start: string, end: string): Promise<TeamBillingReport>;
 
   // --- v0.4 platform model: organizations ---
   listOrganizations(): Promise<{ organizations: Organization[] }>;
@@ -239,6 +256,10 @@ export interface PurserApi {
   listNodePools(): Promise<{ pools: NodePool[] }>;
   createNodePool(data: Partial<NodePool>): Promise<NodePool>;
   getNodePool(id: string): Promise<NodePool>;
+  /** PUT /api/v1/platform/pools/{id} — update name/description/policy; returns the updated pool. */
+  updateNodePool(id: string, input: UpdateNodePoolInput): Promise<NodePool>;
+  /** DELETE /api/v1/platform/pools/{id} — delete a pool. 409 if it still has assigned nodes. */
+  deleteNodePool(id: string): Promise<void>;
   listPoolNodes(poolId: string): Promise<{ node_ids: string[] }>;
   assignNodeToPool(poolId: string, nodeId: string): Promise<void>;
   removeNodeFromPool(poolId: string, nodeId: string): Promise<void>;
@@ -285,6 +306,16 @@ export interface PurserApi {
   createDataPlane(input: CreateDataPlaneInput): Promise<DataPlaneWithToken>;
   /** POST /api/v1/platform/dataplanes/{id}/config/refresh — trigger immediate config rebuild. */
   refreshDataPlaneConfig(id: string): Promise<void>;
+  /** PUT /api/v1/platform/dataplanes/{id} — update mutable DP fields; returns the updated DP. */
+  updateDataPlane(id: string, input: UpdateDataPlaneInput): Promise<DataPlane>;
+  /** DELETE /api/v1/platform/dataplanes/{id} — remove a Data Plane. 204 on success. */
+  deleteDataPlane(id: string): Promise<void>;
+  /** GET /api/v1/platform/dataplanes/{id}/nodes — nodes currently assigned to this DP. */
+  listDataPlaneNodes(id: string): Promise<DataPlaneNode[]>;
+  /** POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId} — assign a fleet node to this DP. */
+  assignNodeToDataPlane(id: string, nodeId: string): Promise<void>;
+  /** DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId} — unassign a node from this DP. */
+  unassignNodeFromDataPlane(id: string, nodeId: string): Promise<void>;
 
   // --- v0.5 service accounts ---
   /** GET /api/v1/service-accounts — list all machine identities. */

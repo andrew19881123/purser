@@ -24,6 +24,8 @@ import {
   usePoolQuotas,
   useAssignNodeToPool,
   useRemoveNodeFromPool,
+  useUpdateNodePool,
+  useDeleteNodePool,
 } from '../hooks/queries';
 import { useT } from '../i18n';
 import { errorMessage } from '../lib/errors';
@@ -162,6 +164,100 @@ function CreatePoolModal({ onClose }: CreatePoolModalProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Edit Pool modal — reuses the same Field/Modal idiom as Create.
+// Only name / description / policy are mutable (matches PUT /pools/{id}).
+// ---------------------------------------------------------------------------
+
+interface EditPoolModalProps {
+  pool: NodePool;
+  onClose: () => void;
+}
+
+function EditPoolModal({ pool, onClose }: EditPoolModalProps) {
+  const t = useT();
+  const [name, setName] = useState(pool.name);
+  const [description, setDescription] = useState(pool.description ?? '');
+  const [policy, setPolicy] = useState<NodePool['policy']>(pool.policy);
+  const nameId = useFieldId('edit-pool-name');
+  const descId = useFieldId('edit-pool-desc');
+  const policyId = useFieldId('edit-pool-policy');
+  const updatePool = useUpdateNodePool();
+
+  function handleSubmit() {
+    if (!name.trim()) return;
+    void updatePool.mutateAsync({
+      id: pool.id,
+      input: {
+        name: name.trim(),
+        description: description.trim(),
+        policy,
+      },
+    }).then(onClose);
+  }
+
+  return (
+    <Modal
+      title={t('platform.pools.editPool')}
+      onClose={onClose}
+      footer={
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            {t('action.cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleSubmit}
+            disabled={!name.trim() || updatePool.isPending}
+          >
+            {t('platform.pools.save')}
+          </Button>
+        </div>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <Field label={t('platform.pools.name')} htmlFor={nameId}>
+          <input
+            id={nameId}
+            className="input"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
+        </Field>
+        <Field label={t('platform.pools.description')} htmlFor={descId}>
+          <input
+            id={descId}
+            className="input"
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Optional description"
+          />
+        </Field>
+        <Field label={t('platform.pools.policy')} htmlFor={policyId}>
+          <select
+            id={policyId}
+            className="select"
+            value={policy}
+            onChange={(e) => setPolicy(e.target.value as NodePool['policy'])}
+          >
+            <option value="shared">{t('platform.pools.shared')}</option>
+            <option value="exclusive">{t('platform.pools.exclusive')}</option>
+          </select>
+        </Field>
+        {updatePool.isError && (
+          <p style={{ color: 'var(--color-danger)', fontSize: '0.85em' }}>
+            {updatePool.error instanceof Error ? updatePool.error.message : 'Error updating pool'}
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Pool detail panel (inline expansion)
 // ---------------------------------------------------------------------------
 
@@ -287,7 +383,21 @@ interface PoolRowProps {
 function PoolRow({ pool }: PoolRowProps) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const deletePool = useDeleteNodePool();
   const nodeCount = pool.node_ids?.length ?? '—';
+  const hasNodes = (pool.node_ids?.length ?? 0) > 0;
+
+  function handleDelete() {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    void deletePool.mutateAsync(pool.id)
+      .then(() => setConfirmingDelete(false))
+      .catch(() => setConfirmingDelete(false));
+  }
 
   return (
     <>
@@ -301,13 +411,41 @@ function PoolRow({ pool }: PoolRowProps) {
         <td><PolicyBadge policy={pool.policy} /></td>
         <td>{nodeCount}</td>
         <td>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setExpanded((v) => !v)}
-          >
-            {expanded ? t('action.close') : t('platform.pools.assignNode')}
-          </Button>
+          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? t('action.close') : t('platform.pools.assignNode')}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+              {t('platform.pools.edit')}
+            </Button>
+            <Button
+              variant={confirmingDelete ? 'danger' : 'ghost'}
+              size="sm"
+              onClick={handleDelete}
+              disabled={deletePool.isPending}
+              aria-label={t('platform.pools.delete')}
+              title={hasNodes ? t('platform.pools.deleteHasNodes') : undefined}
+            >
+              <IconTrash />
+              {confirmingDelete
+                ? t('platform.pools.deleteConfirm', { name: pool.name })
+                : t('platform.pools.delete')}
+            </Button>
+            {confirmingDelete && (
+              <Button variant="secondary" size="sm" onClick={() => setConfirmingDelete(false)}>
+                {t('action.cancel')}
+              </Button>
+            )}
+          </div>
+          {deletePool.isError && (
+            <p style={{ color: 'var(--color-danger)', fontSize: '0.8em', marginTop: '0.4rem' }}>
+              {deletePool.error instanceof Error ? deletePool.error.message : t('platform.pools.deleteHasNodes')}
+            </p>
+          )}
         </td>
       </tr>
       {expanded && (
@@ -317,6 +455,7 @@ function PoolRow({ pool }: PoolRowProps) {
           </td>
         </tr>
       )}
+      {editing && <EditPoolModal pool={pool} onClose={() => setEditing(false)} />}
     </>
   );
 }

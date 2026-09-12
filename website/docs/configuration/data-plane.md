@@ -288,6 +288,24 @@ curl -X DELETE https://cp.example.com/api/v1/platform/dataplanes/dp-a1b2c3d4e5f6
 
 ---
 
+## Data Planes page (UI)
+
+The **Data Planes** page in the operator dashboard lists every registered DP. Click
+a row to expand its detail panel, which now exposes the full lifecycle:
+
+- **Edit** opens a modal to change the name, tier, gateway URL, or description
+  (`PUT /platform/dataplanes/{id}`).
+- **Delete** uses an arm→confirm interaction — the first click arms the button (it
+  turns red and reads *Delete {name}?*), the second confirms
+  (`DELETE /platform/dataplanes/{id}`). A hint reminds the operator that assigned
+  nodes are released.
+- **Assigned nodes** lists the DP's nodes (`GET …/{id}/nodes`); an input assigns a
+  node by id (`POST …/{id}/nodes/{nodeId}`) and each node chip has an arm→confirm
+  unassign action (`DELETE …/{id}/nodes/{nodeId}`).
+- **Refresh config** (existing) triggers an immediate snapshot rebuild.
+
+---
+
 ## Status lifecycle
 
 ```

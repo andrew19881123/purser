@@ -672,6 +672,18 @@ export interface BillingTenantUsage {
   period_end: string;   // ISO-8601
 }
 
+/**
+ * SLA compliance rate for one tenant over the billing window. Present in a
+ * BillingReport only when the caller passes a `sla_threshold_ms` query param;
+ * `sla_compliance_rate` is the fraction (0.0–1.0) of the tenant's requests
+ * whose latency was below the requested threshold.
+ */
+export interface TenantSLAStat {
+  tenant_id: string;
+  sla_compliance_rate: number; // 0.0–1.0
+  sla_threshold_ms: number;
+}
+
 /** Full chargeback report for a configurable time window. */
 export interface BillingReport {
   period_start: string;  // ISO-8601
@@ -679,6 +691,40 @@ export interface BillingReport {
   tenants: BillingTenantUsage[];
   total_requests: number;
   total_tokens: number;
+  /** Present only when a sla_threshold_ms was requested. */
+  sla_stats?: TenantSLAStat[];
+}
+
+/**
+ * Per-team billing rollup — GET /api/v1/platform/teams/{teamId}/billing.
+ * Enterprise-gated (billing feature). `by_model` breaks the totals down by model.
+ */
+export interface TeamBillingReport {
+  team_id: string;
+  team_name?: string;
+  org_id?: string;
+  period_start: string;
+  period_end: string;
+  total_requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  by_model?: BillingTenantUsage[];
+}
+
+/**
+ * Per-organization billing rollup — GET /api/v1/platform/orgs/{orgId}/billing.
+ * Enterprise-gated (billing feature). Sums every team discovered under the org.
+ */
+export interface OrgBillingReport {
+  org_id: string;
+  org_name?: string;
+  period_start: string;
+  period_end: string;
+  total_cost_usd: number;
+  total_tokens: number;
+  teams: TeamBillingReport[];
 }
 
 /** Quick billing summary (non-gated) for the Settings QuickStatsBar. */
@@ -741,6 +787,16 @@ export interface PoolTeamQuota {
   max_deployments: number;
   max_gpu_nodes: number;
   priority: number;
+}
+
+/**
+ * Mutable fields accepted by PUT /api/v1/platform/pools/{id}. All optional;
+ * only provided keys are changed server-side (policy must stay shared|exclusive).
+ */
+export interface UpdateNodePoolInput {
+  name?: string;
+  description?: string;
+  policy?: NodePool['policy'];
 }
 
 /**
@@ -1002,6 +1058,31 @@ export interface BillingForecastResponse {
   entries: BillingForecastEntry[];
 }
 
+// ---------------------------------------------------------------------------
+// Model adoption time-series — GET /api/v1/billing/models/adoption
+// Enterprise-gated: requires the "billing" feature (402 without).
+// ---------------------------------------------------------------------------
+
+/** One time bucket (day or ISO week) in a model-adoption series. */
+export interface ModelAdoptionBucket {
+  date: string;        // YYYY-MM-DD (day) or ISO-week start
+  requests: number;
+  tokens_out: number;
+}
+
+/** Request/token time-series for a single model. */
+export interface ModelAdoptionSeries {
+  model_id: string;
+  buckets: ModelAdoptionBucket[];
+}
+
+/** Response of GET /api/v1/billing/models/adoption (top 10 models). */
+export interface ModelAdoptionResponse {
+  window: 'daily' | 'weekly';
+  days: number;
+  series: ModelAdoptionSeries[];
+}
+
 // (WhatIf types are already defined above in types.ts)
 
 // ---------------------------------------------------------------------------
@@ -1038,6 +1119,31 @@ export interface DataPlane {
 export interface DataPlaneWithToken {
   dataplane: DataPlane;
   joinToken: string;
+}
+
+/**
+ * A fleet node as returned by GET /api/v1/platform/dataplanes/{id}/nodes.
+ * A lean projection of the control-plane Node row (the operator only needs
+ * enough to identify the node and see its lifecycle state here).
+ */
+export interface DataPlaneNode {
+  id: string;
+  hostname: string;
+  state: string;
+  os?: string;
+  arch?: string;
+}
+
+/**
+ * Mutable fields accepted by PUT /api/v1/platform/dataplanes/{id}. All optional;
+ * only the provided keys are changed server-side.
+ */
+export interface UpdateDataPlaneInput {
+  name?: string;
+  description?: string;
+  tier?: string;
+  gatewayUrl?: string;
+  status?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -377,12 +377,47 @@ export function useUsageSummary() {
  * Returns 402 when the "billing" enterprise feature is not licensed; callers
  * should detect ApiError with status 402 and show an upgrade prompt.
  */
-export function useBillingReport(params: { days: number; tenantId?: string }) {
+export function useBillingReport(params: { days: number; tenantId?: string; slaThresholdMs?: number }) {
   const end = new Date().toISOString();
   const start = new Date(Date.now() - params.days * 86400000).toISOString();
   return useQuery({
     queryKey: ['billing', params],
-    queryFn: () => api.getBillingReport(start, end, params.tenantId),
+    queryFn: () => api.getBillingReport(start, end, params.tenantId, params.slaThresholdMs),
+  });
+}
+
+/**
+ * GET /api/v1/billing/models/adoption — per-model request/token time-series.
+ * Enterprise-gated (billing); 402 surfaces as an ApiError the caller can gate on.
+ */
+export function useModelAdoption(params: { window?: 'daily' | 'weekly'; days?: number } = {}) {
+  const window = params.window ?? 'daily';
+  const days = params.days ?? 30;
+  return useQuery({
+    queryKey: ['modelAdoption', window, days],
+    queryFn: () => api.getModelAdoption(window, days),
+  });
+}
+
+/** GET /api/v1/platform/orgs/{orgId}/billing — per-org billing rollup. */
+export function useOrgBilling(orgId: string | undefined, days: number) {
+  const end = new Date().toISOString();
+  const start = new Date(Date.now() - days * 86400000).toISOString();
+  return useQuery({
+    queryKey: ['orgBilling', orgId ?? '', days],
+    queryFn: () => api.getOrgBilling(orgId as string, start, end),
+    enabled: Boolean(orgId),
+  });
+}
+
+/** GET /api/v1/platform/teams/{teamId}/billing — per-team billing rollup. */
+export function useTeamBilling(teamId: string | undefined, days: number) {
+  const end = new Date().toISOString();
+  const start = new Date(Date.now() - days * 86400000).toISOString();
+  return useQuery({
+    queryKey: ['teamBilling', teamId ?? '', days],
+    queryFn: () => api.getTeamBilling(teamId as string, start, end),
+    enabled: Boolean(teamId),
   });
 }
 
@@ -623,6 +658,23 @@ export function useCreateNodePool() {
   });
 }
 
+export function useUpdateNodePool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof api.updateNodePool>[1] }) =>
+      api.updateNodePool(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['nodePools'] }),
+  });
+}
+
+export function useDeleteNodePool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteNodePool(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['nodePools'] }),
+  });
+}
+
 export function usePoolNodes(poolId: string | undefined) {
   return useQuery({
     queryKey: ['poolNodes', poolId ?? ''],
@@ -755,6 +807,55 @@ export function useCreateDataPlane() {
 export function useRefreshDataPlaneConfig() {
   return useMutation({
     mutationFn: (id: string) => api.refreshDataPlaneConfig(id),
+  });
+}
+
+export function useUpdateDataPlane() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof api.updateDataPlane>[1] }) =>
+      api.updateDataPlane(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.dataPlanes }),
+  });
+}
+
+export function useDeleteDataPlane() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteDataPlane(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.dataPlanes }),
+  });
+}
+
+export function useDataPlaneNodes(id: string | undefined) {
+  return useQuery({
+    queryKey: ['dataPlaneNodes', id ?? ''],
+    queryFn: () => api.listDataPlaneNodes(id as string),
+    enabled: Boolean(id),
+  });
+}
+
+export function useAssignNodeToDataPlane() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, nodeId }: { id: string; nodeId: string }) =>
+      api.assignNodeToDataPlane(id, nodeId),
+    onSuccess: (_d, { id }) => {
+      qc.invalidateQueries({ queryKey: ['dataPlaneNodes', id] });
+      qc.invalidateQueries({ queryKey: qk.dataPlanes });
+    },
+  });
+}
+
+export function useUnassignNodeFromDataPlane() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, nodeId }: { id: string; nodeId: string }) =>
+      api.unassignNodeFromDataPlane(id, nodeId),
+    onSuccess: (_d, { id }) => {
+      qc.invalidateQueries({ queryKey: ['dataPlaneNodes', id] });
+      qc.invalidateQueries({ queryKey: qk.dataPlanes });
+    },
   });
 }
 
