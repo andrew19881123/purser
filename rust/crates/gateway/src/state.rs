@@ -3,9 +3,13 @@
 //! The heart of the gateway is the `model -> route` table: given the `model`
 //! field of an inference request, the gateway resolves which deployment **host**
 //! (the pipeline coordinator) to forward to. The Control Plane keeps this table
-//! fresh out-of-band via the management plane (`PUT/DELETE /api/v1/routes`), so
-//! it lives behind an `Arc<RwLock<..>>`: cheap to clone into every handler,
+//! fresh out-of-band via the management plane (`PUT/GET/DELETE /api/v1/routes`),
+//! so it lives behind an `Arc<RwLock<..>>`: cheap to clone into every handler,
 //! cheap to read concurrently, writable from the route-sync endpoints.
+//!
+//! The table is **in memory only** — it is not persisted. A gateway restart
+//! therefore starts empty and is refilled by the Control Plane's route
+//! reconciler, which re-pushes every ACTIVE deployment on its interval.
 //!
 //! [`AppState`] also carries the auth policy, quota limiter, upstream HTTP
 //! client and the Prometheus render handle — everything a request handler needs.
@@ -37,6 +41,17 @@ pub enum RouteState {
     Active,
     /// Finishing in-flight work; excluded from new routing and `/v1/models`.
     Draining,
+}
+
+impl RouteState {
+    /// Lowercase wire name, matching the route-sync contract (`active` /
+    /// `draining`). Used by `GET /api/v1/routes`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RouteState::Active => "active",
+            RouteState::Draining => "draining",
+        }
+    }
 }
 
 /// Where and how a model is served.

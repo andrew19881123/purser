@@ -74,6 +74,8 @@ sequenceDiagram
 
 **Order matters**: workers are started before the host so the full pipeline is ready end-to-end before the host starts accepting inference requests.
 
+The route push above is not a one-shot. The Control Plane's route reconciler re-pushes the desired route set (one entry per `ACTIVE` deployment) at startup and every 30 seconds, and deletes routes whose model is no longer `ACTIVE`. The Gateway's routing table is in memory only, so this loop is what lets a Gateway restart recover on its own — and why a brief `503 model not available` window after a Gateway restart closes without operator action.
+
 ---
 
 ## Inference request flow
@@ -104,7 +106,7 @@ Only activations cross the network between pipeline stages. The data plane stays
 The control plane runs in Kubernetes as three container images:
 
 - **Control Plane** (`ghcr.io/andrew19881123/purser-control-plane`) — the brain. Hosts the SQLite Registry, internal PKI (CA that issues mTLS certificates to agents), the REST `/api/v1` management API, and the gRPC `RegistrationService` (agent enrollment and heartbeat).
-- **API Gateway** (`ghcr.io/andrew19881123/purser-gateway`) — the front door. Exposes the OpenAI-compatible `/v1` endpoint. The Control Plane pushes route updates to it over HTTP, authenticated by a shared internal token.
+- **API Gateway** (`ghcr.io/andrew19881123/purser-gateway`) — the front door. Exposes the OpenAI-compatible `/v1` endpoint. The Control Plane pushes route updates to it over HTTP, authenticated by a shared internal token, and re-pushes the desired set every 30 seconds (the route reconciler, `PURSER_ROUTE_RECONCILE_INTERVAL`). The Gateway's routing table is held in memory only, so that periodic reconcile is what makes a Gateway restart self-healing: it refills the table from the `ACTIVE` deployments within one interval, instead of leaving every request at `503` until an operator re-deploys a model.
 - **Dashboard UI** (`ghcr.io/andrew19881123/purser-ui`) — the operator interface. A React SPA served by nginx. The **Fleet** page includes a **Reconciler Status** panel that polls `GET /api/v1/reconciler/status` and surfaces pending approval events (e.g. `node_down`) and the active control-loop config (interval, node timeout, cooldown).
 
 Control-plane traffic is low-volume: enrollment, heartbeats, plan delivery, `StartEngine` RPCs.

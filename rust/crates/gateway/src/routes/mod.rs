@@ -8,8 +8,8 @@
 //!   compatibility; accepts `x-api-key` auth and returns Anthropic-format JSON
 //!   or SSE. Both planes share the same model routing table.
 //! * **Management plane** under `/api/v1/…` — route-sync driven by the Control
-//!   Plane (`PUT`/`DELETE /api/v1/routes`). Node/deployment listings live in
-//!   the Control Plane, not here.
+//!   Plane (`PUT`/`GET`/`DELETE /api/v1/routes`). Node/deployment listings live
+//!   in the Control Plane, not here.
 //!
 //! Liveness/readiness probes live at the root (`/healthz`, `/readyz`).
 

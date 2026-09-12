@@ -5,7 +5,8 @@
 // RegistrationService gRPC server (Join/Heartbeat from Agents), the
 // Orchestration Controller and the Reconciler control loop. The Planner and
 // Gateway are separate processes; the orchestrator notifies the Gateway over
-// HTTP when deployments change.
+// HTTP when deployments change, and the RouteReconciler re-pushes the desired
+// route set periodically so a restarted Gateway recovers on its own.
 //
 // Subcommands:
 //
@@ -88,6 +89,13 @@ type config struct {
 	// Read from PURSER_CONFIG_INTERVAL (seconds); default 30 s.
 	configInterval time.Duration
 
+	// routeReconcileInterval is how often the control plane re-pushes the
+	// desired route set (all ACTIVE deployments) to the Gateway. The Gateway
+	// keeps routes in memory only, so this loop is what restores them after a
+	// Gateway restart. Read from PURSER_ROUTE_RECONCILE_INTERVAL (seconds);
+	// default 30 s.
+	routeReconcileInterval time.Duration
+
 	// Raft HA configuration. All four fields are optional — if raftNodeID is
 	// empty the control plane runs in standalone (single-node) mode and the
 	// Raft subsystem is not started.
@@ -116,6 +124,9 @@ func loadConfig() config {
 		rateLimitKeyRPS: envFloat("PURSER_RATE_LIMIT_KEY_RPS", 0),
 		configPath:      envOr("PURSER_CONFIG", ""),
 		configInterval:  envDuration("PURSER_CONFIG_INTERVAL", 30*time.Second),
+		// Self-healing route table: the Gateway holds routes in memory only, so
+		// the control plane re-pushes the ACTIVE set periodically.
+		routeReconcileInterval: envDuration("PURSER_ROUTE_RECONCILE_INTERVAL", orchestrator.DefaultRouteReconcileInterval),
 		// Raft — all optional; single-node mode when raftNodeID is empty.
 		raftNodeID:    envOr("PURSER_RAFT_NODE_ID", ""),
 		raftBindAddr:  envOr("PURSER_RAFT_BIND_ADDR", ":7000"),
@@ -350,6 +361,21 @@ func run(logger *slog.Logger) error {
 			Logger: logger,
 		})
 	}
+
+	// Route reconciler: the Gateway's routing table is in memory only, so a
+	// Gateway restart would otherwise leave it empty and every inference request
+	// returning 503 until an operator re-deployed a model. This loop re-pushes
+	// the desired set (every ACTIVE deployment) at startup and every
+	// routeReconcileInterval, and deletes routes whose model is no longer ACTIVE.
+	// It is best-effort: an unreachable Gateway logs a warning and is retried on
+	// the next pass, never failing control-plane startup.
+	routeRC := orchestrator.NewRouteReconciler(reg, gateway, cfg.routeReconcileInterval, logger)
+	go func() {
+		if err := routeRC.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("route reconciler stopped", "err", err)
+		}
+	}()
+	logger.Info("route reconciler started", "interval", cfg.routeReconcileInterval, "gateway", cfg.gatewayAddr)
 
 	// Orchestrator commands agents over gRPC.
 	// PURSER_AGENT_GRPC_INSECURE=true skips TLS — use only in dev/demo mode

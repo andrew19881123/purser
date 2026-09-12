@@ -23,12 +23,31 @@ const InternalTokenHeader = "X-Purser-Internal-Token"
 //	PUT {gateway}/api/v1/routes
 //	{"model_id":"...","endpoint":"http://<host_ip>:<port>",
 //	 "deployment_id":"...","quantization":"...","state":"active"}
+//
+// The read side of the same table is `GET {gateway}/api/v1/routes`, decoded into
+// [RouteView] — see [RouteLister].
 type RouteUpdate struct {
 	ModelID      string `json:"model_id"`
 	Endpoint     string `json:"endpoint"`
 	DeploymentID string `json:"deployment_id"`
 	Quantization string `json:"quantization"`
 	State        string `json:"state"`
+}
+
+// RouteView is one entry of the Gateway's `GET /api/v1/routes` response: what
+// the Gateway currently holds in its in-memory routing table.
+type RouteView struct {
+	ModelID      string `json:"model_id"`
+	Endpoint     string `json:"endpoint"`
+	DeploymentID string `json:"deployment_id"`
+	Quantization string `json:"quantization"`
+	State        string `json:"state"`
+}
+
+// routeList is the `GET /api/v1/routes` envelope.
+type routeList struct {
+	Object string      `json:"object"`
+	Data   []RouteView `json:"data"`
 }
 
 // GatewaySync notifies the Gateway of route changes. It is injectable/mockable
@@ -38,6 +57,15 @@ type GatewaySync interface {
 	UpsertRoute(ctx context.Context, u RouteUpdate) error
 	// DeleteRoute removes the route for modelID from the Gateway.
 	DeleteRoute(ctx context.Context, modelID string) error
+}
+
+// RouteLister is an optional capability of a GatewaySync: it reports the routes
+// the Gateway currently holds (`GET /api/v1/routes`). The route reconciler uses
+// it to converge on the Gateway's real state instead of only adding to it;
+// implementations that cannot list simply fall back to the reconciler's own
+// bookkeeping.
+type RouteLister interface {
+	ListRoutes(ctx context.Context) ([]RouteView, error)
 }
 
 // HTTPGatewaySync is the production GatewaySync: a small HTTP client that speaks
@@ -51,7 +79,10 @@ type HTTPGatewaySync struct {
 	log     *slog.Logger
 }
 
-var _ GatewaySync = (*HTTPGatewaySync)(nil)
+var (
+	_ GatewaySync = (*HTTPGatewaySync)(nil)
+	_ RouteLister = (*HTTPGatewaySync)(nil)
+)
 
 // GatewayOptions configures HTTPGatewaySync.
 type GatewayOptions struct {
@@ -105,6 +136,67 @@ func (g *HTTPGatewaySync) UpsertRoute(ctx context.Context, u RouteUpdate) error 
 func (g *HTTPGatewaySync) DeleteRoute(ctx context.Context, modelID string) error {
 	url := g.baseURL + "/api/v1/routes/" + modelID
 	return g.doWithRetry(ctx, http.MethodDelete, url, nil)
+}
+
+// ListRoutes implements RouteLister: it returns the routes the Gateway holds
+// right now (`GET /api/v1/routes`). This is the input the route reconciler uses
+// to decide what is missing and what is stale.
+func (g *HTTPGatewaySync) ListRoutes(ctx context.Context) ([]RouteView, error) {
+	body, err := g.get(ctx, g.baseURL+"/api/v1/routes")
+	if err != nil {
+		return nil, err
+	}
+	var list routeList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("gatewaysync: decode route list: %w", err)
+	}
+	return list.Data, nil
+}
+
+// get performs an authenticated GET, retrying transient failures like doWithRetry
+// (gateway sync is best-effort, but a listing is cheap and safe to retry).
+func (g *HTTPGatewaySync) get(ctx context.Context, url string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt <= g.retries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(g.delay):
+			}
+		}
+		body, err := g.doRead(ctx, http.MethodGet, url)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("gatewaysync: GET %s failed after %d attempts: %w", url, g.retries+1, lastErr)
+}
+
+// doRead issues a GET and returns the (bounded) response body.
+func (g *HTTPGatewaySync) doRead(ctx context.Context, method, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(InternalTokenHeader, g.token)
+	resp, err := g.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return nil, fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	// The route table is small, but bound the read anyway so a misbehaving
+	// gateway cannot exhaust control-plane memory.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read gateway response: %w", err)
+	}
+	return body, nil
 }
 
 // doWithRetry issues the request, retrying transient failures up to g.retries

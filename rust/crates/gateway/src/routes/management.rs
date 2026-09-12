@@ -23,6 +23,10 @@
 //!   ```
 //!   `active`/`draining` upsert the route; `stopped` removes it.
 //! * `DELETE /api/v1/routes/{model_id}` — removes the route (idempotent).
+//! * `GET /api/v1/routes` — the routes the gateway currently holds. The Control
+//!   Plane's route reconciler reads this to converge the table (re-push what is
+//!   missing, delete what is stale); because the table is in memory only, it is
+//!   also how a Gateway restart is observed and repaired.
 
 use axum::extract::{Path, State};
 use axum::routing::{delete, get, put};
@@ -38,7 +42,7 @@ use crate::state::{AppState, ModelRoute, RouteState};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
-        .route("/routes", put(put_route))
+        .route("/routes", put(put_route).get(get_routes))
         .route("/routes/{model_id}", delete(delete_route))
 }
 
@@ -51,7 +55,11 @@ async fn index() -> Json<Value> {
     Json(json!({
         "plane": "management",
         "status": "ready",
-        "endpoints": ["PUT /api/v1/routes", "DELETE /api/v1/routes/{model_id}"],
+        "endpoints": [
+            "PUT /api/v1/routes",
+            "GET /api/v1/routes",
+            "DELETE /api/v1/routes/{model_id}",
+        ],
     }))
 }
 
@@ -123,6 +131,33 @@ async fn put_route(
             code: Some("invalid_state".to_string()),
         }),
     }
+}
+
+/// `GET /api/v1/routes` — the routes the gateway currently holds, in
+/// `model_id` order. Requires the `X-Purser-Internal-Token` header.
+///
+/// The table is in memory only, so an empty `data` array is what a Gateway
+/// reports immediately after a restart — the state the Control Plane's route
+/// reconciler detects and repairs by re-pushing the active deployments.
+async fn get_routes(State(state): State<AppState>, _auth: ControlPlaneAuth) -> Json<Value> {
+    let models = state.models.read().await;
+    let data: Vec<Value> = models
+        .iter()
+        .map(|(model_id, route)| {
+            json!({
+                "model_id": model_id,
+                "endpoint": route.endpoint,
+                "deployment_id": route.deployment_id,
+                "quantization": route.quantization,
+                "state": route.state.as_str(),
+            })
+        })
+        .collect();
+    Json(json!({
+        "object": "list",
+        "count": data.len(),
+        "data": data,
+    }))
 }
 
 /// `DELETE /api/v1/routes/{model_id}` — remove a route (idempotent). Requires
