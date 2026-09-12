@@ -33,7 +33,7 @@ An organization is a top-level tenant. Its `slug` is URL-safe, set at creation
 time, and immutable thereafter.
 
 ```http
-POST /api/v1/orgs
+POST /api/v1/platform/orgs
 {
   "id":   "org-acme",
   "name": "Acme Corp",
@@ -49,7 +49,7 @@ A team is a sub-unit of an organization. Slugs must be unique within the org but
 can be reused across organizations.
 
 ```http
-POST /api/v1/orgs/acme/teams
+POST /api/v1/platform/orgs/acme/teams
 {
   "id":     "team-ml",
   "name":   "ML Research",
@@ -122,7 +122,7 @@ deleted (`is_system = true`).
 Custom (non-system) roles can be created per-organization:
 
 ```http
-POST /api/v1/orgs/acme/roles
+POST /api/v1/platform/orgs/acme/roles
 {
   "id":          "data-scientist",
   "name":        "Data Scientist",
@@ -157,7 +157,7 @@ Each node belongs to **at most one** pool. Moving a node to a different pool
 reassigns it atomically.
 
 ```http
-POST /api/v1/pools/pool-gpu-tier1/nodes
+POST /api/v1/platform/pools/pool-gpu-tier1/nodes
 {"node_id": "node-a100-01"}
 ```
 
@@ -175,7 +175,7 @@ each team may consume.
 | `priority` | Lower number = higher scheduling priority when the pool is contested |
 
 ```http
-PUT /api/v1/pools/pool-gpu-tier1/quotas/team-ml
+PUT /api/v1/platform/pools/pool-gpu-tier1/quotas/team-ml
 {
   "max_deployments": 5,
   "max_gpu_nodes":   10,

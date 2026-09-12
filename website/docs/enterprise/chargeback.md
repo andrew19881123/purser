@@ -327,13 +327,17 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## ChargebackPage (UI)
 
-The operator dashboard includes a dedicated **Chargeback** page in the **Use**
-sidebar section. It provides:
+The operator dashboard includes a dedicated **Chargeback** page in the
+**Observability** sidebar section. It provides:
 
 - **Period picker** — Last 7 / 30 / 90 days
 - **Summary stats** — total requests, total tokens, active tenant count
 - **Usage table** — per tenant+model breakdown, ordered by total tokens
-- **CSV export** — one-click download of the full report
+- **Export buttons** — one-click download of the report as **CSV**, **XLSX**, or
+  **PDF**
+- **Spending Forecast card** — per-team burn rate, projected monthly spend, and
+  estimated days until budget exhaustion (backed by `GET /api/v1/billing/forecast`;
+  hidden when the `billing` feature is not licensed)
 
 Without a valid `billing` license the page shows an *Enterprise license required*
 message instead of data.

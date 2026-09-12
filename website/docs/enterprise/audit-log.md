@@ -9,6 +9,20 @@ Purser provides two complementary audit views in the operator dashboard, accessi
 
 Both tabs are always visible. The **Chain Integrity Panel** sits above the tabs and is persistent — it reports the cryptographic health of the inference hash chain at a glance.
 
+!!! note "Scope of this page — two distinct audit surfaces"
+    This page documents the **inference-audit dashboard** (the `AuditPage` in the
+    operator UI): the **Inference Audit** tab (`GET /api/v1/inference-audit`) and the
+    **Access Log** tab (`GET /api/v1/logs/access`). These are the only audit views
+    currently rendered in the dashboard.
+
+    Purser also ships a **separate** administrative action log —
+    `GET /api/v1/enterprise/audit-log` — a tamper-evident, hash-chained trail of
+    administrative operations, enterprise-gated behind the `audit` feature. That
+    endpoint exists as an API today (a typed client binding is present in the UI code
+    but is not wired into any page), so it has **no dashboard UI yet**. It is a
+    different data set from the per-request inference audit described below; do not
+    confuse the two.
+
 ---
 
 ## Chain Integrity Panel

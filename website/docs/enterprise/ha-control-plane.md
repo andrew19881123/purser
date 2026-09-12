@@ -112,8 +112,11 @@ volumes:
 ### Adding a node to a running cluster
 
 Cluster membership changes (AddVoter / RemoveServer) use the underlying
-`hashicorp/raft` API directly. A helper CLI command and the REST API surface
-for cluster membership are planned for v0.4.
+`hashicorp/raft` API directly. The read-only `GET /api/v1/cluster/status` endpoint
+(see [Checking cluster status](#checking-cluster-status)) is available today for
+inspecting the current leader and peer set, but there is still **no** dedicated
+REST endpoint or CLI command for adding or removing members — membership changes
+must be driven through the `hashicorp/raft` API in code.
 
 ---
 

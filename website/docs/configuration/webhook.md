@@ -1,13 +1,20 @@
 # Webhook Notifications
 
-!!! warning "Not yet implemented"
-    Webhook notifications are planned for v0.7 and are not available in v0.6.
-    This page documents the intended behaviour. To be notified when this feature ships,
-    watch the [GitHub releases](https://github.com/andrew19881123/purser/releases).
+!!! warning "Partially implemented"
+    The **outbound reconciler webhook** described on this page already ships: when
+    `PURSER_RECONCILER_WEBHOOK_URL` is set, the control-plane reconciler POSTs the
+    JSON payload documented below on every `approval_required` event, with retries.
+    This is env-var configured only.
 
-Purser will POST a JSON payload to a configurable HTTP(S) endpoint whenever the
+    What is **not yet implemented** is **webhook subscription management** — there is
+    no API or dashboard UI to register, list, edit, or test webhook endpoints, and no
+    per-event routing beyond the single reconciler URL. That management layer is
+    planned for v0.7. To be notified when it ships, watch the
+    [GitHub releases](https://github.com/andrew19881123/purser/releases).
+
+Purser POSTs a JSON payload to a configurable HTTP(S) endpoint whenever the
 reconciler raises an event that requires operator sign-off before it will act.
-Webhooks will allow integration with on-call tools like Slack, PagerDuty, or custom
+Webhooks allow integration with on-call tools like Slack, PagerDuty, or custom
 runbook automation.
 
 ---
@@ -33,7 +40,7 @@ policy and how to override per event type.
 | `PURSER_RECONCILER_WEBHOOK_URL` | (empty) | HTTP(S) URL to POST to. Delivery is disabled when empty. |
 | `PURSER_RECONCILER_WEBHOOK_RETRIES` | `3` | Maximum POST attempts before abandoning delivery. |
 
-Once available, these will be set alongside the other reconciler tuning variables (see
+Set these alongside the other reconciler tuning variables (see
 [Environment Variables](./env-vars.md)):
 
 ```bash

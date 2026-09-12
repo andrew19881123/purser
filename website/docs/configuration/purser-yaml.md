@@ -36,9 +36,14 @@ Preview what would change without touching the cluster:
 purser diff purser.yaml         # dry-run: prints add/remove/upsert plan
 ```
 
-> **Note:** `purser apply` and `purser diff` are planned for an upcoming CLI
-> release. The schema, loader, validator and diff engine are available now in
-> `go/controlplane/config` for programmatic use.
+> **Note:** The `purser apply` / `purser diff` **CLI wrapper** is still planned —
+> the control-plane binary currently ships only the `backup` and `restore`
+> subcommands. However, the same functionality is **available today over REST**:
+> `POST /api/v1/config/apply`, `POST /api/v1/config/diff`, and
+> `GET /api/v1/config/export` (see [Applying configuration → Via REST API](#via-rest-api)),
+> and the control plane can also apply and continuously reconcile a `purser.yaml`
+> passed via `--config` / `PURSER_CONFIG` at startup. The schema, loader, validator
+> and diff engine are also available in `go/controlplane/config` for programmatic use.
 
 ---
 

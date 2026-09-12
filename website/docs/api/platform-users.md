@@ -341,9 +341,9 @@ If the caller is not a member of the team, an empty permission list is returned
 | Version | Feature |
 |---------|---------|
 | v0.4 (now) | Custom role CRUD, permissions catalogue, effective-permissions resolution |
+| Shipped | `POST /api/v1/platform/orgs` — explicit org creation API (see [Organizations & Teams API](platform-orgs.md#create-organization)) |
+| Shipped | Team member assignment via REST (`POST /api/v1/platform/teams/{teamId}/members`, see [Add Member to Team](platform-orgs.md#add-member-to-team)) |
 | Planned | Full user profiles backed by OIDC/LDAP (`GET /users` returns rich records with email, name, avatar) |
-| Planned | `POST /api/v1/platform/orgs` — explicit org creation API |
-| Planned | Team member assignment via REST (`POST /platform/teams/{id}/members`) |
 
 ---
 

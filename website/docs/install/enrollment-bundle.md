@@ -18,8 +18,8 @@ The bundle file is re-generated each time you call the endpoint, minting a fresh
 
 ### From the dashboard
 
-1. Open the Purser Dashboard and navigate to **Get started → Add Node**.
-2. Click **Download enrollment bundle**.
+1. Open the Purser Dashboard and navigate to **Administration → Add Node**.
+2. Click **Download Enrollment Bundle**.
 3. The browser downloads `purser-enrollment.env`.
 
 ### Via API
