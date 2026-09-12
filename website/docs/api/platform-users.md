@@ -240,41 +240,35 @@ Purser, with descriptions and scope tags.
 
 ### Full permission list
 
+This is the single authoritative vocabulary — the exact set returned by
+`GET /api/v1/platform/permissions` and enforced by the route→permission map.
+A custom role may only be built from these 22 keys. (Source of truth:
+`go/controlplane/permissions/permissions.go`.)
+
 | Key | Scope | Description |
 |-----|-------|-------------|
-| `platform:users:view` | platform | List and read platform users |
-| `platform:users:manage` | platform | Create and deactivate platform users |
-| `platform:orgs:view` | platform | List and read organisations |
-| `platform:orgs:manage` | platform | Create and manage organisations |
-| `platform:audit:view` | platform | Read the platform-level audit log |
-| `org:members:view` | org | List org members |
-| `org:members:manage` | org | Add and remove org members |
-| `org:roles:view` | org | List custom roles in an org |
-| `org:roles:manage` | org | Create, edit, and delete custom roles |
-| `org:teams:view` | org | List teams within an org |
-| `org:teams:manage` | org | Create and manage teams |
-| `org:billing:view` | org | View billing and quota information |
-| `org:billing:manage` | org | Adjust billing limits and quotas |
-| `org:audit:view` | org | Read the org-level audit log |
-| `org:policy:view` | org | Read OPA/Rego policies |
-| `org:policy:manage` | org | Create and edit policies |
-| `team:models:view` | team | List models registered to the team |
-| `team:models:deploy` | team | Deploy models to the team's node pool |
-| `team:models:delete` | team | Remove model deployments |
-| `team:nodes:view` | team | List nodes registered to the team |
-| `team:nodes:manage` | team | Enroll and drain nodes |
-| `team:metrics:view` | team | Read live metrics |
-| `team:audit:view` | team | Read the team-level audit log |
-| `team:apikeys:view` | team | List API keys scoped to the team |
-| `team:apikeys:manage` | team | Create and revoke API keys |
-| `team:config:view` | team | Read the team's desired-state config |
-| `team:config:apply` | team | Apply config-as-code |
-| `team:approval:vote` | team | Cast an approval vote for team deployments |
-| `inference:call` | inference | Call the inference API (/v1/...) |
-| `inference:stream` | inference | Stream inference responses |
-| `inference:audit:view` | inference | Read inference audit logs |
-| `inference:usage:view` | inference | Read per-request token usage |
-| `inference:quota:manage` | inference | Adjust inference quotas |
+| `platform:orgs:create` | platform | Create a new organization on the platform |
+| `platform:orgs:delete` | platform | Delete an organization and all its teams |
+| `platform:pools:manage` | platform | Add, edit, or remove compute pools platform-wide |
+| `platform:users:invite` | platform | Invite users to the platform before they belong to an org |
+| `org:teams:create` | org | Create a new team within the organization |
+| `org:teams:delete` | org | Delete a team and its associated resources |
+| `org:members:invite` | org | Invite a user to the organization |
+| `org:members:remove` | org | Remove a member from the organization |
+| `org:roles:create` | org | Create a custom role definition scoped to the org |
+| `org:roles:delete` | org | Delete a custom role definition |
+| `org:pools:request` | org | Request additional compute pool quota for the org |
+| `team:models:deploy` | team | Deploy a model to a team's serving pool |
+| `team:models:undeploy` | team | Remove a deployed model from the serving pool |
+| `team:keys:create` | team | Issue (and rotate) a new API key for the team |
+| `team:keys:revoke` | team | Revoke an existing API key |
+| `team:members:view` | team | List team members and their roles |
+| `team:members:invite` | team | Add a member to the team |
+| `team:members:remove` | team | Remove a member from the team |
+| `team:metrics:view` | team | Read inference throughput, latency, and cost metrics |
+| `team:approvals:view` | team | View pending deployment approval requests |
+| `team:approvals:review` | team | Approve or reject deployment requests |
+| `inference:call` | inference | Call the inference API (`/v1/...`) |
 
 ---
 
