@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Fast local gate: runs the contract tests (no stack) before every push.
+# Escape hatch: git push --no-verify. Fail-safe: a missing toolchain skips its
+# layer rather than blocking with a cryptic error.
+set -u
+root="$(git rev-parse --show-toplevel)"
+fail=0
+
+if command -v go >/dev/null 2>&1; then
+  echo "pre-push: contract (Go)…"
+  ( cd "$root/tests/contract" && CGO_ENABLED=0 go test ./... ) || fail=1
+else
+  echo "pre-push: go not found — skipping Go contract tests" >&2
+fi
+
+if command -v npm >/dev/null 2>&1 && [ -d "$root/ui/node_modules" ]; then
+  echo "pre-push: contract (TS)…"
+  ( cd "$root/ui" && npm test -- contract --run ) || fail=1
+else
+  echo "pre-push: npm or ui/node_modules missing — skipping TS contract tests" >&2
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "pre-push BLOCKED: contract tests failed. Fix them, or bypass with:" >&2
+  echo "    git push --no-verify" >&2
+  exit 1
+fi

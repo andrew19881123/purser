@@ -32,7 +32,7 @@ NFPM  := $(GOBIN)/nfpm
 RUST_MANIFEST := rust/Cargo.toml
 GO_MODULES    := gen planner controlplane
 
-.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-seed demo-agent dev-agent dev status
+.PHONY: all help setup gen build test lint fmt clean release package-agent demo demo-stop demo-seed demo-agent dev-agent dev status contract e2e verify install-hooks
 
 all: gen build
 
@@ -172,6 +172,29 @@ dev: build
 	PURSER_PKI_DIR=/tmp/purser-dev/pki \
 	PURSER_ENGINE_BACKEND=mock \
 	./bin/control-plane
+
+## contract: Fast contract tests (what the pre-push hook runs)
+contract:
+	cd tests/contract && CGO_ENABLED=0 go test ./...
+	cd ui && npm test -- contract --run
+
+## e2e: Heavy E2E on a native mock-engine stack (builds binaries first)
+e2e:
+	CGO_ENABLED=0 go -C go/controlplane build -o ../../bin/control-plane .
+	cd rust && CARGO_TARGET_DIR=/tmp/purser-shared-target cargo build -p purser-gateway -p purser-agent
+	mkdir -p rust/target/debug && cp /tmp/purser-shared-target/debug/purser-gateway /tmp/purser-shared-target/debug/purser-agent rust/target/debug/
+	cd tests/e2e && go test ./...
+
+## verify: Reproduce CI locally: contract + unit + e2e
+verify: contract
+	cd go/controlplane && CGO_ENABLED=0 go test ./...
+	cd rust && CARGO_TARGET_DIR=/tmp/purser-shared-target cargo test -p purser-gateway
+	cd ui && npm test -- --run
+	$(MAKE) e2e
+
+## install-hooks: Activate the local pre-push gate (opt-in, run once)
+install-hooks:
+	bash tools/hooks/install.sh
 
 ## status: Show stack health (CP, fleet, catalog, deployments)
 status:
