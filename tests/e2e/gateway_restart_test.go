@@ -24,7 +24,16 @@ func TestGatewayRestartSelfHeals(t *testing.T) {
 	s.DeployModel(t, "tinyllama-1b")
 
 	// Precondition: the model must be routable before the restart.
-	assertModelListed(t, s, "tinyllama-1b", true)
+	// DeployModel returns when the deployment is ACTIVE, but the gateway route
+	// is pushed independently by the reconcile loop (up to 5 s in the harness).
+	// Poll instead of a single-shot assert to avoid a spurious fatal in that window.
+	preDeadline := time.Now().Add(10 * time.Second)
+	for !modelListed(s, "tinyllama-1b") {
+		if time.Now().After(preDeadline) {
+			t.Fatal("TestGatewayRestartSelfHeals: model not routable within 10s of ACTIVE (reconcile not firing?)")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	// Kill and restart the gateway — its route table is in-memory only and is
 	// now empty. The CP reconcile loop must push the ACTIVE route back.
@@ -33,10 +42,11 @@ func TestGatewayRestartSelfHeals(t *testing.T) {
 	// Poll until the model reappears or the deadline expires.
 	// The reconciler interval is 5s (harness override); 60s gives ample margin
 	// for slow CI runners and any CP→gateway retry after the gateway came up.
-	deadline := time.Now().Add(60 * time.Second)
+	start := time.Now()
+	deadline := start.Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if modelListed(s, "tinyllama-1b") {
-			t.Logf("gateway self-healed in %s", time.Until(deadline).Round(time.Second))
+			t.Logf("gateway self-healed in %s", time.Since(start).Round(time.Second))
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
