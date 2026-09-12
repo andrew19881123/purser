@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -59,14 +60,16 @@ type Stack struct {
 	grpcBase string // CP gRPC base for agent enrollment, e.g. "http://127.0.0.1:54323"
 	token    string // cached join token (re-mint by zeroing before calling JoinToken)
 	procs    []*exec.Cmd
-	tmp      string // t.TempDir() — DB, PKI, and process log files
+	logFiles []*os.File // one per process; closed in Stop after Wait reap
+	tmp      string     // t.TempDir() — DB, PKI, and process log files
 
 	// Gateway-restart fields (Task 5: RestartGateway must bind the same port
 	// so the control plane's already-configured PURSER_GATEWAY_ADDR still works)
 	gwPort int
 	gwEnv  []string
 
-	t *testing.T // registered for fatal-error reporting from Stop/JoinToken
+	stopOnce sync.Once // makes Stop idempotent (t.Cleanup + defer s.Stop both call it)
+	t        *testing.T // registered for fatal-error reporting from Stop/JoinToken
 }
 
 // waitReady polls url until it returns HTTP < 500 or the deadline passes.
@@ -175,17 +178,27 @@ func startProc(t *testing.T, s *Stack, cmd *exec.Cmd, logPath string) {
 		t.Fatalf("startProc: start %s: %v", cmd.Path, err)
 	}
 	s.procs = append(s.procs, cmd)
+	s.logFiles = append(s.logFiles, f)
 }
 
-// Stop kills all processes in reverse start order (CP first, then gateway).
-// Safe to call multiple times (idempotent via Process.Kill ignoring errors).
+// Stop kills all processes in reverse start order (CP first, then gateway),
+// reaps them, then closes the log file descriptors. Idempotent: safe to call
+// from both t.Cleanup and an explicit defer in the same test.
 func (s *Stack) Stop() {
-	for i := len(s.procs) - 1; i >= 0; i-- {
-		if s.procs[i].Process != nil {
-			_ = s.procs[i].Process.Kill()
-			_ = s.procs[i].Wait() // reap so the OS releases the port promptly
+	s.stopOnce.Do(func() {
+		for i := len(s.procs) - 1; i >= 0; i-- {
+			if s.procs[i].Process != nil {
+				_ = s.procs[i].Process.Kill()
+				_ = s.procs[i].Wait() // reap so the OS releases the port promptly
+			}
 		}
-	}
+		// Close log fds only after all processes have been reaped. The OS
+		// keeps the underlying file open as long as the child holds it, so
+		// closing here (after Wait) is safe and prevents fd leaks across tests.
+		for _, f := range s.logFiles {
+			_ = f.Close()
+		}
+	})
 }
 
 // JoinToken mints a single-use cluster join token via POST /api/v1/join-token
