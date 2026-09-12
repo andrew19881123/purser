@@ -2,6 +2,7 @@ package contract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"sort"
@@ -111,9 +112,18 @@ var routeRe = regexp.MustCompile(`\bMethod:\s*"([A-Z]+)",\s*Path:\s*"(/[^"]+)"`)
 // All routeDef rows are single-line in openapi_registry.go.
 var exemptRe = regexp.MustCompile(`\bMethod:\s*"([A-Z]+)",\s*Path:\s*"(/[^"]+)"[^\n]*\bExempt:\s*true`)
 
+// minRegisteredRoutes is the floor below which RegisteredRoutes returns an
+// error. Today the table has 127 rows; 50 gives comfortable margin while
+// still failing loud if the regex stops matching (e.g. after a reformat).
+const minRegisteredRoutes = 50
+
 // RegisteredRoutes extracts every route registered by the control plane from
 // the declarative route table (openapi_registry.go). The argument is the path
 // to that file. Returns "METHOD /path" strings, sorted.
+//
+// Returns an error if fewer than minRegisteredRoutes routes are matched; this
+// prevents a silently broken regex from making every coverage test trivially
+// pass with an empty set (the false-green failure mode).
 func RegisteredRoutes(routeTablePath string) ([]string, error) {
 	b, err := os.ReadFile(routeTablePath)
 	if err != nil {
@@ -122,6 +132,10 @@ func RegisteredRoutes(routeTablePath string) ([]string, error) {
 	var out []string
 	for _, m := range routeRe.FindAllStringSubmatch(string(b), -1) {
 		out = append(out, m[1]+" "+m[2])
+	}
+	if len(out) < minRegisteredRoutes {
+		return nil, fmt.Errorf("RegisteredRoutes: matched only %d routes from %s — expected at least %d; the file format may have changed and the regex no longer matches",
+			len(out), routeTablePath, minRegisteredRoutes)
 	}
 	sort.Strings(out)
 	return out, nil
@@ -167,9 +181,17 @@ var rbacRouteRe = regexp.MustCompile(`\{http\.Method(\w+),\s*"(/[^"]+)"\}:\s*reg
 // Group 1: constant name. Group 2: string value.
 var permConstRe = regexp.MustCompile(`\b(Perm\w+)\s*=\s*"([^"]+)"`)
 
+// minRBACEntries is the floor below which ParseRBACEntries returns an error.
+// Today routePermission has 26 entries; 15 gives comfortable margin.
+const minRBACEntries = 15
+
 // ParseRBACEntries extracts every route→permission entry from rbac_v2.go.
 // The http.Method* suffix (e.g. "Get", "Post") is uppercased to the canonical
 // HTTP method string ("GET", "POST"), matching the "METHOD /path" convention.
+//
+// Returns an error if fewer than minRBACEntries entries are matched; this
+// prevents a silently broken regex from letting TestRoutePermsAreValidConstants
+// trivially pass with zero entries to check.
 func ParseRBACEntries(rbacPath string) ([]RBACEntry, error) {
 	b, err := os.ReadFile(rbacPath)
 	if err != nil {
@@ -184,11 +206,23 @@ func ParseRBACEntries(rbacPath string) ([]RBACEntry, error) {
 			ConstName: m[3],
 		})
 	}
+	if len(out) < minRBACEntries {
+		return nil, fmt.Errorf("ParseRBACEntries: matched only %d entries from %s — expected at least %d; the file format may have changed and the regex no longer matches",
+			len(out), rbacPath, minRBACEntries)
+	}
 	return out, nil
 }
 
+// minPermConstants is the floor below which ParsePermConstants returns an error.
+// Today permissions.go declares 22 Perm* constants; 15 gives comfortable margin.
+const minPermConstants = 15
+
 // ParsePermConstants extracts every Perm* = "value" constant from permissions.go.
 // Returns a map of constant-name → permission-string.
+//
+// Returns an error if fewer than minPermConstants constants are matched; this
+// prevents a silently broken regex from making the vocabulary-check tests
+// trivially pass with an empty set.
 func ParsePermConstants(permsPath string) (map[string]string, error) {
 	b, err := os.ReadFile(permsPath)
 	if err != nil {
@@ -197,6 +231,10 @@ func ParsePermConstants(permsPath string) (map[string]string, error) {
 	out := make(map[string]string)
 	for _, m := range permConstRe.FindAllStringSubmatch(string(b), -1) {
 		out[m[1]] = m[2]
+	}
+	if len(out) < minPermConstants {
+		return nil, fmt.Errorf("ParsePermConstants: matched only %d constants from %s — expected at least %d; the file format may have changed and the regex no longer matches",
+			len(out), permsPath, minPermConstants)
 	}
 	return out, nil
 }
