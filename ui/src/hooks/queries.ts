@@ -798,14 +798,6 @@ export function useMetricsStream(): { snapshot: MetricsSnapshot | null; streamEr
   return { snapshot, streamError };
 }
 
-// --- what-if planner --------------------------------------------------------
-
-export function useWhatIfPlan() {
-  return useMutation({
-    mutationFn: (request: WhatIfRequest) => api.whatIfPlan(request),
-  });
-}
-
 // --- SLO compliance (full nested shape, v0.6) --------------------------------
 
 export const sloQk = {
@@ -822,19 +814,6 @@ export function useSloComplianceFull(windowHours = 24) {
         throw e;
       }),
     refetchInterval: 60_000,
-  });
-}
-
-// --- billing forecast -------------------------------------------------------
-
-export function useBillingForecast() {
-  return useQuery({
-    queryKey: ['billingForecast'],
-    queryFn: () =>
-      api.getBillingForecast().catch((e: unknown) => {
-        if (e instanceof Error && /40[24]/.test(e.message)) return null;
-        throw e;
-      }),
   });
 }
 

@@ -66,13 +66,10 @@ import type {
   PoolTeamQuota,
   ReconcilerStatus,
   Role,
-  BillingForecastResponse,
-  SloComplianceResponse,
-
   ServiceAccount,
   ServiceAccountWithSecret,
-
   SloApiResponse,
+  SloComplianceResponse,
   Team,
   TeamMember,
   UsageSummary,
@@ -1017,6 +1014,8 @@ export function createHttpApi(baseUrl: string): PurserApi {
         return {
           models: Array.isArray(r.models) ? r.models as SloComplianceResponse['models'] : [],
           window_hours: typeof r.windowHours === 'number' ? r.windowHours : windowHours,
+        };
+      }),
 
     // --- SLO compliance (full nested shape, v0.6) ---
     getSloComplianceFull: (windowHours = 24): Promise<SloApiResponse> =>
@@ -1036,6 +1035,7 @@ export function createHttpApi(baseUrl: string): PurserApi {
         return {
           entries: Array.isArray(r.entries) ? r.entries as BillingForecastResponse['entries'] : [],
         };
+      }),
 
     // --- data planes ---
     listDataPlanes: (): Promise<DataPlane[]> =>
@@ -1110,8 +1110,6 @@ export function createHttpApi(baseUrl: string): PurserApi {
             lastActiveAt: typeof e.lastActiveAt === 'string' ? e.lastActiveAt : null,
           } satisfies PlatformUser;
         });
-      }),
-
       }),
 
     // --- policy-as-code (enterprise: policy_engine) ---

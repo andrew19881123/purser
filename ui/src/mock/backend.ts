@@ -40,7 +40,8 @@ import type {
   TeamMember,
   UsageSummary,
 } from '../api/types';
-import type { CreateApiKeyInput, PurserApi } from '../api/client';
+import type { CreateApiKeyInput, CreateDataPlaneInput, CreateServiceAccountInput, PurserApi } from '../api/client';
+import type { DataPlaneWithToken, ServiceAccountWithSecret } from '../api/types';
 import { ApiError } from '../api/http';
 import { clamp } from '../lib/format';
 import {
@@ -771,4 +772,23 @@ export const mockBackend: PurserApi = {
   deletePolicy(_name) {
     return delay(undefined as void);
   },
+
+  // --- data planes ---
+  getSloCompliance(_windowHours = 24) { return delay({ models: [], window_hours: 24 }); },
+  listDataPlanes() { return delay([]); },
+  createDataPlane(_input: CreateDataPlaneInput): Promise<DataPlaneWithToken> {
+    const dp = { id: 'dp-1', name: 'demo', tier: 'development', gatewayUrl: '', status: 'registering', lastHeartbeat: null, nodeCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as import('../api/types').DataPlane;
+    return delay({ dataplane: dp, joinToken: 'dp_demo' });
+  },
+  refreshDataPlaneConfig(_id: string) { return delay(undefined as void); },
+
+  // --- service accounts ---
+  listServiceAccounts() { return delay([]); },
+  createServiceAccount(_input: CreateServiceAccountInput): Promise<ServiceAccountWithSecret> {
+    return delay({ id: 'sa-1', name: 'demo', description: '', tenant: '', role: 'inference', scopes: [], clientId: 'sa-client-1', enabled: true, lastUsedAt: null, createdAt: new Date().toISOString(), clientSecret: 'sk-demo' } as ServiceAccountWithSecret);
+  },
+  revokeServiceAccount(_id: string) { return delay(undefined as void); },
+
+  // --- platform users ---
+  listPlatformUsers() { return delay([]); },
 };

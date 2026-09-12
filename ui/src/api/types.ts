@@ -916,6 +916,7 @@ export interface BillingForecastEntry {
 
 export interface BillingForecastResponse {
   entries: BillingForecastEntry[];
+}
 
 // (WhatIf types are already defined above in types.ts)
 
