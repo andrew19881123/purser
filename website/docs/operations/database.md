@@ -13,6 +13,20 @@ log, …) in a relational database. Two drivers are supported:
     with SQLite** — concurrent writers will corrupt the registry. Use PostgreSQL for any
     environment that requires high availability or horizontal scaling.
 
+## Choosing a database for your environment
+
+| Environment | Driver | Why |
+|---|---|---|
+| Local development | `PURSER_DB_DRIVER=sqlite` | Zero config, no extra service, single file |
+| Staging / single-node production | `PURSER_DB_DRIVER=postgres` | Survives CP restarts, supports backups |
+| HA production (Raft) | `PURSER_DB_DRIVER=postgres` | Required — SQLite is single-writer |
+| Docker Compose demo | `PURSER_DB_DRIVER=sqlite` | Postgres adds a dependency without benefit |
+
+!!! warning "PostgreSQL schema compatibility"
+    Some tables added in v0.6 (SLO contracts, LDAP group cache) use SQLite syntax
+    (`AUTOINCREMENT`) not yet ported to PostgreSQL DDL. Until v0.7, use SQLite even
+    in staging environments. Track progress in issue #TODO.
+
 ## Environment variables
 
 | Variable | Default | Description |

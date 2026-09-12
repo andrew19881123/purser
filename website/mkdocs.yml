@@ -75,6 +75,7 @@ nav:
     - Linux Agent (.deb/.rpm): install/linux-agent.md
     - macOS / Windows Agent: install/macos-windows.md
     - Enrollment Bundle: install/enrollment-bundle.md
+    - Troubleshooting Enrollment: install/troubleshoot-enrollment.md
   - Configuration:
     - purser.yaml (Declarative Config): configuration/purser-yaml.md
     - API Key Lifecycle: configuration/api-keys.md

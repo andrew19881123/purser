@@ -162,35 +162,89 @@ Three options, in order of reliability:
 
 ### Option A — systemd user service (recommended)
 
-Create `~/.config/systemd/user/purser-agent.service`:
+Systemd user services survive shell exits, restart on failure, and integrate
+with `journalctl`. Use this for persistent dev setups.
+
+#### Control Plane service
+
+Create `~/.config/systemd/user/purser-cp.service`:
 
 ```ini
 [Unit]
-Description=Purser Agent (dev)
+Description=Purser Control Plane (dev)
 After=network.target
 
 [Service]
 Type=simple
-Environment=PURSER_CONTROL_PLANE_ADDR=http://localhost:9443
-Environment=PURSER_JOIN_TOKEN=<token>
-Environment=PURSER_DISK_FREE_WARN_GB=0.5
-ExecStart=/home/<you>/Projects/purser/bin/purser-agent
+Environment="PURSER_DB_DRIVER=sqlite"
+Environment="PURSER_DB=/home/<user>/.purser/registry.db"
+Environment="PURSER_ADDR=:8080"
+Environment="PURSER_GRPC_ADDR=:9443"
+Environment="PURSER_ENGINE_BACKEND=mock"
+Environment="PURSER_AGENT_GRPC_INSECURE=true"
+ExecStart=/usr/local/bin/purser-control-plane
 Restart=on-failure
-RestartSec=5
+RestartSec=3s
 
 [Install]
 WantedBy=default.target
 ```
 
-Enable and start:
+#### Agent service (node 1)
 
-```bash
-systemctl --user enable --now purser-agent
-journalctl --user -u purser-agent -f
+Create `~/.config/systemd/user/purser-agent-1.service`:
+
+```ini
+[Unit]
+Description=Purser Agent (node 1)
+After=network.target
+
+[Service]
+Type=simple
+Environment="PURSER_CONTROL_PLANE_ADDR=http://localhost:9443"
+Environment="PURSER_JOIN_TOKEN=<your-token>"
+Environment="PURSER_ENGINE_BACKEND=cpu"
+Environment="PURSER_DISK_FREE_WARN_GB=1.0"
+Environment="PURSER_AGENT_METRICS_PORT=9091"
+ExecStart=/usr/local/bin/purser-agent
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
 ```
 
-For a second agent, copy the file to `purser-agent2.service` and add
-`Environment=PURSER_AGENT_BIND=0.0.0.0:50161`.
+For a second agent, copy to `purser-agent-2.service` and change:
+
+```ini
+Environment="PURSER_AGENT_BIND=0.0.0.0:50161"
+Environment="PURSER_SWIM_BIND_ADDR=0.0.0.0:7947"
+Environment="PURSER_AGENT_METRICS_PORT=9092"
+```
+
+#### Install and enable
+
+```bash
+# Create the directory if it doesn't exist
+mkdir -p ~/.config/systemd/user
+
+# Reload unit files after creating or editing service files
+systemctl --user daemon-reload
+
+# Enable and start
+systemctl --user enable --now purser-cp
+systemctl --user enable --now purser-agent-1
+
+# Check status
+systemctl --user status purser-cp
+systemctl --user status purser-agent-1
+
+# Follow logs
+journalctl --user -u purser-agent-1 -f
+```
+
+!!! tip "Token rotation with systemd"
+    Join tokens expire. When you mint a new token, update `Environment="PURSER_JOIN_TOKEN=<new-token>"` in the service file, then run `systemctl --user daemon-reload && systemctl --user restart purser-agent-1`.
 
 ### Option B — tmux (quick-and-dirty)
 
@@ -275,7 +329,7 @@ yourself via `POST /api/v1/apikeys`.
 
 ## See also
 
+- [Troubleshooting Agent Enrollment](troubleshoot-enrollment.md) — all enrollment failure modes
 - [Linux Agent (.deb/.rpm)](linux-agent.md) — fleet installation guide
 - [Multi-Node Inference](../getting-started/multi-node-inference.md) — GPU pipeline across multiple machines
 - [Environment Variables Reference](../configuration/env-vars.md) — all knobs
-- [CPU-only Inference](../getting-started/cpu-inference.md) — run without a GPU
