@@ -54,12 +54,11 @@ services:
       PURSER_ENGINE_BACKEND: mock
       PURSER_GATEWAY_ADDR: "http://gateway:8081"
       PURSER_GATEWAY_TOKEN: demo-internal-token
-    ports:
-      - "9443:9443"   # expose gRPC for native agents
-
       # Allow the orchestrator to dial agents over plain gRPC (no mTLS inside
       # the compose network). Required for the --profile full agent service.
       PURSER_AGENT_GRPC_INSECURE: "true"
+    ports:
+      - "9443:9443"   # expose gRPC for native agents
     volumes:
       - purser-pki:/data
     depends_on:
