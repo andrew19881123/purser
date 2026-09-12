@@ -13,3 +13,4 @@ Each one captures a non-obvious root cause that is NOT derivable from the code.
 | `macos_case_collision.md` | Git / macOS | `enterprise/LICENSE` vs `enterprise/license/` collide on APFS — never `git add -A` |
 | `macos_toolchain_bootstrap.md` | Build / toolchain | `make setup` fetches linux-amd64; `env.sh` "ready" is not proof; `GOPROXY=direct` behind the proxy |
 | `demo_stack_fragility.md` | Local demo / gateway | Gateway routes are push-only and die on restart; single-file bind mounts pin the inode; compose + `ui:80` were both broken |
+| `test_architecture.md` | Testing (decision doc) | Every v0.6→v0.7 defect sat on a component junction; registry-driven contract tests + Go E2E harness + local pre-push gate, zero new CI jobs |
