@@ -59,8 +59,9 @@ cd go/controlplane && go generate ./server/...   # regenerate openapi.json after
 code. `openapi.json` is generated (`go generate ./server/...`, or `cmd/openapi-gen`)
 and a test fails the build if it is stale; curated request/response schemas live
 in `openapi.base.json`. There is no `openapi.yaml` any more. Add a route → add a
-table row → regenerate → add a `tests/contract/features.json` row with
-`"openapi": true`.
+table row → regenerate → assign the new route to a feature in
+`tests/contract/features.annotations.json` (human-owned; no `openapi` field —
+that is derived at test time from the `Exempt` flag in `openapi_registry.go`).
 
 `make setup` supports macOS and Linux on `arm64` and `amd64`; it pins Go and helm
 and verifies SHA256 checksums before extracting. `--dry-run` shows the plan;

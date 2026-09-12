@@ -1,7 +1,7 @@
 /**
  * Contract tests — UI axes: client, page, nav.
  *
- * Driven by the shared manifest at tests/contract/features.json (Task 1).
+ * Driven by the human-owned annotations at tests/contract/features.annotations.json.
  * Three axes:
  *   client — every manifest `client` method exists on the mockBackend (which
  *            implements PurserApi — the interface is a TS type, gone at runtime).

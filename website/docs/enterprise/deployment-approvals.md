@@ -57,7 +57,7 @@ is required in that case, as the license itself signals entitlement.
 2. **Admin review** — an admin opens the **Approvals** page in the UI (or polls
    `GET /api/v1/approvals?status=pending`) and inspects the request.
 
-3. **Approve** — `POST /api/v1/approvals/{id}/approve` (admin role required):
+3. **Approve** — `POST /api/v1/approvals/{deploymentId}/approve` (admin role required):
 
    ```bash
    curl -X POST http://cp:8080/api/v1/approvals/a1b2c3d4/approve \
@@ -70,7 +70,7 @@ is required in that case, as the license itself signals entitlement.
    `status: "approved"` and an audit entry (`deployment.approval.approved`) is
    written to the tamper-evident audit log.
 
-4. **Reject** — `POST /api/v1/approvals/{id}/reject`:
+4. **Reject** — `POST /api/v1/approvals/{deploymentId}/reject`:
 
    ```bash
    curl -X POST http://cp:8080/api/v1/approvals/a1b2c3d4/reject \
@@ -313,7 +313,7 @@ evaluated.
 
 ### Vote response
 
-Every call to `POST /api/v1/approvals/{id}/approve` now returns a vote-result
+Every call to `POST /api/v1/approvals/{deploymentId}/approve` now returns a vote-result
 object rather than the raw approval record:
 
 ```json

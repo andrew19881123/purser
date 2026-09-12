@@ -1,13 +1,15 @@
 package contract
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// Routes that intentionally have no feature row (auth flows, internal
-// gateway→CP ingest, machine-only). Each MUST carry a reason.
+// exemptRoutes lists routes that intentionally have no feature annotation
+// (auth flows, internal gateway→CP ingest, machine-only probes).
+// Each entry MUST carry a human-readable reason.
+// These routes are Exempt:true in openapi_registry.go AND excluded from the
+// feature grouping requirement.
 var exemptRoutes = map[string]string{
 	"GET /auth/login":                                 "OIDC login redirect, not a feature surface",
 	"GET /auth/callback":                              "OIDC callback",
@@ -27,32 +29,45 @@ var exemptRoutes = map[string]string{
 	"POST /api/v1/ldap/test":                          "LDAP connectivity test, CLI/admin-only, no UI client method",
 }
 
+// TestManifestCoversEveryRegisteredRoute is the anti-rot completeness gate.
+//
+// It reads every non-exempt route from openapi_registry.go (the authoritative
+// route table) and verifies each one is assigned to a feature in
+// features.annotations.json.  A route with NO grouping entry causes this test
+// to fail with an actionable message, which is the correct response when a new
+// route is added to apiRoutes: the developer adds ONE annotation line and the
+// test goes green.  No generated file is ever clobbered by this process.
+//
+// To add a new route without a feature:
+//   - If it genuinely has no UI surface (internal, probe), add it to exemptRoutes above.
+//   - Otherwise, assign it to a feature in tests/contract/features.annotations.json.
 func TestManifestCoversEveryRegisteredRoute(t *testing.T) {
-	feats, err := Load("features.json")
+	annotations, err := LoadAnnotations(annotationsFile)
 	if err != nil {
-		t.Fatalf("load manifest: %v", err)
+		t.Fatalf("load annotations: %v\n  Hint: create tests/contract/features.annotations.json to fix.", err)
 	}
-	inManifest := map[string]bool{}
-	for _, f := range feats {
-		for _, r := range f.Routes {
-			inManifest[r] = true
+	inAnnotations := map[string]bool{}
+	for _, a := range annotations {
+		for _, r := range a.Routes {
+			inAnnotations[r] = true
 		}
 	}
-	routeTable := filepath.Join("..", "..", "go", "controlplane", "server", "openapi_registry.go")
-	routes, err := RegisteredRoutes(routeTable)
+	routes, err := RegisteredRoutes(routeTableFile)
 	if err != nil {
-		t.Fatalf("extract routes: %v", err)
+		t.Fatalf("extract routes from openapi_registry.go: %v", err)
 	}
 	var missing []string
 	for _, r := range routes {
-		if inManifest[r] || exemptRoutes[r] != "" {
+		if inAnnotations[r] || exemptRoutes[r] != "" {
 			continue
 		}
 		missing = append(missing, r)
 	}
 	if len(missing) > 0 {
-		t.Errorf("%d registered route(s) are neither in features.json nor exempt:\n  %s\n\n"+
-			"Add a feature row for each, or add it to exemptRoutes with a reason.",
+		t.Errorf("%d registered route(s) are not assigned to any feature and not listed in exemptRoutes:\n  %s\n\n"+
+			"For each route above, either:\n"+
+			"  • Add it to a feature in tests/contract/features.annotations.json, or\n"+
+			"  • Add it to exemptRoutes in completeness_test.go with a reason.",
 			len(missing), strings.Join(missing, "\n  "))
 	}
 }

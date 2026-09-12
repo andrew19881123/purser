@@ -76,7 +76,7 @@ appears in the catalog immediately.
 ### Via the API
 
 ```http
-DELETE /api/v1/models/{modelId}
+DELETE /api/v1/models/{id}
 ```
 
 **Response codes**
@@ -111,7 +111,7 @@ this fleet"* together with the planner's reason (e.g., insufficient VRAM).
 ### Via the API
 
 ```http
-POST /api/v1/models/{modelId}/plan
+POST /api/v1/models/{id}/plan
 ```
 
 **Response shape**
