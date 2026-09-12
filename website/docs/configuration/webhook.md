@@ -1,8 +1,13 @@
 # Webhook Notifications
 
-Purser can POST a JSON payload to a configurable HTTP(S) endpoint whenever the
+!!! warning "Not yet implemented"
+    Webhook notifications are planned for v0.7 and are not available in v0.6.
+    This page documents the intended behaviour. To be notified when this feature ships,
+    watch the [GitHub releases](https://github.com/andrew19881123/purser/releases).
+
+Purser will POST a JSON payload to a configurable HTTP(S) endpoint whenever the
 reconciler raises an event that requires operator sign-off before it will act.
-Use this to integrate with on-call tools like Slack, PagerDuty, or custom
+Webhooks will allow integration with on-call tools like Slack, PagerDuty, or custom
 runbook automation.
 
 ---
@@ -28,7 +33,7 @@ policy and how to override per event type.
 | `PURSER_RECONCILER_WEBHOOK_URL` | (empty) | HTTP(S) URL to POST to. Delivery is disabled when empty. |
 | `PURSER_RECONCILER_WEBHOOK_RETRIES` | `3` | Maximum POST attempts before abandoning delivery. |
 
-Set these alongside the other reconciler tuning variables (see
+Once available, these will be set alongside the other reconciler tuning variables (see
 [Environment Variables](./env-vars.md)):
 
 ```bash
@@ -93,18 +98,18 @@ unreachable webhook endpoint has zero impact on self-healing latency.
 Create an [Incoming Webhook](https://api.slack.com/messaging/webhooks) and
 forward the Purser payload through a lightweight proxy or a serverless function
 that reformats it into Slack's `{"text": "..."}` envelope. A simple example
-using [smee.io](https://smee.io) for local development:
+using [smee.io](https://smee.io) for local development will look like:
 
 ```bash
 PURSER_RECONCILER_WEBHOOK_URL=https://smee.io/your-channel-id
 ```
 
-Production: use a proper Slack Webhook relay (e.g. a short AWS Lambda) so you
-can enrich the message with buttons that call the Purser approval API.
+In production, a Slack Webhook relay (e.g. a short AWS Lambda) will allow you
+to enrich the message with buttons that call the Purser approval API.
 
 ### PagerDuty Events API v2
 
-Send the Purser payload to a micro-service or proxy that maps it to a
+The Purser payload will be forwarded to a micro-service or proxy that maps it to a
 PagerDuty `trigger` event:
 
 ```bash
@@ -116,7 +121,7 @@ returns `202` so Purser considers delivery successful.
 
 ### Direct HTTP endpoint
 
-If your internal tooling accepts arbitrary JSON POST requests, point
+If your internal tooling accepts arbitrary JSON POST requests, you will point
 `PURSER_RECONCILER_WEBHOOK_URL` directly at the endpoint:
 
 ```bash
@@ -130,9 +135,9 @@ up to `PURSER_RECONCILER_WEBHOOK_RETRIES` times on failure.
 
 ## Security notes
 
-- Purser does **not** sign the webhook payload. If your endpoint is
-  internet-accessible, add a shared secret check in front of it (e.g. verify a
-  custom header set by a proxy, or use mTLS).
-- The `node_id` and `deployment_id` fields are internal identifiers; treat them
-  as opaque strings.
-- Use HTTPS in production to prevent payload interception.
+- Purser will **not** sign the webhook payload. If your endpoint is
+  internet-accessible, a shared secret check in front of it will be recommended
+  (e.g. verify a custom header set by a proxy, or use mTLS).
+- The `node_id` and `deployment_id` fields are internal identifiers and will be
+  treated as opaque strings.
+- HTTPS will be required in production to prevent payload interception.
