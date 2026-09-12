@@ -12,3 +12,4 @@ Each one captures a non-obvious root cause that is NOT derivable from the code.
 | `ghcr_visibility.md` | GHCR / release | New packages start private; PATCH API is broken for user packages |
 | `macos_case_collision.md` | Git / macOS | `enterprise/LICENSE` vs `enterprise/license/` collide on APFS — never `git add -A` |
 | `macos_toolchain_bootstrap.md` | Build / toolchain | `make setup` fetches linux-amd64; `env.sh` "ready" is not proof; `GOPROXY=direct` behind the proxy |
+| `demo_stack_fragility.md` | Local demo / gateway | Gateway routes are push-only and die on restart; single-file bind mounts pin the inode; compose + `ui:80` were both broken |
