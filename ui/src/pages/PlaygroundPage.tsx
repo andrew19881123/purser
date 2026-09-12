@@ -31,6 +31,12 @@ export function PlaygroundPage() {
 
   // Model options: prefer the Gateway's served list (GET /v1/models); fall back
   // to the models of the active deployments if the Gateway list is unavailable.
+  //
+  // The picker lists MODELS, not deployments. The Gateway's route table is keyed
+  // by model id — N deployments of one model are ONE route it load-balances
+  // across — so a model deployed three times must render one option, not three.
+  // Both sources are de-duplicated with a Set, which preserves insertion order,
+  // so the list cannot reorder between renders (same idiom as mock/wiring.ts).
   const deploymentModels = useMemo(
     () =>
       (deployments.data ?? [])
@@ -40,7 +46,8 @@ export function PlaygroundPage() {
   );
   const activeModels = useMemo(() => {
     const served = (gatewayModels.data ?? []).map((m) => m.id);
-    return served.length > 0 ? served : deploymentModels;
+    const source = served.length > 0 ? served : deploymentModels;
+    return [...new Set(source)];
   }, [gatewayModels.data, deploymentModels]);
 
   const [model, setModel] = useState(DEFAULT_MODEL);

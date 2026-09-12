@@ -187,6 +187,33 @@ curl -s http://<control-plane>:8080/api/v1/models \
 
 ---
 
+## Why does a model I deployed three times appear only once in the Playground?
+
+Because the Playground's model picker lists **models, not deployments** — and that
+is deliberate. The Gateway's route table is keyed by **model id**, so deploying the
+same model several times does not register several entries: it registers **one
+route** that the Gateway load-balances across all the replicas behind it. Deploying
+a model N times is how you scale throughput, not how you add a second model.
+
+One model is therefore one option in the picker, and one id to send as `model` in a
+`POST /v1/chat/completions` call. Which replica serves a given request is the
+Gateway's business, not the client's — you cannot address an individual deployment
+from the API, and you do not need to.
+
+A model with three ACTIVE deployments behind it is the expected shape of a
+scaled-out model, not a duplicate. If you want two distinct entries in the picker,
+they have to be two distinct model ids.
+
+!!! note "When the Gateway is unreachable"
+    The picker prefers the Gateway's served list (`GET /v1/models`). If the Gateway
+    cannot be reached, the Playground falls back to the models that have an
+    **ACTIVE deployment**, de-duplicated the same way — so three ACTIVE deployments
+    of one model still render a single option. If no model has an active
+    deployment, the picker falls back to the default model and shows a notice
+    pointing at the [Model Catalog](configuration/models.md) instead.
+
+---
+
 ## Does anything phone home?
 
 **No telemetry, analytics, or usage data is sent to the Purser maintainers.**
