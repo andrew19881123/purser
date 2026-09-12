@@ -143,4 +143,5 @@ nav:
     - Anthropic Compatibility (/v1/messages): api/anthropic-compatibility.md
   - Development:
     - Benchmarking the Planner: development/benchmarking.md
+    - Testing Architecture: development/testing.md
   - Changelog: changelog.md
