@@ -176,7 +176,8 @@ Both variables are **required** — the gateway refuses to start with a clear er
 | Variable | Default | Description |
 |---|---|---|
 | `PURSER_GATEWAY_INTERNAL_TOKEN` | (none) | Shared secret for the management plane (route sync). The Control Plane sends it in the `X-Purser-Internal-Token` header. When absent, route sync is disabled (fail-closed). Must match `PURSER_GATEWAY_TOKEN` on the Control Plane. |
-| `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway runs in **OPEN DEV MODE** — any non-empty bearer token is accepted. **Always set this in production.** |
+| `PURSER_GATEWAY_API_KEYS` | (none) | Comma-separated client bearer tokens. Format: `secret[:tenant[:key_id]]`. Example: `sk-abc:team-a,sk-def:team-b:key2`. When absent or empty, the gateway **refuses to start** unless `PURSER_GATEWAY_DEV_MODE=1` is set explicitly (fail-closed). |
+| `PURSER_GATEWAY_DEV_MODE` | `0` | Set to `1` to allow starting with **no** API keys configured: any non-empty bearer token is then accepted and mapped to the `default` tenant, and a warning is logged on every startup. **Never set this in production** — it disables authentication. Ignored when `PURSER_GATEWAY_API_KEYS` is non-empty (keys always take precedence). |
 
 ### Quota and rate limiting
 
