@@ -17,6 +17,7 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -152,6 +153,9 @@ func Start(t *testing.T) *Stack {
 		"PURSER_AGENT_GRPC_INSECURE=true",
 		"PURSER_GATEWAY_ADDR="+s.GatewayBase,
 		"PURSER_GATEWAY_TOKEN=e2e",
+		// Speed up the route-reconcile loop so TestGatewayRestartSelfHeals
+		// completes in seconds rather than up to 30 s (the production default).
+		"PURSER_ROUTE_RECONCILE_INTERVAL=5",
 	)
 	startProc(t, s, cp, filepath.Join(tmp, "cp.log"))
 
@@ -231,4 +235,174 @@ func (s *Stack) JoinToken() string {
 	}
 	s.token = out.Token
 	return s.token
+}
+
+// EnrollAgent spawns purser-agent (mock engine) with a fresh join token and
+// waits for it to appear in GET /api/v1/nodes (polling every 200 ms, 30 s deadline).
+func (s *Stack) EnrollAgent(t *testing.T) {
+	t.Helper()
+	root := repoRoot(t)
+
+	// Zero the cached token so JoinToken mints a fresh one for this agent.
+	s.token = ""
+	token := s.JoinToken()
+
+	agentPort := freePort(t)
+	inferPort := freePort(t)
+
+	ag := exec.Command(filepath.Join(root, "rust", "target", "debug", "purser-agent"))
+	ag.Env = append(os.Environ(),
+		fmt.Sprintf("PURSER_AGENT_BIND=127.0.0.1:%d", agentPort),
+		fmt.Sprintf("PURSER_INFERENCE_PORT=%d", inferPort),
+		"PURSER_CONTROL_PLANE_ADDR="+s.grpcBase, // http://127.0.0.1:<grpcPort>
+		"PURSER_CLUSTER_ID=default",
+		"PURSER_JOIN_TOKEN="+token,
+		"PURSER_ENGINE_BACKEND=mock",
+	)
+	startProc(t, s, ag, filepath.Join(s.tmp, "agent.log"))
+
+	// Condition-based wait: poll /api/v1/nodes until a node record appears.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(s.CPBase + "/api/v1/nodes") //nolint:noctx
+		if err == nil {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			// The node object contains either "id" or "node_id" depending on
+			// serialisation; both indicate at least one node is enrolled.
+			if bytes.Contains(b, []byte(`"id"`)) || bytes.Contains(b, []byte(`"node_id"`)) {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("EnrollAgent: agent did not enroll within 30s — check agent.log in " + s.tmp)
+}
+
+// DeployModel registers a model spec in the catalog and triggers deployment,
+// then polls GET /api/v1/deployments until the deployment state is ACTIVE
+// (polling every 200 ms, 30 s deadline).
+//
+// The model spec mirrors the one used by tools/e2e_full.sh, scaled down to 1 B
+// parameters so it fits on a single mock node without any GPU.
+func (s *Stack) DeployModel(t *testing.T, modelID string) {
+	t.Helper()
+
+	// Register model in the catalog.
+	spec := fmt.Sprintf(
+		`{"modelId":%q,"family":"llama","architecture":"llama",`+
+			`"paramsTotalB":1,"paramsActiveB":1,`+
+			`"layers":22,"hiddenSize":2048,"nKvHeads":4,"headDim":64,`+
+			`"attentionType":"ATTENTION_TYPE_GQA","contextMax":2048,"isMoe":false,`+
+			`"quantizations":[{"name":"q4_k_m","sizeGb":0.6,"requiresFp4":false,"quality":0.9}],`+
+			`"engine":"llamacpp"}`,
+		modelID,
+	)
+	resp, err := http.Post(s.CPBase+"/api/v1/models", "application/json", bytes.NewReader([]byte(spec))) //nolint:noctx
+	if err != nil {
+		t.Fatalf("DeployModel: register %s: %v", modelID, err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		t.Fatalf("DeployModel: register %s → %d: %s", modelID, resp.StatusCode, b)
+	}
+
+	// Trigger deployment — no plan body, letting the planner build one from fleet.
+	resp, err = http.Post(s.CPBase+"/api/v1/models/"+modelID+"/deploy", "application/json", bytes.NewReader([]byte("{}"))) //nolint:noctx
+	if err != nil {
+		t.Fatalf("DeployModel: deploy %s: %v", modelID, err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		t.Fatalf("DeployModel: deploy %s → %d: %s", modelID, resp.StatusCode, b)
+	}
+
+	// Poll until ACTIVE.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(s.CPBase + "/api/v1/deployments") //nolint:noctx
+		if err == nil {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if bytes.Contains(b, []byte("ACTIVE")) {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("DeployModel: %s did not become ACTIVE within 30s — check cp.log in %s", modelID, s.tmp)
+}
+
+// RestartGateway kills the running gateway process, starts a fresh one on the
+// same port (gwPort / gwEnv), and waits for its /healthz probe to answer.
+//
+// procs[0] is always the gateway (Start appends gateway before CP). After restart
+// the slice entry is replaced with the new process so Stop still tears it down.
+func (s *Stack) RestartGateway(t *testing.T) {
+	t.Helper()
+	root := repoRoot(t)
+
+	// Kill the current gateway (always procs[0]) and reap it so the port is
+	// released before we try to bind again.
+	if s.procs[0].Process != nil {
+		_ = s.procs[0].Process.Kill()
+		_ = s.procs[0].Wait()
+	}
+	_ = s.logFiles[0].Close()
+
+	// Start a fresh gateway with the identical env (same port, same token).
+	gw := exec.Command(filepath.Join(root, "rust", "target", "debug", "purser-gateway"))
+	gw.Env = s.gwEnv
+	logPath := filepath.Join(s.tmp, "gw-restart.log")
+	f, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("RestartGateway: create log: %v", err)
+	}
+	gw.Stdout, gw.Stderr = f, f
+	if err := gw.Start(); err != nil {
+		t.Fatalf("RestartGateway: start gateway: %v", err)
+	}
+
+	// Replace the old entries so Stop() kills and reaps the new process.
+	s.procs[0] = gw
+	s.logFiles[0] = f
+
+	// Condition-based wait: poll until the new gateway answers /healthz.
+	waitReady(t, s.GatewayBase+"/healthz", 15*time.Second)
+}
+
+// modelListed returns true when GET {GatewayBase}/v1/models lists id in its
+// data array. Bearer testkey is the API key seeded in the test harness.
+func modelListed(s *Stack, id string) bool {
+	req, _ := http.NewRequest("GET", s.GatewayBase+"/v1/models", nil) //nolint:noctx
+	req.Header.Set("Authorization", "Bearer testkey")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false
+	}
+	for _, m := range out.Data {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// assertModelListed fatals if modelListed(s, id) != want.
+func assertModelListed(t *testing.T, s *Stack, id string, want bool) {
+	t.Helper()
+	if got := modelListed(s, id); got != want {
+		t.Fatalf("assertModelListed(%q): got %v, want %v", id, got, want)
+	}
 }
