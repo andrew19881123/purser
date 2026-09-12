@@ -46,7 +46,21 @@ cargo build -p purser-agent          # set CARGO_TARGET_DIR=/tmp/purser-shared-t
 cargo build -p purser-gateway
 cd ui && npm run typecheck && npm run build
 helm lint deploy/helm/purser
+
+# CP OpenAPI contract is GENERATED — never hand-edit openapi.json.
+# Routes live in a declarative table (go/controlplane/server/openapi_registry.go);
+# that same table drives both mux registration and the served openapi.json.
+cd go/controlplane && go generate ./server/...   # regenerate openapi.json after a route change
 ```
+
+**Control-plane routes & OpenAPI:** every CP route is one row in `apiRoutes`
+(`go/controlplane/server/openapi_registry.go`) — that row registers the handler
+*and* produces the OpenAPI operation, so the contract can never drift from the
+code. `openapi.json` is generated (`go generate ./server/...`, or `cmd/openapi-gen`)
+and a test fails the build if it is stale; curated request/response schemas live
+in `openapi.base.json`. There is no `openapi.yaml` any more. Add a route → add a
+table row → regenerate → add a `tests/contract/features.json` row with
+`"openapi": true`.
 
 `make setup` supports macOS and Linux on `arm64` and `amd64`; it pins Go and helm
 and verifies SHA256 checksums before extracting. `--dry-run` shows the plan;

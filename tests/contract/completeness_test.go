@@ -38,8 +38,8 @@ func TestManifestCoversEveryRegisteredRoute(t *testing.T) {
 			inManifest[r] = true
 		}
 	}
-	serverGo := filepath.Join("..", "..", "go", "controlplane", "server", "server.go")
-	routes, err := RegisteredRoutes(serverGo)
+	routeTable := filepath.Join("..", "..", "go", "controlplane", "server", "openapi_registry.go")
+	routes, err := RegisteredRoutes(routeTable)
 	if err != nil {
 		t.Fatalf("extract routes: %v", err)
 	}

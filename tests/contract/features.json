@@ -9,7 +9,7 @@
       "GET /api/v1/apikeys/{id}/access-log",
       "POST /api/v1/apikeys/{id}/rotate"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listApiKeys",
       "createApiKey",
@@ -32,7 +32,7 @@
       "PUT /api/v1/platform/orgs/{orgId}/roles/{id}",
       "GET /api/v1/platform/permissions"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listRoles",
       "createRole",
@@ -62,7 +62,7 @@
       "PUT /api/v1/platform/dataplanes/{id}",
       "PUT /api/v1/platform/dataplanes/{id}/config"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listDataPlanes",
       "createDataPlane",
@@ -87,7 +87,7 @@
       "GET /api/v1/compliance/gdpr/record-of-processing",
       "GET /api/v1/gdpr/erasure-log"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getAiActTechnicalDoc",
       "eraseSubject",
@@ -106,7 +106,7 @@
       "POST /api/v1/join-token",
       "GET /api/v1/enrollment-bundle"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "createJoinToken"
     ],
@@ -126,7 +126,7 @@
       "POST /api/v1/nodes/{id}/restart",
       "DELETE /api/v1/nodes/{id}"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getCapacity",
       "listNodes",
@@ -152,7 +152,7 @@
       "GET /api/v1/models/{id}/health",
       "DELETE /api/v1/models/{id}"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getCatalog",
       "getModel",
@@ -200,7 +200,7 @@
       "GET /api/v1/platform/teams/{teamId}/billing",
       "GET /api/v1/usage/summary"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getBillingReport",
       "getBillingSummary",
@@ -230,7 +230,7 @@
       "DELETE /api/v1/platform/orgs/{orgId}/members/{userId}",
       "GET /api/v1/platform/orgs/{orgId}/teams"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listOrganizations",
       "createOrganization",
@@ -256,7 +256,7 @@
       "DELETE /api/v1/platform/teams/{teamId}/members/{userId}",
       "GET /api/v1/platform/teams/{teamId}/my-permissions"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listTeams",
       "createTeam",
@@ -288,7 +288,7 @@
       "PUT /api/v1/platform/pools/{id}/quotas/{teamId}",
       "DELETE /api/v1/platform/pools/{id}/quotas/{teamId}"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listNodePools",
       "createNodePool",
@@ -314,7 +314,7 @@
       "GET /api/v1/platform/users/{id}",
       "GET /api/v1/platform/users/me"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listPlatformUsers",
       "getMe"
@@ -332,7 +332,7 @@
       "POST /api/v1/service-accounts",
       "DELETE /api/v1/service-accounts/{id}"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listServiceAccounts",
       "createServiceAccount",
@@ -351,7 +351,7 @@
       "GET /api/v1/inference-audit/verify",
       "GET /api/v1/logs/access"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listInferenceAudit",
       "verifyAuditChain",
@@ -388,7 +388,7 @@
       "POST /api/v1/approvals/{deploymentId}/approve",
       "POST /api/v1/approvals/{deploymentId}/reject"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listDeploymentApprovals",
       "getDeploymentApproval",
@@ -406,7 +406,7 @@
     "routes": [
       "GET /api/v1/slo/compliance"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getSloCompliance",
       "getSloComplianceFull"
@@ -422,7 +422,7 @@
     "routes": [
       "POST /api/v1/planner/what-if"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "whatIfPlan"
     ],
@@ -439,7 +439,7 @@
       "POST /api/v1/config/diff",
       "POST /api/v1/config/apply"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "exportConfig",
       "diffConfig",
@@ -459,7 +459,7 @@
       "DELETE /api/v1/policies/{name}",
       "POST /api/v1/policies/eval"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "listPolicies",
       "upsertPolicy",
@@ -476,7 +476,7 @@
     "routes": [
       "GET /api/v1/cluster/status"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getClusterStatus"
     ],
@@ -491,7 +491,7 @@
     "routes": [
       "GET /api/v1/reconciler/status"
     ],
-    "openapi": false,
+    "openapi": true,
     "client": [
       "getReconcilerStatus"
     ],

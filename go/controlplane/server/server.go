@@ -51,6 +51,12 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+// openAPISpec is the served API contract. It is GENERATED from the declarative
+// route table (apiRoutes in openapi_registry.go) merged with the curated
+// enrichment in openapi.base.json — never hand-edited. Regenerate after any
+// route change with `go generate ./server/...`; a test (openapi_gen_test.go)
+// fails the build if the committed file is stale. See openapi_gen.go.
+//
 //go:embed openapi.json
 var openAPISpec []byte
 
@@ -1392,207 +1398,38 @@ func (s *Server) getOrCreateLimiter(
 	return l
 }
 
+// routes registers every handler on the mux by iterating apiRoutes, the
+// declarative route table (openapi_registry.go). That table is the single
+// source of truth: the same rows drive OpenAPI spec generation, so the
+// published contract can never again drift from the routes actually served.
+//
+// Registration behaviour is identical to the previous hand-written block of
+// s.mux.HandleFunc(...) calls: same method+path patterns, same handler
+// functions, and POST /models/{id}/deploy is still wrapped in
+// policyMiddleware("deploy") (routeDef.kind == kindPolicyDeploy). The rich
+// per-endpoint comments that used to annotate individual registrations now
+// live on the corresponding rows in the route table and in openapi.base.json.
 func (s *Server) routes() {
-	// Authorization Code Flow + PKCE + session management endpoints (browser SSO).
-	// These are exempt from oidcMiddleware — they ARE the login/logout flow.
-	s.mux.HandleFunc("GET /auth/login", s.handleAuthLogin)
-	s.mux.HandleFunc("GET /auth/callback", s.handleAuthCallback)
-	s.mux.HandleFunc("GET /auth/logout", s.handleAuthLogout)
-	// Backchannel logout: called by the IdP when a user session ends at the
-	// IdP side. No user credential is presented — the IdP signs the token.
-	s.mux.HandleFunc("POST /auth/backchannel-logout", s.handleBackchannelLogout)
+	for _, rt := range apiRoutes {
+		pattern := rt.Method + " " + rt.Path
+		h := rt.handler(s)
+		switch rt.kind {
+		case kindPolicyDeploy:
+			// Deployment mutations pass through the OPA policy gate first.
+			s.mux.Handle(pattern, s.policyMiddleware("deploy")(h))
+		default:
+			s.mux.HandleFunc(pattern, h)
+		}
+	}
+}
 
-	// OAuth2 client_credentials token endpoint — no auth required (IS the auth).
-	// /auth/token is in rbacPublicPaths so it bypasses key/RBAC checks.
-	s.mux.HandleFunc("POST /auth/token", s.handleTokenEndpoint)
-
-	// LDAP authentication (enabled only when ldapConnector is configured).
-	// /auth/ldap-login is in rbacPublicPaths and exempted by oidcMiddleware.
-	s.mux.HandleFunc("GET /auth/ldap-login", s.handleLDAPLoginForm)
-	s.mux.HandleFunc("POST /auth/ldap-login", s.handleLDAPLogin)
-	// LDAP diagnostic endpoint — admin-only (POST → viewer/inference blocked by RBAC).
-	s.mux.HandleFunc("POST /api/v1/ldap/test", s.handleLDAPTest)
-
-	// Service account management (admin only).
-	s.mux.HandleFunc("POST /api/v1/service-accounts", s.handleCreateServiceAccount)
-	s.mux.HandleFunc("GET /api/v1/service-accounts", s.handleListServiceAccounts)
-	s.mux.HandleFunc("DELETE /api/v1/service-accounts/{id}", s.handleRevokeServiceAccount)
-
-	s.mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
-	s.mux.HandleFunc("GET /api/v1/nodes/{id}", s.handleGetNode)
-	s.mux.HandleFunc("POST /api/v1/nodes/{id}/drain", s.handleDrainNode)
-	s.mux.HandleFunc("POST /api/v1/nodes/{id}/restart", s.handleRestartNode)
-	s.mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
-	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
-	s.mux.HandleFunc("POST /api/v1/models", s.handleCreateModel)
-	s.mux.HandleFunc("POST /api/v1/models/import", s.handleImportModel)
-	s.mux.HandleFunc("POST /api/v1/models/import/cpu", s.handleImportCPUModel)
-	s.mux.HandleFunc("GET /api/v1/models/{id}", s.handleGetModel)
-	s.mux.HandleFunc("DELETE /api/v1/models/{id}", s.handleDeleteModel)
-	s.mux.HandleFunc("GET /api/v1/models/{id}/health", s.handleModelHealth)
-	s.mux.HandleFunc("POST /api/v1/models/{id}/plan", s.handlePreviewPlan)
-	s.mux.Handle("POST /api/v1/models/{id}/deploy",
-		s.policyMiddleware("deploy")(http.HandlerFunc(s.handleDeployModel)))
-	s.mux.HandleFunc("POST /api/v1/join-token", s.handleJoinToken)
-	s.mux.HandleFunc("GET /api/v1/enrollment-bundle", s.handleEnrollmentBundle)
-	s.mux.HandleFunc("POST /api/v1/enrollment/renew", s.handleEnrollmentRenew)
-	s.mux.HandleFunc("GET /api/v1/deployments", s.handleListDeployments)
-	s.mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
-	s.mux.HandleFunc("GET /api/v1/plans/{id}", s.handleGetPlan)
-	s.mux.HandleFunc("GET /api/v1/cluster/health", s.handleClusterHealth)
-	s.mux.HandleFunc("GET /api/v1/cluster/status", s.handleClusterStatus)
-	s.mux.HandleFunc("POST /api/v1/apikeys", s.handleCreateAPIKey)
-	s.mux.HandleFunc("GET /api/v1/apikeys", s.handleListAPIKeys)
-	s.mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.handleDeleteAPIKey)
-	s.mux.HandleFunc("POST /api/v1/apikeys/{id}/rotate", s.handleRotateAPIKey)
-	// Legacy per-key access-log endpoint — 301 redirect to unified /logs/access.
-	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/access-log", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		http.Redirect(w, r, "/api/v1/logs/access?api_key_id="+id, http.StatusMovedPermanently)
-	})
-	// Unified access-log endpoint (v0.5+).
-	s.mux.HandleFunc("GET /api/v1/logs/access", s.handleListAccessLogs)
-	s.mux.HandleFunc("GET /api/v1/metrics", s.handleMetricsSSE)
-	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPISpec)
-
-	// Usage accounting endpoints.
-	s.mux.HandleFunc("POST /api/v1/usage", s.handleRecordUsage)
-	s.mux.HandleFunc("GET /api/v1/apikeys/{id}/usage", s.handleGetKeyUsage)
-	s.mux.HandleFunc("GET /api/v1/usage/summary", s.handleUsageSummary)
-
-	// Enterprise (open-core) endpoints. Public code, gated at runtime by a
-	// valid, offline-verified license key (see enterprise/license).
-	s.mux.HandleFunc("GET /api/v1/enterprise/status", s.handleEnterpriseStatus)
-	s.mux.HandleFunc("GET /api/v1/enterprise/audit-log", s.handleEnterpriseAuditLog)
-
-	// Observability: reconciler config + tracker state.
-	s.mux.HandleFunc("GET /api/v1/reconciler/status", s.handleReconcilerStatus)
-
-	// Fleet capacity headroom — viewer-accessible.
-	s.mux.HandleFunc("GET /api/v1/fleet/capacity", s.handleFleetCapacity)
-
-	// Config-as-code: apply/diff/export purser.yaml desired state.
-	s.mux.HandleFunc("POST /api/v1/config/apply", s.handleConfigApply)
-	s.mux.HandleFunc("POST /api/v1/config/diff", s.handleConfigDiff)
-	s.mux.HandleFunc("GET /api/v1/config/export", s.handleConfigExport)
-	// Inference audit log (AI Act Art. 12).
-	// GET list and verify are enterprise-gated ("inference_audit" feature) and viewer-accessible.
-	// POST is internal-only (gateway→CP) and never enterprise-gated.
-	s.mux.HandleFunc("GET /api/v1/inference-audit", s.handleListInferenceAudit)
-	s.mux.HandleFunc("GET /api/v1/inference-audit/verify", s.handleVerifyInferenceChain)
-	s.mux.HandleFunc("POST /api/v1/inference-events", s.handleRecordInferenceEvent)
-
-	// Policy-as-code (OPA/Rego) — enterprise-gated ("policy_engine" feature).
-	s.mux.HandleFunc("GET /api/v1/policies", s.handleListPolicies)
-	s.mux.HandleFunc("PUT /api/v1/policies/{name}", s.handleUpsertPolicy)
-	s.mux.HandleFunc("DELETE /api/v1/policies/{name}", s.handleDeletePolicy)
-	s.mux.HandleFunc("POST /api/v1/policies/eval", s.handleEvalPolicy)
-
-	// Deployment approval gates (AI Act Art.14 human oversight).
-	// Enterprise-gated ("deployment_approvals" feature). GET is viewer-accessible;
-	// POST approve/reject is admin-only (enforced inside the handler).
-	s.mux.HandleFunc("GET /api/v1/approvals", s.handleListApprovals)
-	s.mux.HandleFunc("GET /api/v1/approvals/{deploymentId}", s.handleGetApproval)
-	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/approve", s.handleApproveDeployment)
-	s.mux.HandleFunc("POST /api/v1/approvals/{deploymentId}/reject", s.handleRejectDeployment)
-
-	// Billing / chargeback — GET /billing/report is enterprise-gated ("billing"
-	// feature); GET /billing/summary is open for all viewer/admin roles.
-	s.mux.HandleFunc("GET /api/v1/billing/report", s.handleBillingReport)
-	s.mux.HandleFunc("GET /api/v1/billing/summary", s.handleBillingSummary)
-	// FinOps extensions (v0.5) — enterprise-gated ("billing" feature).
-	s.mux.HandleFunc("GET /api/v1/billing/forecast", s.handleBillingForecast)
-	s.mux.HandleFunc("GET /api/v1/billing/models/adoption", s.handleModelAdoption)
-
-	// v0.4 org/team billing — enterprise-gated ("billing" feature).
-	// Teams are identified by tenant_id (naming convention: "<orgId>/<teamSlug>").
-	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/billing", s.handleOrgBillingReport)
-	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/billing", s.handleTeamBillingReport)
-
-	// SLO compliance (v0.6) — viewer-accessible, no enterprise gate.
-	// Returns per-model TTFT compliance rates against configured SLO contracts.
-	s.mux.HandleFunc("GET /api/v1/slo/compliance", s.handleSLOCompliance)
-
-	// Compliance endpoints (AI Act Art.11, GDPR Art.30) — enterprise-gated.
-	s.mux.HandleFunc("GET /api/v1/compliance/ai-act/technical-doc", s.handleAIActTechnicalDoc)
-	s.mux.HandleFunc("GET /api/v1/compliance/gdpr/record-of-processing", s.handleGDPRRecordOfProcessing)
-	// GDPR Art.17 right-to-erasure — admin only, enterprise-gated ("gdpr" feature).
-	s.mux.HandleFunc("POST /api/v1/gdpr/erasure", s.handleGDPRErasure)
-	s.mux.HandleFunc("GET /api/v1/gdpr/erasure-log", s.handleGDPRErasureLog)
-
-	// Platform: Organizations
-	s.mux.HandleFunc("POST /api/v1/platform/orgs", s.handleCreateOrg)
-	s.mux.HandleFunc("GET /api/v1/platform/orgs", s.handleListOrgs)
-	s.mux.HandleFunc("GET /api/v1/platform/orgs/{id}", s.handleGetOrg)
-	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{id}", s.handleUpdateOrg)
-	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{id}", s.handleDeleteOrg)
-
-	// Platform: Teams
-	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/teams", s.handleCreateTeam)
-	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/teams", s.handleListTeams)
-	s.mux.HandleFunc("GET /api/v1/platform/teams/{id}", s.handleGetTeam)
-	s.mux.HandleFunc("PUT /api/v1/platform/teams/{id}", s.handleUpdateTeam)
-	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{id}", s.handleDeleteTeam)
-
-	// Platform: Org members
-	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/members", s.handleAddOrgMember)
-	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/members", s.handleListOrgMembers)
-	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/members/{userId}", s.handleUpdateOrgMember)
-	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/members/{userId}", s.handleRemoveOrgMember)
-
-	// Platform: Team members
-	s.mux.HandleFunc("POST /api/v1/platform/teams/{teamId}/members", s.handleAddTeamMember)
-	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/members", s.handleListTeamMembers)
-	s.mux.HandleFunc("PUT /api/v1/platform/teams/{teamId}/members/{userId}", s.handleUpdateTeamMember)
-	s.mux.HandleFunc("DELETE /api/v1/platform/teams/{teamId}/members/{userId}", s.handleRemoveTeamMember)
-
-	// Platform v0.4: Users, Custom Roles, Permissions discovery.
-	s.mux.HandleFunc("GET /api/v1/platform/users", s.handleListUsers)
-	s.mux.HandleFunc("GET /api/v1/platform/users/me", s.handleGetMe)
-	s.mux.HandleFunc("GET /api/v1/platform/users/{id}", s.handleGetUser)
-	s.mux.HandleFunc("POST /api/v1/platform/orgs/{orgId}/roles", s.handleCreateRole)
-	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles", s.handleListRoles)
-	s.mux.HandleFunc("GET /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleGetRole)
-	s.mux.HandleFunc("PUT /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleUpdateRole)
-	s.mux.HandleFunc("DELETE /api/v1/platform/orgs/{orgId}/roles/{id}", s.handleDeleteRole)
-	s.mux.HandleFunc("GET /api/v1/platform/permissions", s.handleListPermissions)
-	s.mux.HandleFunc("GET /api/v1/platform/teams/{teamId}/my-permissions", s.handleGetMyPermissions)
-
-	// Platform: Node Pools (v0.4 multi-tenant).
-	s.mux.HandleFunc("POST /api/v1/platform/pools", s.handleCreatePool)
-	s.mux.HandleFunc("GET /api/v1/platform/pools", s.handleListPools)
-	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}", s.handleGetPool)
-	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}", s.handleUpdatePool)
-	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}", s.handleDeletePool)
-	s.mux.HandleFunc("POST /api/v1/platform/pools/{id}/nodes", s.handleAssignNodeToPool)
-	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/nodes", s.handleListPoolNodes)
-	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/nodes/{nodeId}", s.handleRemoveNodeFromPool)
-	s.mux.HandleFunc("PUT /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleUpsertPoolQuota)
-	s.mux.HandleFunc("GET /api/v1/platform/pools/{id}/quotas", s.handleListPoolQuotas)
-	s.mux.HandleFunc("DELETE /api/v1/platform/pools/{id}/quotas/{teamId}", s.handleDeletePoolQuota)
-
-	// Platform: status overview (admin) and liveness probe (public).
-	s.mux.HandleFunc("GET /api/v1/platform/status", s.handlePlatformStatus)
-	s.mux.HandleFunc("GET /api/v1/platform/health", s.handlePlatformHealth)
-
-	// Data Planes — CP/DP architectural separation (v0.5).
-	s.mux.HandleFunc("POST /api/v1/platform/dataplanes", s.handleCreateDataPlane)
-	s.mux.HandleFunc("GET /api/v1/platform/dataplanes", s.handleListDataPlanes)
-	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}", s.handleGetDataPlane)
-	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}", s.handleUpdateDataPlane)
-	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}", s.handleDeleteDataPlane)
-	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/heartbeat", s.handleDataPlaneHeartbeat)
-	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/config", s.handleGetDataPlaneConfig)
-	s.mux.HandleFunc("PUT /api/v1/platform/dataplanes/{id}/config", s.handlePutDataPlaneConfig)
-	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/config/refresh", s.handleRefreshDataPlaneConfig)
-	s.mux.HandleFunc("POST /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleAssignNodeToDataPlane)
-	s.mux.HandleFunc("DELETE /api/v1/platform/dataplanes/{id}/nodes/{nodeId}", s.handleUnassignNodeFromDataPlane)
-	s.mux.HandleFunc("GET /api/v1/platform/dataplanes/{id}/nodes", s.handleListDataPlaneNodes)
-
-	// What-if Planner — hardware ROI simulation (v0.6).
-	// Runs the DP planner against a hypothetical fleet without touching the
-	// registry. Auth: admin or viewer role (no registry mutations).
-	s.mux.HandleFunc("POST /api/v1/planner/what-if", s.handleWhatIfPlan)
+// handleAPIKeyAccessLogRedirect 301-redirects the legacy per-key access-log
+// endpoint (GET /api/v1/apikeys/{id}/access-log) to the unified
+// GET /api/v1/logs/access?api_key_id=… endpoint (v0.5+). Extracted from an
+// inline closure so it can be named in the declarative route table.
+func (s *Server) handleAPIKeyAccessLogRedirect(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	http.Redirect(w, r, "/api/v1/logs/access?api_key_id="+id, http.StatusMovedPermanently)
 }
 
 // featureAudit is the entitlement required by the tamper-evident audit log
@@ -1676,8 +1513,9 @@ func (s *Server) policyMiddleware(action string) func(http.Handler) http.Handler
 }
 
 // handleOpenAPISpec serves the embedded OpenAPI 3.0 specification as JSON.
-// The spec is embedded at compile time from openapi.json (generated from
-// openapi.yaml) and served verbatim — no runtime conversion needed.
+// The spec is embedded at compile time from openapi.json (generated from the
+// route table + openapi.base.json by cmd/openapi-gen) and served verbatim —
+// no runtime conversion needed.
 func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

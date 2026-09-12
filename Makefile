@@ -61,6 +61,7 @@ setup:
 
 gen:
 	cd proto && "$(BUF)" generate
+	cd go/controlplane && "$(GO)" generate ./server/...
 
 build:
 	"$(CARGO)" build --manifest-path $(RUST_MANIFEST)

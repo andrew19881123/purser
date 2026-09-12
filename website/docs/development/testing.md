@@ -68,11 +68,15 @@ Every feature you add must have a row in `tests/contract/features.json`. This fi
 
 ### How to add a row when you add a feature
 
-1. **Add a route to the CP** in `go/controlplane/server/server.go`.
+1. **Add a route to the CP** by adding a row to the declarative route table in
+   `go/controlplane/server/openapi_registry.go` (`apiRoutes`). That one row both
+   registers the handler on the mux and produces the OpenAPI operation. Then run
+   `go generate ./server/...` from `go/controlplane` to refresh `openapi.json`.
 2. **Add the feature row to `tests/contract/features.json`:**
    ```bash
-   # Edit the file directly or use jq:
-   jq '.+=[{"name":"my-feature","routes":["GET /api/v1/my"],"openapi":false,"client":["getMyThing"],"page":null,"nav":null,"docs":null,"perm":null,"gated":false}]' tests/contract/features.json > tmp && mv tmp tests/contract/features.json
+   # Edit the file directly or use jq. Set "openapi": true — every non-exempt
+   # route is now generated into the served spec, so the openapi axis will hold.
+   jq '.+=[{"name":"my-feature","routes":["GET /api/v1/my"],"openapi":true,"client":["getMyThing"],"page":null,"nav":null,"docs":null,"perm":null,"gated":false}]' tests/contract/features.json > tmp && mv tmp tests/contract/features.json
    ```
 3. **Run the completeness meta-test** (see [Running tests locally](#running-tests-locally) below). It will tell you if you missed anything.
 
@@ -83,7 +87,7 @@ The contract tests run every push (see [The Pre-Push Hook](#the-pre-push-hook)) 
 **`TestManifestCoversEveryRegisteredRoute`** (Go — `tests/contract/completeness_test.go`) enforces route coverage only:
 
 - **Every registered route is in the manifest** — or in the `exemptRoutes` list with a reason.
-- **Every route in the manifest is actually registered** in `server.go`.
+- **Every route in the manifest is actually registered** in the route table (`go/controlplane/server/openapi_registry.go`).
 
 **`ui/src/contract/features.contract.test.tsx`** (TypeScript) enforces the client/page/nav axes:
 
@@ -121,7 +125,7 @@ make contract
 ```
 
 This runs:
-- Go contract tests: route registration, OpenAPI consistency, permission axes.
+- Go contract tests: route registration, OpenAPI coverage/freshness, permission axes.
 - TS contract tests: client methods, page definitions, nav labels.
 - **Completes in ~1 second.**
 

@@ -41,6 +41,32 @@ func TestHandleOpenAPISpec(t *testing.T) {
 	if openapi != "3.0.3" {
 		t.Errorf("openapi = %q, want \"3.0.3\"", openapi)
 	}
+
+	// End-to-end coverage guard: the document actually SERVED (embedded
+	// openapi.json) must describe the whole platform surface, not the 22-route
+	// slice the hand-maintained contract used to expose. The generator produces
+	// an operation for every non-exempt route (111 today); assert the served
+	// bytes carry a broad, realistic operation count so a regression that
+	// shipped a truncated contract would fail here, at the HTTP boundary.
+	paths, ok := doc["paths"].(map[string]any)
+	if !ok || len(paths) == 0 {
+		t.Fatalf("served spec has no paths object")
+	}
+	httpMethods := map[string]bool{"get": true, "put": true, "post": true, "delete": true, "patch": true}
+	ops := 0
+	for _, itemAny := range paths {
+		item, _ := itemAny.(map[string]any)
+		for method := range item {
+			if httpMethods[method] {
+				ops++
+			}
+		}
+	}
+	if ops < 100 {
+		t.Errorf("served openapi.json documents only %d operations; expected the full "+
+			"platform surface (~111). The contract looks truncated — regenerate with "+
+			"`go generate ./server/...`.", ops)
+	}
 }
 
 // keys returns the top-level keys of a map (for diagnostic messages).

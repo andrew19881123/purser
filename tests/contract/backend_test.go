@@ -21,8 +21,8 @@ func loadFeats(t *testing.T) []Feature {
 // (a) every manifest route is actually registered in server.go
 func TestManifestRoutesAreRegistered(t *testing.T) {
 	feats := loadFeats(t)
-	serverGo := filepath.Join("..", "..", "go", "controlplane", "server", "server.go")
-	reg, err := RegisteredRoutes(serverGo)
+	routeTable := filepath.Join("..", "..", "go", "controlplane", "server", "openapi_registry.go")
+	reg, err := RegisteredRoutes(routeTable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +107,8 @@ func TestManifestPermsAreEnforced(t *testing.T) {
 // (d) docs pages exist and cite no phantom endpoints
 func TestManifestDocsHaveNoPhantomEndpoints(t *testing.T) {
 	feats := loadFeats(t)
-	serverGo := filepath.Join("..", "..", "go", "controlplane", "server", "server.go")
-	reg, _ := RegisteredRoutes(serverGo)
+	routeTable := filepath.Join("..", "..", "go", "controlplane", "server", "openapi_registry.go")
+	reg, _ := RegisteredRoutes(routeTable)
 	regPaths := map[string]bool{}
 	for _, r := range reg {
 		regPaths[strings.SplitN(r, " ", 2)[1]] = true
